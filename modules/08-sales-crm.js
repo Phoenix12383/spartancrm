@@ -2874,7 +2874,11 @@ function _commitWon(dealId, targetStageId, selectedQuoteId) {
     totalPrice: selectedQuote.totalPrice || 0,
     savedAt: selectedQuote.savedAt || null,
     quoteNumber: selectedQuote.quoteNumber || '',
-    projectName: (deal.cadData && deal.cadData.projectName) || deal.title || ''
+    projectName: (deal.cadData && deal.cadData.projectName) || deal.title || '',
+    // (v3.1) Carry the time totals onto the cadData mirror so that the
+    // deal-to-job conversion below can seed job.estimatedInstallMinutes
+    // etc. directly without re-reading the won quote separately.
+    totals: selectedQuote.totals || null
   };
 
   var act = {
@@ -3216,7 +3220,11 @@ async function createJobFromWonDeal(deal, paymentMethod) {
         totalPrice:  sourceQuote.totalPrice || 0,
         savedAt:     sourceQuote.savedAt || null,
         quoteNumber: sourceQuote.quoteNumber || '',
-        projectName: (deal.cadData && deal.cadData.projectName) || deal.title || ''
+        projectName: (deal.cadData && deal.cadData.projectName) || deal.title || '',
+        // (v3.1) Carry totals onto the job's cadData blob so any code
+        // reading from cadData.totals (rather than the top-level job
+        // fields below) still finds them.
+        totals:      sourceQuote.totals || null
       };
       jobVal = sourceQuote.totalPrice || deal.val || 0;
       sourceQuoteId = sourceQuote.id;
@@ -3225,6 +3233,17 @@ async function createJobFromWonDeal(deal, paymentMethod) {
       jobVal = (deal.cadData && deal.cadData.totalPrice > 0) ? deal.cadData.totalPrice : (deal.val || 0);
       sourceQuoteId = null;
     }
+
+    // (v3.1) Time totals seed values for the new job. We pull from the
+    // won quote's totals when available; otherwise from the deal.cadData
+    // mirror (covers legacy deals migrated from pre-quotes data); otherwise
+    // null (capacity planner falls back to its default heuristic).
+    var seedTotals = (sourceQuote && sourceQuote.totals)
+      || (deal.cadData && deal.cadData.totals)
+      || null;
+    var seedInstallMin    = (seedTotals && typeof seedTotals.installMinutes === 'number')    ? seedTotals.installMinutes    : null;
+    var seedProductionMin = (seedTotals && typeof seedTotals.productionMinutes === 'number') ? seedTotals.productionMinutes : null;
+    var seedStationTimes  = (seedTotals && seedTotals.stationTimes && typeof seedTotals.stationTimes === 'object') ? seedTotals.stationTimes : null;
 
     var job = {
       id: 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
@@ -3260,12 +3279,14 @@ async function createJobFromWonDeal(deal, paymentMethod) {
       signatures: {},
       finalSignedAt: null,
       finalSignedPdfUrl: null,
-      // Step 5 §2.1: init new job-side CAD lifecycle fields. Null = "not yet
-      // captured" — downstream code treats null as the pre-Step-5 default.
+      // Step 5 §2.1 / (v3.1): seed time fields from the won quote's totals
+      // when CAD provided them, else null. Nulls keep the legacy
+      // pre-Step-5 default behaviour for jobs created from pre-WIP28
+      // deals — capacity planner falls back to its heuristic.
       cadFinalData: null,
-      estimatedInstallMinutes: null,
-      estimatedProductionMinutes: null,
-      stationTimes: null,
+      estimatedInstallMinutes: seedInstallMin,
+      estimatedProductionMinutes: seedProductionMin,
+      stationTimes: seedStationTimes,
       finalRenderedPdfUrl: null,
       dispatchDate: null,
       installDate: null,
