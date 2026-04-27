@@ -450,16 +450,15 @@ function renderJobDetail() {
         +'<div style="font-size:12px;color:#6b7280">Last saved: '+new Date(job.cadSurveyData.savedAt).toLocaleDateString('en-AU')+'. Continue the check measure to complete.</div></div>';
     }
 
-    // Complete CM button — requires survey data + file upload
     if (!cmDone) {
-      tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
-        +'<h5 style="font-size:13px;font-weight:700;margin:0 0 10px">\u2705 Complete Check Measure</h5>'
-        +'<div style="font-size:12px;color:#6b7280;margin-bottom:12px">Once the check measure is finished in Spartan CAD and the CM file is uploaded, click below to finalise. This will trigger the 45% CM invoice automatically.</div>'
-        +'<div style="display:flex;gap:8px;margin-bottom:10px">'
-        +'<select class="sel" id="cm_file_cat" style="font-size:11px;display:none"><option value="check_measure">Check Measure</option></select>'
-        +'<label class="btn-w" style="font-size:12px;cursor:pointer;gap:4px">\ud83d\udcc4 Upload CM File<input type="file" accept=".pdf,.jpg,.jpeg,.png" style="display:none" onchange="var file=this.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(e){addJobFile(\''+job.id+'\',file.name,\'check_measure\',e.target.result);renderPage();};reader.readAsDataURL(file);"></label>'
-        +'</div>'
-        +'<button onclick="completeCmAndInvoice(\''+job.id+'\')" class="btn-r" style="font-size:13px;padding:8px 24px;gap:6px">\u2705 Complete CM & Send 45% Invoice</button></div>';
+      if (cmFiles.length > 0) {
+        tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
+          +'<div style="font-size:12px;color:#6b7280;margin-bottom:10px">CM file is uploaded. Click below to mark the check measure complete and issue the 45% invoice.</div>'
+          +'<button onclick="completeCmAndInvoice(\''+job.id+'\')" class="btn-r" style="font-size:13px;padding:8px 24px;gap:6px">✅ Complete CM & Send 45% Invoice</button></div>';
+      } else {
+        tabContent += '<div style="padding:12px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:12px;color:#1d4ed8;margin-bottom:14px">'
+          +'ℹ️ Save the check measure in Spartan CAD to automatically generate the CM file and issue the 45% invoice.</div>';
+      }
     }
 
     // Completed CM files

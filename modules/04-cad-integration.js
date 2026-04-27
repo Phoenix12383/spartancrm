@@ -450,9 +450,25 @@ function openCadDesigner(entityType, entityId, mode) {
     initPayload.designData = entity.cadFinalData || entity.cadSurveyData || entity.cadData || null;
     initPayload.surveyData = entity.cadSurveyData || null;
   } else if (entityType === 'job' && mode === 'survey') {
-    // Survey mode seeds from the won quote (which was copied into cadData by
-    // createJobFromWonDeal). If a partial survey is in progress, resume from that.
-    initPayload.designData = entity.cadSurveyData || entity.cadData || null;
+    var surveySource = entity.cadSurveyData || entity.cadData || null;
+    initPayload.designData = surveySource;
+    // projectInfo populates the survey form letterhead in the CAD.
+    initPayload.projectInfo = {
+      jobNumber: entity.jobNumber || '',
+      customerName: contact ? ((contact.fn||'')+' '+(contact.ln||'')).trim() : '',
+      siteAddress: [entity.street, entity.suburb, entity.state, entity.postcode].filter(Boolean).join(', '),
+      surveyorName: '',
+    };
+    // Pass projectItems directly so the CAD renders per-frame survey cards.
+    var surveyItems = surveySource && Array.isArray(surveySource.projectItems) ? surveySource.projectItems : [];
+    if (surveyItems.length > 0) initPayload.projectItems = surveyItems;
+    // Re-hydrate from a previous partial save.
+    if (entity.cadSurveyData && Array.isArray(entity.cadSurveyData.surveyMeasurements)) {
+      initPayload.surveyData = entity.cadSurveyData.surveyMeasurements;
+    }
+    if (entity.cadSurveyData && entity.cadSurveyData.siteChecklist) {
+      initPayload.siteChecklist = entity.cadSurveyData.siteChecklist;
+    }
   }
   // mode='design' keeps the existing behaviour.
 
@@ -603,15 +619,12 @@ window.addEventListener('message', function(event) {
     var jobUpdates = {};
 
     if (_cadModal.mode === 'survey') {
-      jobUpdates.cadSurveyData = cadPayload;
+      var surveyExtras = {};
+      if (Array.isArray(msg.surveyMeasurements)) surveyExtras.surveyMeasurements = msg.surveyMeasurements;
+      if (msg.siteChecklist && typeof msg.siteChecklist === 'object') surveyExtras.siteChecklist = msg.siteChecklist;
+      if (msg.trimCutList && typeof msg.trimCutList === 'object') surveyExtras.trimCutList = msg.trimCutList;
+      jobUpdates.cadSurveyData = Object.assign({}, cadPayload, surveyExtras);
       jobUpdates.cadData = cadPayload;  // mirror
-      // Spec §2.4: survey saves may include surveyMeasurements[]. Stash on the
-      // survey data so final mode can read it.
-      if (Array.isArray(msg.surveyMeasurements)) {
-        jobUpdates.cadSurveyData = Object.assign({}, cadPayload, {
-          surveyMeasurements: msg.surveyMeasurements
-        });
-      }
       logJobAudit(_cadModal.entityId, 'Survey Data Saved', cadPayload.projectItems.length + ' frames');
     } else if (_cadModal.mode === 'final') {
       // Spec §4.2: final-mode saves land on cadFinalData. Signing is a separate
@@ -635,15 +648,12 @@ window.addEventListener('message', function(event) {
       if (totals.stationTimes && typeof totals.stationTimes === 'object') jobUpdates.stationTimes = totals.stationTimes;
     }
 
-    // Attach PDFs if present (spec §5.2). survey → cmDocUrl, final → finalRenderedPdfUrl
-    // (NOT finalSignedPdfUrl — that's set on sign-off in Step 6). Quote PDFs are
-    // deal-side only.
-    if (msg.pdfs) {
-      if (_cadModal.mode === 'survey' && msg.pdfs.checkMeasure && msg.pdfs.checkMeasure.base64) {
-        jobUpdates.cmDocUrl = 'data:application/pdf;base64,' + msg.pdfs.checkMeasure.base64;
-      } else if (_cadModal.mode === 'final' && msg.pdfs.finalDesign && msg.pdfs.finalDesign.base64) {
-        jobUpdates.finalRenderedPdfUrl = 'data:application/pdf;base64,' + msg.pdfs.finalDesign.base64;
-      }
+    // Attach PDFs if present. survey → cmDocUrl, final → finalRenderedPdfUrl.
+    var hasCmPdf = _cadModal.mode === 'survey' && msg.pdfs && msg.pdfs.checkMeasure && msg.pdfs.checkMeasure.base64;
+    if (hasCmPdf) {
+      jobUpdates.cmDocUrl = 'data:application/pdf;base64,' + msg.pdfs.checkMeasure.base64;
+    } else if (_cadModal.mode === 'final' && msg.pdfs && msg.pdfs.finalDesign && msg.pdfs.finalDesign.base64) {
+      jobUpdates.finalRenderedPdfUrl = 'data:application/pdf;base64,' + msg.pdfs.finalDesign.base64;
     }
 
     setState({jobs: (getState().jobs||[]).map(function(j){
@@ -661,6 +671,17 @@ window.addEventListener('message', function(event) {
     if ('cmDocUrl' in jobUpdates) dbPatch.cm_doc_url = jobUpdates.cmDocUrl;
     if ('finalRenderedPdfUrl' in jobUpdates) dbPatch.final_rendered_pdf_url = jobUpdates.finalRenderedPdfUrl;
     dbUpdate('jobs', _cadModal.entityId, dbPatch);
+
+    // Auto-complete CM: add the CAD-generated PDF as the CM file, close the
+    // designer, then trigger completion + 45% invoice. No manual steps needed.
+    if (hasCmPdf) {
+      var completingJobId = _cadModal.entityId;
+      var cmFilename = msg.pdfs.checkMeasure.filename || ('CM_' + (job.jobNumber || completingJobId) + '.pdf');
+      addJobFile(completingJobId, cmFilename, 'check_measure', jobUpdates.cmDocUrl);
+      closeCadDesigner();
+      completeCmAndInvoice(completingJobId);
+      return;
+    }
 
     var modeCopy = _cadModal.mode === 'survey' ? 'Survey' :
                    _cadModal.mode === 'final'  ? 'Final design' : 'Design';
