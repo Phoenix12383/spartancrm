@@ -451,14 +451,8 @@ function renderJobDetail() {
     }
 
     if (!cmDone) {
-      if (cmFiles.length > 0) {
-        tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
-          +'<div style="font-size:12px;color:#6b7280;margin-bottom:10px">CM file is uploaded. Click below to mark the check measure complete and issue the 45% invoice.</div>'
-          +'<button onclick="completeCmAndInvoice(\''+job.id+'\')" class="btn-r" style="font-size:13px;padding:8px 24px;gap:6px">✅ Complete CM & Send 45% Invoice</button></div>';
-      } else {
-        tabContent += '<div style="padding:12px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:12px;color:#1d4ed8;margin-bottom:14px">'
-          +'ℹ️ Save the check measure in Spartan CAD to automatically generate the CM file and issue the 45% invoice.</div>';
-      }
+      tabContent += '<div style="padding:12px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:12px;color:#1d4ed8;margin-bottom:14px">'
+        +'ℹ️ Save the check measure in Spartan CAD to automatically generate the CM file and issue the 45% invoice.</div>';
     }
 
     // Completed CM files
