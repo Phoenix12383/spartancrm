@@ -281,23 +281,34 @@ function renderJobDetail() {
   var st = getJobStatusObj(job.status);
   var tab = getState().jobDetailTab || 'overview';
 
-  // Status stepper
-  var stepperGroups = ['onboarding','finance','order','material','production','dispatch','install'];
-  var stepperHtml = JOB_STATUSES.filter(function(s){ return stepperGroups.indexOf(s.group) >= 0; }).map(function(s){
-    var active = s.key === job.status;
-    var passed = false;
-    var curIdx = JOB_STATUSES.findIndex(function(x){ return x.key === job.status; });
-    var thisIdx = JOB_STATUSES.findIndex(function(x){ return x.key === s.key; });
-    if (thisIdx < curIdx) passed = true;
-    var check = canTransition(job, s.key);
-    var locked = !check.ok && !active && !passed;
-    var bg = active ? s.col : passed ? s.col + '30' : '#f3f4f6';
-    var col = active ? '#fff' : passed ? s.col : locked ? '#d1d5db' : '#6b7280';
-    var cursor = (active || locked) ? 'default' : 'pointer';
-    var onclick = active ? '' : locked ? '' : 'transitionJobStatus(\'' + job.id + '\',\'' + s.key + '\',\'\')';
-    var tip = locked ? check.reason||'' : s.label;
-    return '<div onclick="' + onclick + '" title="' + tip.replace(/"/g,'&quot;') + '" style="padding:6px 10px;border-radius:6px;font-size:10px;font-weight:' + (active?700:500) + ';background:' + bg + ';color:' + col + ';cursor:' + cursor + ';white-space:nowrap;text-align:center;min-width:60px;border:1px solid ' + (active ? s.col : 'transparent') + '">'
-      + (locked ? '🔒 ' : '') + s.label + '</div>';
+  // Status stepper — grouped by stage
+  var _stepperGroupKeys = ['onboarding','finance','order','material','production','dispatch','install'];
+  var _curIdx = JOB_STATUSES.findIndex(function(x){ return x.key === job.status; });
+  var stepperHtml = _stepperGroupKeys.map(function(grpKey) {
+    var grpDef = JOB_STATUS_GROUPS.find(function(g){ return g.key === grpKey; });
+    var grpLabel = grpDef ? grpDef.label : grpKey;
+    var statuses = JOB_STATUSES.filter(function(s){ return s.group === grpKey; });
+    var chips = statuses.map(function(s){
+      var active = s.key === job.status;
+      var thisIdx = JOB_STATUSES.findIndex(function(x){ return x.key === s.key; });
+      var passed = thisIdx < _curIdx;
+      var check = canTransition(job, s.key);
+      var locked = !check.ok && !active && !passed;
+      var bg = active ? s.col : passed ? s.col + '22' : '#f9fafb';
+      var col = active ? '#fff' : passed ? s.col : locked ? '#d1d5db' : '#6b7280';
+      var border = active ? s.col : passed ? s.col + '80' : '#e5e7eb';
+      var cursor = (active || locked) ? 'default' : 'pointer';
+      var onclick = active ? '' : locked ? '' : 'transitionJobStatus(\'' + job.id + '\',\'' + s.key + '\',\'\')';
+      var tip = locked ? (check.reason||'') : s.label;
+      var dot = active ? '<span style="width:6px;height:6px;border-radius:50%;background:#fff;display:inline-block;flex-shrink:0"></span> '
+                       : passed ? '<span style="font-size:10px;color:'+s.col+'">✓</span> '
+                       : locked ? '<span style="font-size:10px">🔒</span> ' : '';
+      return '<div onclick="'+onclick+'" title="'+tip.replace(/"/g,'&quot;')+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 12px;border-radius:20px;font-size:11px;font-weight:'+(active?700:500)+';background:'+bg+';color:'+col+';border:1.5px solid '+border+';cursor:'+cursor+';white-space:nowrap">'+dot+s.label+'</div>';
+    }).join('');
+    return '<div style="display:flex;flex-direction:column;gap:7px;min-width:0">'
+      + '<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:#9ca3af">'+grpLabel+'</div>'
+      + '<div style="display:flex;flex-wrap:wrap;gap:6px">'+chips+'</div>'
+      + '</div>';
   }).join('');
 
   // Tabs
@@ -833,7 +844,7 @@ function renderJobDetail() {
     + '</div>'
     + holdBanner
     // Status stepper
-    + '<div style="display:flex;gap:4px;overflow-x:auto;padding:8px 0 16px;margin-bottom:4px">' + stepperHtml + '</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:20px 28px;padding:14px 0 20px;border-bottom:1px solid #f3f4f6;margin-bottom:4px">' + stepperHtml + '</div>'
     // Tabs
     + '<div style="border-bottom:1px solid #e5e7eb;margin-bottom:20px;display:flex;gap:0;overflow-x:auto">' + tabsHtml + '</div>'
     // 2-column layout: left custom fields + right tab content
