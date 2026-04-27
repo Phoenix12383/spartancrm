@@ -231,6 +231,10 @@ function markJobComplete(jobId) {
   var jobs = getState().jobs || [];
   var job = jobs.find(function(j){return j.id===jobId;});
   if (!job) return;
+  if (!job.completionSignedAt) {
+    addToast('Cannot complete — customer has not signed the completion certificate yet.', 'error');
+    return;
+  }
   // Generate final 5% invoice
   var claims = getJobClaims(jobId);
   var finalClaim = claims.find(function(c){return c.id==='cl_final';});

@@ -37,6 +37,9 @@ const JOB_STATUSES = [
   {key:'f_installing',              label:'f. Installing in Progress / Dispatched',   group:'install',    col:'#6366f1'},
   // group: final finance
   {key:'g_final_payment',           label:'g. Final Payment',                         group:'finance',    col:'#22c55e'},
+  // group: complete
+  {key:'h_completed_standard',      label:'h. Complete (Standard Job)',               group:'complete',   col:'#16a34a'},
+  {key:'h1_completed_service',      label:'h.1 Complete (After Service)',             group:'complete',   col:'#15803d'},
   // group: service
   {key:'h_service_booked',          label:'h. Service Booked',                        group:'service',    col:'#f97316'},
   {key:'h1_awaiting_contractor',    label:'h.1 Awaiting Contractor to Complete',      group:'service',    col:'#fb923c'},
@@ -54,6 +57,7 @@ const JOB_STATUS_GROUPS = [
   {key:'dispatch',   label:'Dispatch',    col:'#06b6d4'},
   {key:'install',    label:'Install',     col:'#6366f1'},
   {key:'service',    label:'Service',     col:'#f97316'},
+  {key:'complete',   label:'Complete',    col:'#16a34a'},
 ];
 
 function getJobStatusObj(key) { return JOB_STATUSES.find(function(s){ return s.key === key; }) || {key:key, label:key, group:'', col:'#9ca3af'}; }
@@ -363,7 +367,7 @@ function markFinalDesignSigned(jobId) {
   dbUpdate('jobs', jobId, {final_signed_at:now, updated:now});
   logJobAudit(jobId, 'Final Design Signed', 'Client signature received. Advancing to installation scheduling.');
   // Advance status to scheduling
-  transitionJobStatus(jobId, 'e_ready_to_schedule', 'Final design signed — ready for installation scheduling');
+  transitionJobStatus(jobId, 'c2_order_schedule_standard', 'Final design signed — sent to Factory CRM for production');
   addToast('\u2705 Final design signed! Job ready for install scheduling.', 'success');
   renderPage();
 }
