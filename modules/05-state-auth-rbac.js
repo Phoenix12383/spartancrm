@@ -85,14 +85,6 @@ function isAdmin(){var cu=getCurrentUser();return cu&&cu.role==='admin';}
 var ALL_AU_STATES = ['VIC','NSW','QLD','SA','WA','ACT','TAS','NT'];
 const DEFAULT_USERS=[
 {id:'u0',name:'Admin',email:'admin@spartandoubleglazing.com.au',role:'admin',branch:'All',phone:'1300 912 161',initials:'AD',active:true,pw:'spartan2026',serviceStates:ALL_AU_STATES.slice()},
-{id:'u1',name:'James Wilson',email:'james@spartandoubleglazing.com.au',role:'sales_manager',branch:'VIC',phone:'+61 3 9000 1001',initials:'JW',active:true,pw:'james123',serviceStates:['VIC','TAS']},
-{id:'u2',name:'Sarah Chen',email:'sarah@spartandoubleglazing.com.au',role:'sales_rep',branch:'VIC',phone:'+61 3 9000 1002',initials:'SC',active:true,pw:'sarah123',serviceStates:['VIC']},
-{id:'u3',name:'Michael Torres',email:'michael@spartandoubleglazing.com.au',role:'sales_rep',branch:'ACT',phone:'+61 2 6000 2001',initials:'MT',active:true,pw:'michael123',serviceStates:['ACT','NSW']},
-{id:'u4',name:'Emma Brown',email:'emma@spartandoubleglazing.com.au',role:'sales_rep',branch:'SA',phone:'+61 8 7000 3001',initials:'EB',active:true,pw:'emma123',serviceStates:['SA','WA','NT']},
-{id:'u5',name:'David Kim',email:'david@spartandoubleglazing.com.au',role:'installer',branch:'VIC',phone:'+61 3 9000 1003',initials:'DK',active:true,pw:'david123',serviceStates:['VIC']},
-{id:'u6',name:'Lisa Park',email:'lisa@spartandoubleglazing.com.au',role:'accounts',branch:'All',phone:'+61 3 9000 1004',initials:'LP',active:true,pw:'lisa123',serviceStates:ALL_AU_STATES.slice()},
-{id:'u7',name:'Tom Bradley',email:'tom@spartandoubleglazing.com.au',role:'production_manager',branch:'VIC',phone:'+61 3 9000 1005',initials:'TB',active:true,pw:'tom123',serviceStates:['VIC']},
-{id:'u8',name:'Mark Stevens',email:'mark@spartandoubleglazing.com.au',role:'service_staff',branch:'VIC',phone:'+61 3 9000 1006',initials:'MS',active:true,pw:'mark123',serviceStates:['VIC']},
 ];
 
 // Effective service-states list for a user — tolerates legacy users stored in
@@ -105,7 +97,24 @@ function getUserStates(u) {
   return u.branch ? [u.branch] : [];
 }
 function getUsers(){const s=localStorage.getItem('spartan_users');if(s)return JSON.parse(s);localStorage.setItem('spartan_users',JSON.stringify(DEFAULT_USERS));return[...DEFAULT_USERS];}
-function saveUsers(u){localStorage.setItem('spartan_users',JSON.stringify(u));if(_sb)u.forEach(function(x){dbUpsert('users',{id:x.id,email:x.email,name:x.name,role:x.role,branch:x.branch,phone:x.phone,initials:x.initials,active:x.active!==false,custom_perms:x.customPerms||null,service_states:x.serviceStates||null,pw:x.pw||'spartan2026'});});}
+// Diff-aware save: snapshot the previously-persisted JSON for each user, then
+// only upsert the rows whose serialised form actually changed. Without this,
+// editing one user re-upserts the entire users table, generating N writes +
+// N realtime echoes per change (each of which fires a full-page rerender).
+function saveUsers(u){
+  var prev = {};
+  try {
+    (JSON.parse(localStorage.getItem('spartan_users')||'[]'))
+      .forEach(function(x){ prev[x.id] = JSON.stringify(x); });
+  } catch(e) {}
+  localStorage.setItem('spartan_users', JSON.stringify(u));
+  if(!_sb) return;
+  u.forEach(function(x){
+    var snap = JSON.stringify(x);
+    if (prev[x.id] === snap) return;
+    dbUpsert('users',{id:x.id,email:x.email,name:x.name,role:x.role,branch:x.branch,phone:x.phone,initials:x.initials,active:x.active!==false,custom_perms:x.customPerms||null,service_states:x.serviceStates||null,google_pic:x.googlePic||null,pw:x.pw||'spartan2026'});
+  });
+}
 function getCurrentUser(){const uid=localStorage.getItem('spartan_current_user');if(!uid)return null;return getUsers().find(u=>u.id===uid&&u.active);}
 
 // Per-rep colour override stored in localStorage (keyed by rep name so it
@@ -460,7 +469,7 @@ function adminSaveUser(){
 function adminToggleUser(uid){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;if(u.id===(getCurrentUser()||{}).id){addToast('Cannot deactivate yourself','error');return;}u.active=!u.active;saveUsers(us);addToast(u.name+(u.active?' activated':' deactivated'));renderPage();}
 function adminChangeRole(uid,nr){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;u.role=nr;saveUsers(us);addToast(u.name+' role: '+nr);renderPage();}
 function adminChangeBranch(uid,nb){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;u.branch=nb;saveUsers(us);renderPage();}
-function adminDeleteUser(uid){if(!confirm('Permanently delete this user? This cannot be undone.'))return;saveUsers(getUsers().filter(function(u){return u.id!==uid;}));addToast('User deleted','warning');adminEditingUser=null;renderPage();}
+function adminDeleteUser(uid){if(!confirm('Permanently delete this user? This cannot be undone.'))return;saveUsers(getUsers().filter(function(u){return u.id!==uid;}));if(typeof dbDelete==='function')dbDelete('users',uid);addToast('User deleted','warning');adminEditingUser=null;renderPage();}
 function renderAdminUserModal(){
   var isNew = adminEditingUser === 'new';
   // The draft is the source of truth while the modal is open. If it isn't
