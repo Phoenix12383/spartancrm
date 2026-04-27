@@ -32,6 +32,8 @@
         console.log('Spartan CRM - Loading Logical Modules');
         console.log('========================================\n');
         
+        const BUILD_VERSION = '20260428';
+
         // Logical loading order based on dependencies
         const modules = [
             // Layer 1: Core Foundation
@@ -135,7 +137,7 @@
             
             const modulePath = 'modules/' + modules[current];
             const script = document.createElement('script');
-            script.src = modulePath;
+            script.src = modulePath + '?v=' + BUILD_VERSION;
             script.onload = function() {
                 console.log((current+1) + '/' + modules.length + ' ✓ ' + modules[current]);
                 current++;

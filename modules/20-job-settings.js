@@ -11,10 +11,13 @@ var jobSettTab = 'installers';
 var jsNewField = {label:'',type:'text',options:[],required:false,newOpt:''};
 var jsAddingField = false;
 var jsEditFieldId = null;
+var editingVehicleId = null;
 
 function renderJobSettings() {
   var TABS = [
     ['installers','Installers & Crew'],
+    ['vehicles','Vehicles'],
+    ['capacity','Capacity'],
     ['targets','Weekly Targets'],
     ['jobfields','Job Custom Fields'],
     ['jobnumbers','Job Numbers & Entities'],
@@ -150,6 +153,120 @@ function renderJobSettings() {
       content += '</div>';
     }
 
+
+  // ── VEHICLES ──────────────────────────────────────────────────────────────
+  } else if (jobSettTab === 'vehicles') {
+    var vehList = getVehicles();
+    var isAdmin = ((getCurrentUser()||{role:''}).role === 'admin');
+    var VSIZES = {small:'Small Van',medium:'Medium Van',large:'Large Van',xl:'Truck / XL'};
+    var VTYPES = {van:'Van',ute:'Ute',truck:'Truck',trailer:'Trailer'};
+    var editVeh = editingVehicleId ? vehList.find(function(v){return v.id===editingVehicleId;}) : null;
+
+    if ((editingVehicleId === '_new' || editVeh) && isAdmin) {
+      var vv = editVeh || {name:'',rego:'',type:'van',size:'medium',maxFrames:8,maxWeightKg:600,assignedTo:'',notes:'',active:true};
+      content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+        +'<h4 style="font-size:15px;font-weight:700;margin:0">'+(editVeh?'Edit Vehicle':'New Vehicle')+'</h4>'
+        +'<button onclick="editingVehicleId=null;renderPage()" class="btn-g" style="font-size:12px">Cancel</button></div>';
+      content += '<div class="card" style="padding:16px;max-width:600px">'
+        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Vehicle Name *</label><input class="inp" id="veh_name" value="'+(vv.name||'')+'" placeholder="e.g. Van 1, Transit" style="font-size:13px;padding:8px"></div>'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Registration</label><input class="inp" id="veh_rego" value="'+(vv.rego||'')+'" placeholder="ABC 123" style="font-size:13px;padding:8px;text-transform:uppercase"></div>'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Type</label><select class="sel" id="veh_type" style="font-size:13px;padding:8px">'+Object.entries(VTYPES).map(function(e){return '<option value="'+e[0]+'"'+(vv.type===e[0]?' selected':'')+'>'+e[1]+'</option>';}).join('')+'</select></div>'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Size</label><select class="sel" id="veh_size" style="font-size:13px;padding:8px">'+Object.entries(VSIZES).map(function(e){return '<option value="'+e[0]+'"'+(vv.size===e[0]?' selected':'')+'>'+e[1]+'</option>';}).join('')+'</select></div>'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Max Frames Capacity</label><input type="number" class="inp" id="veh_frames" value="'+(vv.maxFrames||8)+'" style="font-size:13px;padding:8px"></div>'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Max Weight (kg)</label><input type="number" class="inp" id="veh_weight" value="'+(vv.maxWeightKg||600)+'" style="font-size:13px;padding:8px"></div>'
+        +'<div style="grid-column:span 2"><label style="font-size:10px;font-weight:600;color:#6b7280">Assigned Installer (optional)</label>'
+        +'<select class="sel" id="veh_inst" style="font-size:13px;padding:8px"><option value="">Unassigned (Pool)</option>'
+        +getInstallers().filter(function(i){return i.active;}).map(function(i){return '<option value="'+i.id+'"'+(vv.assignedTo===i.id?' selected':'')+'>'+i.name+'</option>';}).join('')
+        +'</select></div>'
+        +'<div style="grid-column:span 2"><label style="font-size:10px;font-weight:600;color:#6b7280">Notes</label><textarea class="inp" id="veh_notes" rows="2" style="font-size:12px;resize:vertical">'+(vv.notes||'')+'</textarea></div>'
+        +'</div></div>';
+      content += '<div style="display:flex;gap:8px;margin-top:14px">'
+        +'<button onclick="var name=document.getElementById(\'veh_name\').value.trim();if(!name){addToast(\'Vehicle name required\',\'error\');return;}'
+        +'var d={name:name,rego:document.getElementById(\'veh_rego\').value.trim().toUpperCase(),type:document.getElementById(\'veh_type\').value,size:document.getElementById(\'veh_size\').value,maxFrames:parseInt(document.getElementById(\'veh_frames\').value)||8,maxWeightKg:parseInt(document.getElementById(\'veh_weight\').value)||600,assignedTo:document.getElementById(\'veh_inst\').value,notes:document.getElementById(\'veh_notes\').value};'
+        +'if(editingVehicleId&&editingVehicleId!==\'_new\'){updateVehicle(editingVehicleId,d);addToast(name+\' updated\',\'success\');}else{addVehicle(d);addToast(name+\' added\',\'success\');}editingVehicleId=null;renderPage();" class="btn-r" style="font-size:13px;padding:8px 24px">'+(editVeh?'Update Vehicle':'Add Vehicle')+'</button>'
+        +'<button onclick="editingVehicleId=null;renderPage()" class="btn-w" style="font-size:13px">Cancel</button></div>';
+    } else {
+      content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+        +'<div style="font-size:13px;color:#6b7280">'+vehList.length+' vehicle'+(vehList.length!==1?'s':'')+'</div>'
+        +(isAdmin?'<button class="btn-r" style="font-size:12px" onclick="editingVehicleId=\'_new\';renderPage()">+ New Vehicle</button>':'<span style="font-size:11px;color:#9ca3af;padding:6px 10px;background:#f9fafb;border-radius:6px">Only admins can add vehicles</span>')
+        +'</div>';
+      if (vehList.length === 0) {
+        content += '<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px">No vehicles added yet.'+(isAdmin?' Click "New Vehicle" to add your first vehicle.':' Ask an admin to add vehicles.')+'</div>';
+      } else {
+        content += '<div style="display:flex;flex-direction:column;gap:8px">';
+        vehList.forEach(function(v){
+          var sizeLabel = VSIZES[v.size] || v.size;
+          var typeLabel = VTYPES[v.type] || v.type;
+          var assignedInst = v.assignedTo ? getInstallers().find(function(i){return i.id===v.assignedTo;}) : null;
+          var sizeCol = {small:'#22c55e',medium:'#3b82f6',large:'#f59e0b',xl:'#ef4444'}[v.size] || '#9ca3af';
+          content += '<div style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:#f9fafb;border-radius:10px;'+(isAdmin?'cursor:pointer':'cursor:default')+'" '+(isAdmin?'onclick="editingVehicleId=\''+v.id+'\';renderPage()" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#f9fafb\'"':'')+'>'
+            +'<div style="width:42px;height:42px;border-radius:10px;background:'+sizeCol+';color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0">🚐</div>'
+            +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:14px;font-weight:600">'+v.name+(v.rego?' <span style="font-size:11px;font-family:monospace;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px">'+v.rego+'</span>':'')+'</div>'
+            +'<div style="font-size:12px;color:#6b7280;margin-top:2px">'+typeLabel+' · '+sizeLabel+' · '+v.maxFrames+' frames max · '+v.maxWeightKg+'kg</div>'
+            +(assignedInst?'<div style="font-size:11px;color:#3b82f6;margin-top:2px">Assigned to '+assignedInst.name+'</div>':'<div style="font-size:11px;color:#9ca3af;margin-top:2px">Pool vehicle</div>')
+            +'</div>'
+            +'<div style="display:flex;gap:6px;align-items:center">'
+            +(v.active?'<span style="font-size:10px;background:#dcfce7;color:#15803d;padding:2px 8px;border-radius:4px;font-weight:600">Active</span>':'<span style="font-size:10px;background:#f3f4f6;color:#9ca3af;padding:2px 8px;border-radius:4px;font-weight:600">Inactive</span>')
+            +(isAdmin?'<button onclick="event.stopPropagation();updateVehicle(\''+v.id+'\',{active:'+(!v.active)+'});addToast(\''+(v.active?'Deactivated':'Activated')+'\',\'success\')" class="btn-g" style="font-size:11px;padding:4px 8px">'+(v.active?'Deactivate':'Activate')+'</button>':'')
+            +(isAdmin?'<button onclick="event.stopPropagation();if(confirm(\'Remove '+v.name+'?\')){removeVehicle(\''+v.id+'\')}" class="btn-g" style="font-size:11px;padding:4px 8px;color:#ef4444">✕</button>':'')
+            +'</div></div>';
+        });
+        content += '</div>';
+      }
+    }
+
+  // ── CAPACITY ──────────────────────────────────────────────────────────────
+  } else if (jobSettTab === 'capacity') {
+    var installers = getInstallers().filter(function(i){return i.active;});
+    var branches = ['VIC','ACT','SA','TAS'];
+    content = '<div style="font-size:13px;color:#6b7280;margin-bottom:16px">Daily capacity is calculated from each installer\'s max hours per day. The buffer % reserves time for travel, setup, and unexpected delays.</div>';
+
+    branches.forEach(function(b){
+      var branchInstallers = installers.filter(function(i){return i.branch===b;});
+      if (branchInstallers.length === 0) return;
+      var totalHours = branchInstallers.reduce(function(sum,i){return sum+(i.maxHoursPerDay||8);},0);
+      var bufferKey = 'capacity_buffer_'+b;
+      var buffer = parseInt(localStorage.getItem(bufferKey)||'20');
+      var effectiveHours = Math.round(totalHours * (1 - buffer/100));
+
+      content += '<div class="card" style="padding:16px;margin-bottom:12px">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">'
+        +'<div style="font-size:14px;font-weight:700">'+b+' Branch</div>'
+        +'<span style="font-size:11px;color:#6b7280">'+branchInstallers.length+' active installer'+(branchInstallers.length!==1?'s':'')+'</span></div>'
+
+        +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px">'
+        +'<div style="padding:12px;background:#f9fafb;border-radius:8px;text-align:center"><div style="font-size:10px;color:#6b7280;margin-bottom:4px">TOTAL HOURS/DAY</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif">'+totalHours+'h</div></div>'
+        +'<div style="padding:12px;background:#fff5f6;border-radius:8px;text-align:center"><div style="font-size:10px;color:#6b7280;margin-bottom:4px">BUFFER</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#c41230">'+buffer+'%</div></div>'
+        +'<div style="padding:12px;background:#f0fdf4;border-radius:8px;text-align:center"><div style="font-size:10px;color:#6b7280;margin-bottom:4px">EFFECTIVE/DAY</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#15803d">'+effectiveHours+'h</div></div>'
+        +'</div>'
+
+        +'<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">'
+        +'<label style="font-size:12px;font-weight:600;color:#374151;white-space:nowrap">Capacity Buffer %</label>'
+        +'<input type="range" min="0" max="50" value="'+buffer+'" style="flex:1" oninput="this.nextElementSibling.textContent=this.value+\'%\';localStorage.setItem(\''+bufferKey+'\',this.value);renderPage()">'
+        +'<span style="font-size:13px;font-weight:700;width:40px;text-align:right">'+buffer+'%</span></div>'
+
+        +'<div style="border-top:1px solid #f0f0f0;padding-top:12px">'
+        +'<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9ca3af;margin-bottom:8px">Installers</div>'
+        +'<div style="display:flex;flex-direction:column;gap:6px">';
+
+      branchInstallers.forEach(function(inst){
+        var pct = Math.round((inst.maxHoursPerDay||8) / totalHours * 100);
+        content += '<div style="display:flex;align-items:center;gap:10px">'
+          +'<div style="width:32px;height:32px;border-radius:50%;background:'+(inst.colour||'#3b82f6')+';color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(inst.name||'?')[0]+'</div>'
+          +'<div style="flex:1;min-width:0">'
+          +'<div style="display:flex;justify-content:space-between;margin-bottom:3px"><span style="font-size:12px;font-weight:600">'+(inst.name||'')+'</span><span style="font-size:11px;color:#6b7280">'+(inst.maxHoursPerDay||8)+'h · '+pct+'% of team</span></div>'
+          +'<div style="height:6px;background:#e5e7eb;border-radius:3px"><div style="height:6px;background:'+(inst.colour||'#3b82f6')+';border-radius:3px;width:'+pct+'%"></div></div>'
+          +'</div></div>';
+      });
+
+      content += '</div></div></div>';
+    });
+
+    if (installers.length === 0) {
+      content = '<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px">No active installers found. Add installers first to configure capacity.</div>';
+    }
 
   // ── WEEKLY TARGETS ────────────────────────────────────────────────────────
   } else if (jobSettTab === 'targets') {

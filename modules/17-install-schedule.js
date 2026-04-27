@@ -21,6 +21,12 @@ if (typeof getEffectiveInstallHours === 'undefined') {
 // Installer CRUD (localStorage-backed)
 function getInstallers() { return getState().installers || []; }
 function saveInstallers(list) { localStorage.setItem('spartan_installers', JSON.stringify(list)); setState({installers: list}); }
+
+function getVehicles() { try { return JSON.parse(localStorage.getItem('spartan_vehicles') || '[]'); } catch(e) { return []; } }
+function saveVehicles(list) { localStorage.setItem('spartan_vehicles', JSON.stringify(list)); }
+function addVehicle(data) { var list = getVehicles(); data.id = 'veh_' + Date.now(); data.active = true; list.push(data); saveVehicles(list); renderPage(); }
+function updateVehicle(id, changes) { saveVehicles(getVehicles().map(function(v){ return v.id === id ? Object.assign({}, v, changes) : v; })); renderPage(); }
+function removeVehicle(id) { saveVehicles(getVehicles().filter(function(v){ return v.id !== id; })); addToast('Vehicle removed', 'warning'); renderPage(); }
 function addInstaller(name, phone, branch, colour) {
   var list = getInstallers();
   var parts = (name||'').trim().split(' ');
