@@ -327,6 +327,7 @@ async function dbLoadAll() {
       _sb.from('service_calls').select('*'),
       _sb.from('users').select('*'),
       _sb.from('activities').select('*'),
+      _sb.from('job_files').select('*'),
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -457,6 +458,17 @@ async function dbLoadAll() {
     if (expenses.length > 0) localStorage.setItem('spartan_expenses', JSON.stringify(expenses));
     if (reconItems.length > 0) localStorage.setItem('spartan_recon', JSON.stringify(reconItems));
     if (serviceCalls.length > 0) localStorage.setItem('spartan_service_calls', JSON.stringify(serviceCalls));
+    var jobFilesRows = results[13].data || [];
+    if (jobFilesRows.length > 0) {
+      var byJob = {};
+      jobFilesRows.forEach(function(f) {
+        if (!byJob[f.job_id]) byJob[f.job_id] = [];
+        byJob[f.job_id].push({ name:f.name, category:f.category, dataUrl:f.data_url, uploadedBy:f.uploaded_by, at:f.created_at });
+      });
+      Object.keys(byJob).forEach(function(jobId) {
+        localStorage.setItem('spartan_files_' + jobId, JSON.stringify(byJob[jobId]));
+      });
+    }
     if (dbUsers.length > 0) {
       dbUsers = dbUsers.map(function(u) {
         return { id:u.id, name:u.name, email:u.email, role:u.role, branch:u.branch,
