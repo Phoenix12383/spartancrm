@@ -20,7 +20,21 @@ if (typeof getEffectiveInstallHours === 'undefined') {
 
 // Installer CRUD (localStorage-backed)
 function getInstallers() { return getState().installers || []; }
-function saveInstallers(list) { localStorage.setItem('spartan_installers', JSON.stringify(list)); setState({installers: list}); }
+function saveInstallers(list) {
+  localStorage.setItem('spartan_installers', JSON.stringify(list));
+  setState({installers: list});
+  if (typeof _sb !== 'undefined' && _sb) {
+    list.forEach(function(inst) {
+      try { dbUpsert('installers', installerToDb(inst)); } catch(e) { console.warn('Installer sync failed', inst.id, e); }
+    });
+  }
+}
+function deleteInstaller(id) {
+  saveInstallers(getInstallers().filter(function(i){ return i.id !== id; }));
+  if (typeof _sb !== 'undefined' && _sb) {
+    try { _sb.from('installers').delete().eq('id', id); } catch(e) { console.warn('Installer delete failed', id, e); }
+  }
+}
 
 function getVehicles() { try { return JSON.parse(localStorage.getItem('spartan_vehicles') || '[]'); } catch(e) { return []; } }
 function saveVehicles(list) { localStorage.setItem('spartan_vehicles', JSON.stringify(list)); }
@@ -47,7 +61,7 @@ function updateInstaller(id, changes) {
   }
   saveInstallers(list);
 }
-function removeInstaller(id) { saveInstallers(getInstallers().filter(function(i){return i.id!==id;})); addToast('Installer removed','warning'); }
+function removeInstaller(id) { deleteInstaller(id); addToast('Installer removed','warning'); }
 
 // ── Job Cost Tracking (localStorage-backed) ─────────────────────────────────
 function getJobCosts(jobId) {

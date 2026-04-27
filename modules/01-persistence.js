@@ -154,6 +154,54 @@ function dbToAct(r) {
     opened:!!r.opened, openedAt:r.opened_at, clicked:!!r.clicked,
     gmailMsgId:r.gmail_msg_id, to:r.to_addr, cc:r.cc, calLink:r.cal_link};
 }
+function installerToDb(i) {
+  return {
+    id: i.id,
+    first_name: i.firstName || '', last_name: i.lastName || '',
+    name: i.name || ((i.firstName||'') + ' ' + (i.lastName||'')).trim(),
+    phone: i.phone || null, email: i.email || null,
+    street: i.street || null, suburb: i.suburb || null,
+    state: i.state || null, postcode: i.postcode || null,
+    emergency_name: i.emergencyName || null, emergency_phone: i.emergencyPhone || null,
+    role: i.role || 'installer',
+    employment_type: i.employmentType || 'employee',
+    branch: i.branch || 'VIC',
+    start_date: i.startDate || null,
+    abn: i.abn || null, license_number: i.licenseNumber || null,
+    hourly_rate: i.hourlyRate != null ? i.hourlyRate : 45,
+    overtime_rate: i.overtimeRate != null ? i.overtimeRate : 67.50,
+    max_hours_per_day: i.maxHoursPerDay != null ? i.maxHoursPerDay : 8,
+    login_email: i.loginEmail || null, login_pin: i.loginPin || null,
+    colour: i.colour || '#3b82f6',
+    notes: i.notes || null,
+    active: i.active !== false,
+    tools: i.tools || [], licenses: i.licenses || []
+  };
+}
+function dbToInstaller(r) {
+  return {
+    id: r.id,
+    firstName: r.first_name || '', lastName: r.last_name || '',
+    name: r.name || ((r.first_name||'') + ' ' + (r.last_name||'')).trim(),
+    phone: r.phone || '', email: r.email || '',
+    street: r.street || '', suburb: r.suburb || '',
+    state: r.state || '', postcode: r.postcode || '',
+    emergencyName: r.emergency_name || '', emergencyPhone: r.emergency_phone || '',
+    role: r.role || 'installer',
+    employmentType: r.employment_type || 'employee',
+    branch: r.branch || 'VIC',
+    startDate: r.start_date || '',
+    abn: r.abn || '', licenseNumber: r.license_number || '',
+    hourlyRate: Number(r.hourly_rate) || 45,
+    overtimeRate: Number(r.overtime_rate) || 67.50,
+    maxHoursPerDay: Number(r.max_hours_per_day) || 8,
+    loginEmail: r.login_email || '', loginPin: r.login_pin || '',
+    colour: r.colour || '#3b82f6',
+    notes: r.notes || '',
+    active: r.active !== false,
+    tools: r.tools || [], licenses: r.licenses || []
+  };
+}
 function emailToDb(e) {
   return {id:e.id, to_addr:e.to||'', to_name:e.toName||'', subject:e.subject||'',
     body:e.body||'', date:e.date||'', time:e.time||'', by_user:e.by||'',
@@ -328,6 +376,7 @@ async function dbLoadAll() {
       _sb.from('users').select('*'),
       _sb.from('activities').select('*'),
       _sb.from('job_files').select('*'),
+      _sb.from('installers').select('*'),
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -469,6 +518,11 @@ async function dbLoadAll() {
         localStorage.setItem('spartan_files_' + jobId, JSON.stringify(byJob[jobId]));
       });
     }
+    var installers = (results[14].data||[]).map(dbToInstaller);
+    if (installers.length > 0) {
+      localStorage.setItem('spartan_installers', JSON.stringify(installers));
+      setState({installers: installers}, {skipSync: true});
+    }
     if (dbUsers.length > 0) {
       dbUsers = dbUsers.map(function(u) {
         return { id:u.id, name:u.name, email:u.email, role:u.role, branch:u.branch,
@@ -583,6 +637,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'invoices'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'factory_orders'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'users'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'installers'}, function(){ dbLoadAll(); })
     .subscribe(function(status){ console.log('[Spartan] Realtime:', status); });
 }
 
