@@ -8,6 +8,16 @@
 // INSTALL SCHEDULE — Weekly Scheduling Dashboard
 // ══════════════════════════════════════════════════════════════════════════════
 
+// Local fallback — used when 04-spartan-cad.js is not loaded.
+// Precedence: manual override → CAD estimate (rounded up to 0.25h) → caller fallback.
+if (typeof getEffectiveInstallHours === 'undefined') {
+  window.getEffectiveInstallHours = function(job, fallback) {
+    if (job && job.installDurationHours) return job.installDurationHours;
+    if (job && job.estimatedInstallMinutes) return Math.ceil(job.estimatedInstallMinutes / 60 * 4) / 4;
+    return fallback !== undefined ? fallback : 4;
+  };
+}
+
 // Installer CRUD (localStorage-backed)
 function getInstallers() { return getState().installers || []; }
 function saveInstallers(list) { localStorage.setItem('spartan_installers', JSON.stringify(list)); setState({installers: list}); }
