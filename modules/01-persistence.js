@@ -459,6 +459,7 @@ async function dbLoadAll() {
           phone:u.phone, initials:u.initials, active:u.active!==false,
           customPerms:u.custom_perms||null,
           serviceStates:Array.isArray(u.service_states)?u.service_states:null,
+          googlePic:u.google_pic||null,
           pw:u.pw||'spartan2026' };
       });
       // Defensive: if the currently signed-in user isn't yet reflected in Supabase
@@ -565,6 +566,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'jobs'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'invoices'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'factory_orders'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'users'}, function(){ dbLoadAll(); })
     .subscribe(function(status){ console.log('[Spartan] Realtime:', status); });
 }
 
