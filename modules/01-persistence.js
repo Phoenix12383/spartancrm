@@ -186,6 +186,10 @@ function _buildQuoteFromCadData(cadData) {
     totalPrice: (cadData && typeof cadData.totalPrice === 'number') ? cadData.totalPrice : 0,
     frameCount: items.length,
     savedAt: (cadData && cadData.savedAt) ? cadData.savedAt : null,
+    // (v3.1) Preserve install/production/station time totals when present
+    // on legacy cadData so the won-quote selection can read them later
+    // without re-opening CAD. Null when CAD pre-v2.0 wrote the original.
+    totals: (cadData && cadData.totals) ? cadData.totals : null,
     notes: ''
   };
 }

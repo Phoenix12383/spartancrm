@@ -8,6 +8,16 @@
 // INSTALL SCHEDULE — Weekly Scheduling Dashboard
 // ══════════════════════════════════════════════════════════════════════════════
 
+// Local fallback — used when 04-spartan-cad.js is not loaded.
+// Precedence: manual override → CAD estimate (rounded up to 0.25h) → caller fallback.
+if (typeof getEffectiveInstallHours === 'undefined') {
+  window.getEffectiveInstallHours = function(job, fallback) {
+    if (job && job.installDurationHours) return job.installDurationHours;
+    if (job && job.estimatedInstallMinutes) return Math.ceil(job.estimatedInstallMinutes / 60 * 4) / 4;
+    return fallback !== undefined ? fallback : 4;
+  };
+}
+
 // Installer CRUD (localStorage-backed)
 function getInstallers() { return getState().installers || []; }
 function saveInstallers(list) { localStorage.setItem('spartan_installers', JSON.stringify(list)); setState({installers: list}); }
@@ -231,6 +241,10 @@ function markJobComplete(jobId) {
   var jobs = getState().jobs || [];
   var job = jobs.find(function(j){return j.id===jobId;});
   if (!job) return;
+  if (!job.completionSignedAt) {
+    addToast('Cannot complete — customer has not signed the completion certificate yet.', 'error');
+    return;
+  }
   // Generate final 5% invoice
   var claims = getJobClaims(jobId);
   var finalClaim = claims.find(function(c){return c.id==='cl_final';});
@@ -377,7 +391,7 @@ function renderInstallSchedule() {
   // Metrics
   var weekRevenue = weekJobs.reduce(function(s,j){return s+(j.val||0);},0);
   var weekFrames = weekJobs.reduce(function(s,j){return s+(j.windows||[]).length;},0);
-  var weekHours = weekJobs.reduce(function(s,j){return s+(j.installDurationHours||0);},0);
+  var weekHours = weekJobs.reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
   var targetVal = branch!=='all'?(targets[branch]||175000):Object.values(targets).reduce(function(s,v){return s+v;},0);
   var pctTarget = targetVal>0?Math.round(weekRevenue/targetVal*100):0;
 
@@ -443,7 +457,7 @@ function renderInstallSchedule() {
       if (row.id==='_none') return !(j.installCrew && j.installCrew.length>0);
       return (j.installCrew||[]).indexOf(row.id)>=0;
     });
-    var rh = rj.reduce(function(s,j){return s+(j.installDurationHours||0);},0);
+    var rh = rj.reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
     var rf = rj.reduce(function(s,j){return s+(j.windows||[]).length;},0);
     var cap = row.max*5; var pct = cap>0?Math.round(rh/cap*100):0;
     var capCol = pct>90?'#ef4444':pct>70?'#f59e0b':'#22c55e';
@@ -486,7 +500,7 @@ function renderInstallSchedule() {
         var cn = c ? c.fn + ' ' + c.ln : '';
         var fr = (j.windows||[]).length;
         var startT = j.installTime || '';
-        var dur = j.installDurationHours || 2;
+        var dur = getEffectiveInstallHours(j, 2);
         var left = startT ? timeToPx(startT) : (idx * (HOUR_W * 2.2)); // stack if no time
         var width = durationToPx(dur);
         var endT = calcEndTime(startT, dur);
@@ -582,11 +596,11 @@ function renderInstallSchedule() {
       var ds = isoDate(d);
       if (d.getDay()===0||d.getDay()===6) return; // skip weekends
       var dayJobs = weekJobs.filter(function(j){return j.installDate===ds&&(j.installCrew||[]).indexOf(inst.id)>=0;});
-      var dayH = dayJobs.reduce(function(s,j){return s+(j.installDurationHours||0);},0);
+      var dayH = dayJobs.reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
       var freeH = maxH - dayH;
       if (freeH >= 3) { // 3+ hours free = significant gap
         // Find best-fit unscheduled job for this gap
-        var fits = unscheduled.filter(function(j){return (j.installDurationHours||4) <= freeH;})
+        var fits = unscheduled.filter(function(j){return (getEffectiveInstallHours(j, 4)) <= freeH;})
           .sort(function(a,b){return (b.val||0)-(a.val||0);});
         if (fits.length > 0) {
           gapRecs.push({inst:inst, date:d, dateStr:ds, freeH:freeH, bestJob:fits[0], dayH:dayH, maxH:maxH});
@@ -599,7 +613,7 @@ function renderInstallSchedule() {
     var c=contacts.find(function(ct){return ct.id===gr.bestJob.contactId;});var cn=c?c.fn+' '+c.ln:'';
     recs.push({type:'capacity',priority:2,icon:'\ud83d\udcc5',
       title:gr.inst.name+' has '+gr.freeH+'h free on '+fmtShortDate(gr.date),
-      detail:'Only '+gr.dayH+'/'+gr.maxH+'h booked. Recommend: '+(gr.bestJob.jobNumber||'')+' ('+cn+', '+(gr.bestJob.suburb||'')+', '+(gr.bestJob.installDurationHours||4)+'h, $'+Math.round((gr.bestJob.val||0)/1000)+'k)',
+      detail:'Only '+gr.dayH+'/'+gr.maxH+'h booked. Recommend: '+(gr.bestJob.jobNumber||'')+' ('+cn+', '+(gr.bestJob.suburb||'')+', '+(getEffectiveInstallHours(gr.bestJob, 4))+'h, $'+Math.round((gr.bestJob.val||0)/1000)+'k)',
       actionJob:gr.bestJob.id, actionDate:gr.dateStr, actionInst:gr.inst.id
     });
   });
@@ -610,20 +624,20 @@ function renderInstallSchedule() {
     weekDates.forEach(function(d){
       var ds = isoDate(d);
       var dayJobs = weekJobs.filter(function(j){return j.installDate===ds&&(j.installCrew||[]).indexOf(inst.id)>=0;});
-      var dayH = dayJobs.reduce(function(s,j){return s+(j.installDurationHours||0);},0);
+      var dayH = dayJobs.reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
       if (dayH > maxH) {
         var overBy = dayH - maxH;
         // Find smallest job to suggest moving
-        var movable = dayJobs.slice().sort(function(a,b){return (a.installDurationHours||4)-(b.installDurationHours||4);});
+        var movable = dayJobs.slice().sort(function(a,b){return (getEffectiveInstallHours(a, 4))-(getEffectiveInstallHours(b, 4));});
         var toMove = movable[0];
         // Find a day with capacity for this installer
         var bestDay = null; var bestFree = 0;
         weekDates.forEach(function(d2){
           if(isoDate(d2)===ds||d2.getDay()===0||d2.getDay()===6)return;
           var d2Jobs=weekJobs.filter(function(j){return j.installDate===isoDate(d2)&&(j.installCrew||[]).indexOf(inst.id)>=0;});
-          var d2H=d2Jobs.reduce(function(s,j){return s+(j.installDurationHours||0);},0);
+          var d2H=d2Jobs.reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
           var free=maxH-d2H;
-          if(free>=(toMove.installDurationHours||4)&&free>bestFree){bestFree=free;bestDay=d2;}
+          if(free>=(getEffectiveInstallHours(toMove, 4))&&free>bestFree){bestFree=free;bestDay=d2;}
         });
         recs.push({type:'overload',priority:0,icon:'\u26a0\ufe0f',
           title:inst.name+' overloaded on '+fmtShortDate(d)+' ('+dayH+'h / '+maxH+'h max)',
@@ -738,7 +752,7 @@ function renderInstallSchedule() {
   var crew = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">';
   installers.forEach(function(inst){
     var ij=weekJobs.filter(function(j){return(j.installCrew||[]).indexOf(inst.id)>=0;});
-    var ih=ij.reduce(function(s,j){return s+(j.installDurationHours||0);},0);
+    var ih=ij.reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
     var cap=(inst.maxHoursPerDay||8)*5;var pct=cap>0?Math.round(ih/cap*100):0;
     var capCol=pct>90?'#ef4444':pct>70?'#f59e0b':'#22c55e';
     crew += '<div style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:#fff;border:1px solid #e5e7eb;border-radius:8px">'
@@ -779,7 +793,7 @@ function autoScheduleJobs(weekDates, weekJobs, unscheduled, installers, targetVa
     var ds = j.installDate;
     simDayRevenue[ds] = (simDayRevenue[ds]||0) + (j.val||0);
     (j.installCrew||[]).forEach(function(cid){
-      if (simBooked[cid]) simBooked[cid][ds] = (simBooked[cid][ds]||0) + (j.installDurationHours||4);
+      if (simBooked[cid]) simBooked[cid][ds] = (simBooked[cid][ds]||0) + (getEffectiveInstallHours(j, 4));
       if (!simDaySuburbs[ds][cid]) simDaySuburbs[ds][cid] = [];
       if (j.suburb) simDaySuburbs[ds][cid].push(j.suburb.toLowerCase().trim());
     });
@@ -800,7 +814,7 @@ function autoScheduleJobs(weekDates, weekJobs, unscheduled, installers, targetVa
   var dailyTarget = targetVal / 5;
 
   candidates.forEach(function(job) {
-    var dur = job.installDurationHours || 4;
+    var dur = getEffectiveInstallHours(job, 4);
     var suburb = (job.suburb||'').toLowerCase().trim();
     var bestScore = -Infinity;
     var bestSlot = null;
@@ -945,8 +959,8 @@ function renderCapacityPlanning() {
   var projectedRevenue = curRevenue + planRevenue;
   var curFrames = weekJobs.reduce(function(s,j){return s+(j.windows||[]).length;},0);
   var planFrames = plan.reduce(function(s,p){return s+(p.job.windows||[]).length;},0);
-  var curHours = weekJobs.reduce(function(s,j){return s+(j.installDurationHours||0);},0);
-  var planHours = plan.reduce(function(s,p){return s+(p.job.installDurationHours||4);},0);
+  var curHours = weekJobs.reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
+  var planHours = plan.reduce(function(s,p){return s+(getEffectiveInstallHours(p.job, 4));},0);
   var pctCur = targetVal>0?Math.round(curRevenue/targetVal*100):0;
   var pctProj = targetVal>0?Math.round(projectedRevenue/targetVal*100):0;
 
@@ -1005,7 +1019,7 @@ function renderCapacityPlanning() {
       var dayPlan = planByDate[ds];
       var dayRev = dayPlan.reduce(function(s,p){return s+(p.job.val||0);},0);
       var dayFrames = dayPlan.reduce(function(s,p){return s+(p.job.windows||[]).length;},0);
-      var dayH = dayPlan.reduce(function(s,p){return s+(p.job.installDurationHours||4);},0);
+      var dayH = dayPlan.reduce(function(s,p){return s+(getEffectiveInstallHours(p.job, 4));},0);
       var dateObj = dayPlan[0].dateObj;
       var td = isToday(dateObj);
 
@@ -1017,7 +1031,7 @@ function renderCapacityPlanning() {
         var c = contacts.find(function(ct){return ct.id===p.job.contactId;});
         var cn = c ? c.fn+' '+c.ln : '\u2014';
         var fr = (p.job.windows||[]).length;
-        var dur = p.job.installDurationHours || 4;
+        var dur = getEffectiveInstallHours(p.job, 4);
         var endT = calcEndTime(p.installTime, dur);
         var age = p.job.created ? Math.floor((new Date() - new Date(p.job.created)) / 86400000) : 0;
 
@@ -1049,8 +1063,8 @@ function renderCapacityPlanning() {
   var capBreak = '<div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">';
   installers.forEach(function(inst){
     var maxWeekH = (inst.maxHoursPerDay||8)*5;
-    var curH = weekJobs.filter(function(j){return(j.installCrew||[]).indexOf(inst.id)>=0;}).reduce(function(s,j){return s+(j.installDurationHours||0);},0);
-    var addH = plan.filter(function(p){return p.crewIds.indexOf(inst.id)>=0;}).reduce(function(s,p){return s+(p.job.installDurationHours||4);},0);
+    var curH = weekJobs.filter(function(j){return(j.installCrew||[]).indexOf(inst.id)>=0;}).reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
+    var addH = plan.filter(function(p){return p.crewIds.indexOf(inst.id)>=0;}).reduce(function(s,p){return s+(getEffectiveInstallHours(p.job, 4));},0);
     var projH = curH + addH;
     var pctCur = maxWeekH>0?Math.round(curH/maxWeekH*100):0;
     var pctProj = maxWeekH>0?Math.round(projH/maxWeekH*100):0;

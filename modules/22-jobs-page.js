@@ -281,23 +281,24 @@ function renderJobDetail() {
   var st = getJobStatusObj(job.status);
   var tab = getState().jobDetailTab || 'overview';
 
-  // Status stepper
-  var stepperGroups = ['onboarding','finance','order','material','production','dispatch','install'];
-  var stepperHtml = JOB_STATUSES.filter(function(s){ return stepperGroups.indexOf(s.group) >= 0; }).map(function(s){
+  // Status stepper — single horizontal scrollable row
+  var _stepperGroupKeys = ['onboarding','finance','order','material','production','dispatch','install'];
+  var _curIdx = JOB_STATUSES.findIndex(function(x){ return x.key === job.status; });
+  var stepperHtml = JOB_STATUSES.filter(function(s){ return _stepperGroupKeys.indexOf(s.group) >= 0; }).map(function(s, i, arr){
     var active = s.key === job.status;
-    var passed = false;
-    var curIdx = JOB_STATUSES.findIndex(function(x){ return x.key === job.status; });
     var thisIdx = JOB_STATUSES.findIndex(function(x){ return x.key === s.key; });
-    if (thisIdx < curIdx) passed = true;
+    var passed = thisIdx < _curIdx;
     var check = canTransition(job, s.key);
     var locked = !check.ok && !active && !passed;
-    var bg = active ? s.col : passed ? s.col + '30' : '#f3f4f6';
+    var bg = active ? s.col : passed ? s.col + '22' : '#f3f4f6';
     var col = active ? '#fff' : passed ? s.col : locked ? '#d1d5db' : '#6b7280';
+    var border = active ? s.col : passed ? s.col + '80' : 'transparent';
     var cursor = (active || locked) ? 'default' : 'pointer';
     var onclick = active ? '' : locked ? '' : 'transitionJobStatus(\'' + job.id + '\',\'' + s.key + '\',\'\')';
-    var tip = locked ? check.reason||'' : s.label;
-    return '<div onclick="' + onclick + '" title="' + tip.replace(/"/g,'&quot;') + '" style="padding:6px 10px;border-radius:6px;font-size:10px;font-weight:' + (active?700:500) + ';background:' + bg + ';color:' + col + ';cursor:' + cursor + ';white-space:nowrap;text-align:center;min-width:60px;border:1px solid ' + (active ? s.col : 'transparent') + '">'
-      + (locked ? '🔒 ' : '') + s.label + '</div>';
+    var tip = locked ? (check.reason||'') : s.label;
+    var icon = active ? '● ' : passed ? '✓ ' : locked ? '🔒 ' : '';
+    var arrow = i < arr.length - 1 ? '<span style="color:#d1d5db;flex-shrink:0;font-size:12px;align-self:center">›</span>' : '';
+    return '<div onclick="'+onclick+'" title="'+tip.replace(/"/g,'&quot;')+'" style="display:inline-flex;align-items:center;gap:4px;padding:6px 14px;border-radius:20px;font-size:11px;font-weight:'+(active?600:400)+';background:'+bg+';color:'+col+';border:1.5px solid '+border+';cursor:'+cursor+';white-space:nowrap;flex-shrink:0">'+icon+s.label+'</div>' + arrow;
   }).join('');
 
   // Tabs
@@ -823,13 +824,17 @@ function renderJobDetail() {
     + '<div style="display:flex;gap:6px;align-items:center">'
     + '<span class="bdg" style="background:' + st.col + '20;color:' + st.col + ';border:1px solid ' + st.col + '40;font-size:12px;padding:4px 12px">' + st.label + '</span>'
     + (job.paymentMethod==='zip' ? '<span style="background:#faf5ff;color:#7c3aed;font-size:11px;font-weight:800;padding:4px 12px;border-radius:20px;border:1.5px solid #c4b5fd">ZIP MONEY</span>' : '<span style="background:#f0fdf4;color:#15803d;font-size:11px;font-weight:800;padding:4px 12px;border-radius:20px;border:1.5px solid #86efac">COD</span>')
-    + (job.status !== 'h_completed_standard' && job.status !== 'h1_completed_service' ? '<button onclick="if(confirm(\'Mark this job as complete? This will generate the final 5% invoice.\')){markJobComplete(\'' + job.id + '\');renderPage();}" class="btn-r" style="font-size:11px;padding:5px 14px;gap:4px">' + Icon({n:'check',size:13}) + ' Mark Complete</button>' : '<span style="font-size:11px;padding:5px 14px;background:#f0fdf4;color:#15803d;border-radius:8px;font-weight:600">\u2705 Completed</span>')
+    + (job.status !== 'h_completed_standard' && job.status !== 'h1_completed_service'
+        ? (!job.completionSignedAt
+            ? '<button onclick="if(confirm(\'Record customer completion signature? This confirms the customer has signed off on the completed work.\')){var now=new Date().toISOString();setState({jobs:getState().jobs.map(function(j){return j.id===\'' + job.id + '\'?Object.assign({},j,{completionSignedAt:now}):j;})});dbUpdate(\'jobs\',\'' + job.id + '\',{completion_signed_at:now,updated:now});logJobAudit(\'' + job.id + '\',\'Completion Signed\',\'Customer completion signature recorded by \'+getCurrentUser().name);addToast(\'Completion signature recorded\',\'success\');renderPage();}" class="btn-w" style="font-size:11px;padding:5px 14px;gap:4px">' + Icon({n:'check',size:13}) + ' Record Completion Signature</button>'
+            : '<button onclick="if(confirm(\'Mark this job as complete? This will generate the final 5% invoice.\')){markJobComplete(\'' + job.id + '\');renderPage();}" class="btn-r" style="font-size:11px;padding:5px 14px;gap:4px">' + Icon({n:'check',size:13}) + ' Mark Complete</button>')
+        : '<span style="font-size:11px;padding:5px 14px;background:#f0fdf4;color:#15803d;border-radius:8px;font-weight:600">\u2705 Completed</span>')
     + '<button onclick="var type=prompt(\'Service call type (warranty/callback/repair/leak):\',\'callback\');if(!type)return;var desc=prompt(\'Description:\',\'\');addServiceCall(\'' + job.id + '\',type,\'medium\',desc);setState({crmMode:\'service\',page:\'servicelist\'});" class="btn-w" style="font-size:11px;padding:5px 10px;gap:4px">' + Icon({n:'phone',size:12}) + ' Service Call</button>'
     + '</div>'
     + '</div>'
     + holdBanner
     // Status stepper
-    + '<div style="display:flex;gap:4px;overflow-x:auto;padding:8px 0 16px;margin-bottom:4px">' + stepperHtml + '</div>'
+    + '<div style="display:flex;align-items:center;gap:6px;overflow-x:auto;padding:10px 0 16px;margin-bottom:4px;scrollbar-width:none">' + stepperHtml + '</div>'
     // Tabs
     + '<div style="border-bottom:1px solid #e5e7eb;margin-bottom:20px;display:flex;gap:0;overflow-x:auto">' + tabsHtml + '</div>'
     // 2-column layout: left custom fields + right tab content

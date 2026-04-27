@@ -10,38 +10,41 @@
 
 const JOB_STATUSES = [
   // group: onboarding
-  {key:'a_check_measure',           label:'a. Check Measure',                          group:'onboarding', col:'#3b82f6'},
-  {key:'b_check_status',            label:'b. Check Status / Book Service / Order',   group:'onboarding', col:'#6366f1'},
+  {key:'a_check_measure',           label:'Check Measure',                          group:'onboarding', col:'#3b82f6'},
+  {key:'b_check_status',            label:'Check Status / Book Service / Order',   group:'onboarding', col:'#6366f1'},
   // group: finance
-  {key:'c_awaiting_2nd_payment',    label:'c. Awaiting Second Payment',               group:'finance',    col:'#f59e0b'},
-  {key:'c1_final_sign_off',         label:'c.1 Final Sign Off',                       group:'finance',    col:'#eab308'},
+  {key:'c_awaiting_2nd_payment',    label:'Awaiting Second Payment',               group:'finance',    col:'#f59e0b'},
+  {key:'c1_final_sign_off',         label:'Final Sign Off',                        group:'finance',    col:'#eab308'},
   // group: order
-  {key:'c2_order_schedule_standard',label:'c.2 Order & Schedule (Standard Job)',      group:'order',      col:'#14b8a6'},
-  {key:'c3_order_schedule_service', label:'c.3 Order & Schedule (Service Work)',      group:'order',      col:'#0ea5e9'},
+  {key:'c2_order_schedule_standard',label:'Order & Schedule (Standard Job)',       group:'order',      col:'#14b8a6'},
+  {key:'c3_order_schedule_service', label:'Order & Schedule (Service Work)',       group:'order',      col:'#0ea5e9'},
   // group: hold
-  {key:'c4_date_change_hold',       label:'c.4 Date Change Protocol / HOLD',          group:'hold',       col:'#9ca3af'},
+  {key:'c4_date_change_hold',       label:'Date Change Protocol / HOLD',           group:'hold',       col:'#9ca3af'},
   // group: material
-  {key:'d1_awaiting_material',      label:'d.1 Awaiting Material',                    group:'material',   col:'#f97316'},
-  {key:'d11_awaiting_svc_material', label:'d.11 Awaiting Service Work Material',      group:'material',   col:'#fb923c'},
-  {key:'d12_svc_material_at_factory',label:'d.12 Service Work Material at Factory',   group:'material',   col:'#f59e0b'},
-  {key:'d13_svc_in_production',     label:'d.13 Service Work Job in Production',      group:'production', col:'#a855f7'},
-  {key:'d14_awaiting_glass_svc',    label:'d.14 Awaiting Glass for Service Job',      group:'material',   col:'#ec4899'},
-  {key:'d2_material_at_factory',    label:'d.2 Material at Factory',                  group:'material',   col:'#22c55e'},
+  {key:'d1_awaiting_material',      label:'Awaiting Material',                     group:'material',   col:'#f97316'},
+  {key:'d11_awaiting_svc_material', label:'Awaiting Service Work Material',        group:'material',   col:'#fb923c'},
+  {key:'d12_svc_material_at_factory',label:'Service Work Material at Factory',     group:'material',   col:'#f59e0b'},
+  {key:'d13_svc_in_production',     label:'Service Work Job in Production',        group:'production', col:'#a855f7'},
+  {key:'d14_awaiting_glass_svc',    label:'Awaiting Glass for Service Job',        group:'material',   col:'#ec4899'},
+  {key:'d2_material_at_factory',    label:'Material at Factory',                   group:'material',   col:'#22c55e'},
   // group: production
-  {key:'d3_cutting',                label:'d.3 Cutting',                              group:'production', col:'#a855f7'},
-  {key:'d4_milling_steel_welding',  label:'d.4 Milling / Steel / Welding',            group:'production', col:'#9333ea'},
-  {key:'d5_hardware_revealing',     label:'d.5 Hardware / Revealing / Screens',       group:'production', col:'#7e22ce'},
+  {key:'d3_cutting',                label:'Cutting',                               group:'production', col:'#a855f7'},
+  {key:'d4_milling_steel_welding',  label:'Milling / Steel / Welding',             group:'production', col:'#9333ea'},
+  {key:'d5_hardware_revealing',     label:'Hardware / Revealing / Screens',        group:'production', col:'#7e22ce'},
   // group: dispatch & install
-  {key:'e_dispatch_standard',       label:'e. In Dispatch (Standard Job)',            group:'dispatch',   col:'#06b6d4'},
-  {key:'e1_dispatch_service',       label:'e.1 Dispatch (Service Work)',              group:'dispatch',   col:'#0891b2'},
-  {key:'f_installing',              label:'f. Installing in Progress / Dispatched',   group:'install',    col:'#6366f1'},
+  {key:'e_dispatch_standard',       label:'In Dispatch (Standard Job)',            group:'dispatch',   col:'#06b6d4'},
+  {key:'e1_dispatch_service',       label:'Dispatch (Service Work)',               group:'dispatch',   col:'#0891b2'},
+  {key:'f_installing',              label:'Installing in Progress / Dispatched',   group:'install',    col:'#6366f1'},
   // group: final finance
-  {key:'g_final_payment',           label:'g. Final Payment',                         group:'finance',    col:'#22c55e'},
+  {key:'g_final_payment',           label:'Final Payment',                         group:'finance',    col:'#22c55e'},
+  // group: complete
+  {key:'h_completed_standard',      label:'Complete (Standard Job)',               group:'complete',   col:'#16a34a'},
+  {key:'h1_completed_service',      label:'Complete (After Service)',              group:'complete',   col:'#15803d'},
   // group: service
-  {key:'h_service_booked',          label:'h. Service Booked',                        group:'service',    col:'#f97316'},
-  {key:'h1_awaiting_contractor',    label:'h.1 Awaiting Contractor to Complete',      group:'service',    col:'#fb923c'},
+  {key:'h_service_booked',          label:'Service Booked',                        group:'service',    col:'#f97316'},
+  {key:'h1_awaiting_contractor',    label:'Awaiting Contractor to Complete',       group:'service',    col:'#fb923c'},
   // group: storage
-  {key:'i_in_storage',              label:'I. In Storage Facility',                   group:'hold',       col:'#6b7280'},
+  {key:'i_in_storage',              label:'In Storage Facility',                   group:'hold',       col:'#6b7280'},
 ];
 
 const JOB_STATUS_GROUPS = [
@@ -54,6 +57,7 @@ const JOB_STATUS_GROUPS = [
   {key:'dispatch',   label:'Dispatch',    col:'#06b6d4'},
   {key:'install',    label:'Install',     col:'#6366f1'},
   {key:'service',    label:'Service',     col:'#f97316'},
+  {key:'complete',   label:'Complete',    col:'#16a34a'},
 ];
 
 function getJobStatusObj(key) { return JOB_STATUSES.find(function(s){ return s.key === key; }) || {key:key, label:key, group:'', col:'#9ca3af'}; }
@@ -363,7 +367,7 @@ function markFinalDesignSigned(jobId) {
   dbUpdate('jobs', jobId, {final_signed_at:now, updated:now});
   logJobAudit(jobId, 'Final Design Signed', 'Client signature received. Advancing to installation scheduling.');
   // Advance status to scheduling
-  transitionJobStatus(jobId, 'e_ready_to_schedule', 'Final design signed — ready for installation scheduling');
+  transitionJobStatus(jobId, 'c2_order_schedule_standard', 'Final design signed — sent to Factory CRM for production');
   addToast('\u2705 Final design signed! Job ready for install scheduling.', 'success');
   renderPage();
 }
