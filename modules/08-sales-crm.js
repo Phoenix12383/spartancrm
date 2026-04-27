@@ -3470,8 +3470,7 @@ function renderDealDetail(){
       ${canEditDeal(d) ? `<button onclick="openDealEditDrawer('${d.id}')" class="btn-w" style="font-size:12px;padding:6px 14px;margin-right:6px">${Icon({n:'edit',size:12})} Edit</button>` : ''}
       ${d.jobRef?`<button onclick="setState({crmMode:'jobs',page:'jobs',jobDetailId:(getState().jobs.find(function(j){return j.jobNumber==='${d.jobRef}'})||{}).id||null})" class="btn-w" style="font-size:12px;width:100%;justify-content:center;margin-top:4px;color:#15803d;border-color:#86efac;background:#f0fdf4">🏗️ Job ${d.jobRef} — View</button>`:
       `<button onclick="convertDealToJob('${d.id}')" class="btn-w" style="font-size:12px;width:100%;justify-content:center;margin-top:4px">🏗️ Create Job</button>`}
-      <button onclick="markDealWon('${d.id}')" style="padding:6px 16px;background:#22c55e;color:#fff;border:none;border-radius:8px 0 0 8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Won</button>
-      <button style="padding:6px 8px;background:#22c55e;color:#fff;border:none;border-left:1px solid #16a34a;border-radius:0;cursor:pointer">▼</button>
+      <button onclick="markDealWon('${d.id}')" style="padding:6px 16px;background:#22c55e;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Won</button>
       <button onclick="markDealLost('${d.id}')" style="padding:6px 16px;background:#ef4444;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;margin-left:6px">Not Proceeding</button>
       ${(d.won && (getCurrentUser()||{}).role === 'admin') ? `<button onclick="unwindDealWon('${d.id}')" title="Admin: reverse the won state" style="padding:5px 12px;background:transparent;color:#6b7280;border:1px solid #d1d5db;border-radius:6px;font-size:11px;font-weight:500;cursor:pointer;font-family:inherit;margin-left:6px">↶ Unwind won</button>` : ''}`,
     leftSidebarHtml: leftSidebar,
