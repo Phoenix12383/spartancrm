@@ -1,0 +1,165 @@
+// ═════════════════════════════════════════════════════════════════════════════
+// SPARTAN CRM — 99-init.js
+// Extracted from original index.html lines 16969-17059
+// See CONTRACT.md for shared globals this module depends on / exposes.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Snapshot the currently-focused input so a full innerHTML rerender can
+// restore focus, caret position, and scroll offsets. Without this, a realtime
+// event fired while the user is typing (e.g. leads search while the map
+// refreshes) kicks the cursor out mid-keystroke.
+function _captureFocus(){
+  var a = document.activeElement;
+  if (!a || a === document.body) return null;
+  var tag = (a.tagName||'').toLowerCase();
+  if (tag !== 'input' && tag !== 'textarea' && tag !== 'select' && !a.isContentEditable) return null;
+  var sel = null;
+  try {
+    if (typeof a.selectionStart === 'number') {
+      sel = { start: a.selectionStart, end: a.selectionEnd, dir: a.selectionDirection };
+    }
+  } catch(e) {}
+  return {
+    id: a.id || null,
+    name: a.getAttribute ? a.getAttribute('name') : null,
+    tag: tag,
+    type: a.type || null,
+    placeholder: a.getAttribute ? a.getAttribute('placeholder') : null,
+    sel: sel,
+    scrollTop: a.scrollTop,
+    scrollLeft: a.scrollLeft,
+  };
+}
+// CONTRACT: every input rendered by a page under renderPage() must have a
+// stable `id` (preferred) or `name` attribute so focus / caret / scroll can be
+// restored after the innerHTML rerender triggered by oninput handlers. The
+// tag + placeholder fallback below is a safety net for forgotten ids — it is
+// fragile (breaks on duplicate placeholders) and must not be relied on.
+function _restoreFocus(snap){
+  if (!snap) return;
+  var el = null;
+  if (snap.id) el = document.getElementById(snap.id);
+  if (!el && snap.name) {
+    try { el = document.querySelector(snap.tag + '[name="' + snap.name.replace(/"/g,'\\"') + '"]'); } catch(e){}
+  }
+  // Last-resort fallback: unique match by tag + placeholder.
+  // We intentionally drop the [type="..."] segment because many inputs in this
+  // codebase omit an explicit type attribute (default = "text"), and including
+  // it in the selector makes the fallback miss the element that was just focused.
+  if (!el && snap.placeholder) {
+    try {
+      var sel = snap.tag + '[placeholder="' + snap.placeholder.replace(/"/g,'\\"') + '"]';
+      var matches = document.querySelectorAll(sel);
+      if (matches.length === 1) el = matches[0];
+    } catch(e){}
+  }
+  if (!el) return;
+  try { el.focus({preventScroll:true}); } catch(e) { try { el.focus(); } catch(e2){} }
+  if (snap.sel && typeof el.setSelectionRange === 'function') {
+    try { el.setSelectionRange(snap.sel.start, snap.sel.end, snap.sel.dir || 'none'); } catch(e){}
+  }
+  if (typeof snap.scrollTop === 'number') el.scrollTop = snap.scrollTop;
+  if (typeof snap.scrollLeft === 'number') el.scrollLeft = snap.scrollLeft;
+}
+
+function renderPage(){
+  var _focusSnap = _captureFocus();
+  const {page,sidebarOpen,dealDetailId,leadDetailId,contactDetailId,jobDetailId}=getState();
+  const offset=sidebarOpen?220:64;
+  const pageRenderers={
+    dashboard:renderDashboard,contacts:renderContacts,leads:renderLeads,deals:renderDeals,won:renderWonPage,jobs:renderJobsPage,jobdashboard:renderJobDashboard,weeklyrev:renderWeeklyRevenue,finalsignoff:renderFinalSignOff,schedule:renderInstallSchedule,capacity:renderCapacityPlanning,cmmap:renderCMMapPage,jobsettings:renderJobSettings,factorydash:renderFactoryDash,prodqueue:renderProdQueue,prodboard:renderProdBoard,factorybom:renderFactoryBOM,factorycap:renderFactoryCapacity,factorydispatch:renderFactoryDispatch,accdash:renderAccDash,accoutstanding:renderAccOutstanding,acccashflow:renderAccCashFlow,accrecon:renderAccRecon,accbills:renderAccBills,accweekly:renderAccWeekly,accbranch:renderAccBranch,accxero:renderAccXero,servicelist:renderServiceList,servicemap:renderServiceMap,svcschedule:renderSvcSchedule,calendar:renderCalendarPage,invoicing:renderInvoicingPage,commission:renderCommissionPage,
+    email:renderEmailPage,phone:renderPhonePage,reports:renderReports,map:renderMapPage,settings:renderSettings,profile:renderProfilePage,
+  };
+  const effectivePage=jobDetailId?'jobs':dealDetailId?'deals':leadDetailId?'leads':contactDetailId?'contacts':page;
+  const fn=pageRenderers[effectivePage]||renderDashboard;
+
+  document.getElementById('app').innerHTML=`
+    ${renderModuleBar()}
+    ${renderSidebar()}
+    ${renderTopBar()}
+    <main style="margin-left:${offset}px;margin-top:${56 + MODULE_BAR_HEIGHT}px;padding:24px;min-height:calc(100vh - ${56 + MODULE_BAR_HEIGHT}px);transition:margin-left .2s;background:#f2f2f2">
+      <div style="${effectivePage==='email' ? 'width:100%' : 'max-width:1400px;margin:0 auto'}">
+        ${fn()}
+      </div>
+    </main>
+    <div id="toasts" style="position:fixed;bottom:24px;right:24px;z-index:200;display:flex;flex-direction:column;gap:8px"></div>
+    ${_pendingWonDealId ? renderPaymentMethodModal() : ''}
+    ${_pendingWonQuoteSelection ? renderWonQuoteSelectionModal() : ''}
+    ${_pendingUnwindDealId ? renderUnwindDealModal() : ''}
+  `;
+  _restoreFocus(_focusSnap);
+  renderToasts();
+  // Remount persistent DOM (map elements) so they aren't destroyed and
+  // re-initialised on every render. Each function no-ops if its slot isn't
+  // present on the current page.
+  if (typeof mountLeadsGoogleMap === 'function') mountLeadsGoogleMap();
+  if (typeof mountScheduleGoogleMap === 'function') mountScheduleGoogleMap();
+  if (typeof mountInlineGoogleMap === 'function') mountInlineGoogleMap();
+  if (typeof mountServiceGoogleMap === 'function') mountServiceGoogleMap();
+  if (typeof mountCMGoogleMap === 'function') mountCMGoogleMap();
+  setTimeout(function(){ _activeAutocompletes={}; attachAllAutocomplete(); }, 100);
+}
+
+// keyboard shortcut: "/" focuses search
+document.addEventListener('keydown', e=>{
+  if(e.key==='Escape'){const s=getState();if(s.emailComposing)emailCloseCompose();else if(kanbanEditModal){kanbanEditModal=null;renderPage();}else if(s.jobDetailId)setState({jobDetailId:null});else if(s.dealDetailId)setState({dealDetailId:null});else if(s.leadDetailId)setState({leadDetailId:null});else if(s.contactDetailId)setState({contactDetailId:null});}
+  if(e.key==='/'&&!(e.target instanceof HTMLInputElement)&&!(e.target instanceof HTMLTextAreaElement)){
+    e.preventDefault();
+    const el=document.getElementById('topSearch');
+    if(el)el.focus();
+  }
+});
+
+// close dropdowns on outside click
+document.addEventListener('click', e=>{
+  if(!e.target.closest('#branchDrop')&&!e.target.closest('[onclick*="toggleBranchDrop"]')) hideBranchDrop();
+  if(!e.target.closest('#notifDrop')&&!e.target.closest('[onclick*="toggleNotifDrop"]')) hideNotifDrop();
+  if(!e.target.closest('#profileDrop')&&!e.target.closest('[onclick*="toggleProfileDrop"]')){ profileDropOpen=false; var pd=document.getElementById('profileDrop'); if(pd) pd.style.display='none'; }
+  const sd=document.getElementById('searchDrop');
+  if(sd&&!e.target.closest('#topSearch')&&!sd.contains(e.target)) sd.style.display='none';
+  // Close colour pickers
+  if(!e.target.closest('[id^=colorPicker_]')&&!e.target.closest('[onclick*=stOpenColorPicker]')){
+    document.querySelectorAll('[id^=colorPicker_]').forEach(el=>el.style.display='none');
+  }
+});
+
+// subscribe to state changes and re-render
+subscribe(()=>{if(getCurrentUser()){renderPage();renderToasts();}});
+
+// initial render
+// Startup
+if(!getCurrentUser()){
+  renderLoginScreen();
+} else {
+  // Show loading, then load from Supabase
+  document.getElementById('app').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:12px"><div style="width:40px;height:40px;border:3px solid #e5e7eb;border-top-color:#c41230;border-radius:50%;animation:spin 0.8s linear infinite"></div><div style="font-family:Syne,sans-serif;font-weight:700;color:#1a1a1a">SPARTAN CRM</div><div style="font-size:12px;color:#9ca3af" id="loadStatus">Connecting to database\u2026</div><button onclick="localStorage.removeItem(\'spartan_current_user\');location.reload()" style="margin-top:20px;padding:6px 16px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-size:11px;color:#6b7280;font-family:inherit">Sign Out & Return to Login</button></div><style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+
+  // Init Supabase
+  var sbReady = initSupabase();
+  if (sbReady) {
+    var el = document.getElementById('loadStatus');
+    if (el) el.textContent = 'Loading data\u2026';
+    dbLoadAll().then(function(ok) {
+      var el2 = document.getElementById('loadStatus');
+      if (ok) {
+        if (el2) el2.textContent = 'Data loaded \u2014 launching\u2026';
+        setupRealtime();
+      } else {
+        if (el2) el2.textContent = 'Using offline cache\u2026';
+      }
+      setTimeout(function(){ renderPage(); gmailInit(); autoRestoreGmail(); setTimeout(loadGoogleMaps, 500); }, 300);
+    }).catch(function(e) {
+      console.error('[Spartan] Startup error:', e);
+      renderPage();
+      gmailInit();
+      autoRestoreGmail();
+      setTimeout(loadGoogleMaps, 500);
+    });
+  } else {
+    // Supabase not available — run in offline mode
+    console.warn('[Spartan] Running offline — Supabase JS not loaded');
+    var el = document.getElementById('loadStatus');
+    if (el) el.textContent = 'Offline mode \u2014 launching\u2026';
+    setTimeout(function(){ renderPage(); gmailInit(); autoRestoreGmail(); setTimeout(loadGoogleMaps, 500); }, 300);
+  }
+}

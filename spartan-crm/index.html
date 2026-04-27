@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <title>Spartan CRM - Modular</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="js/styles.css">
+    
+    <!-- External scripts -->
+    <script src="https://accounts.google.com/gsi/client"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- Recharts (React-based) for Reports tab bar/line/pie charts. React 17
+         is used deliberately so rptRenderChart can keep calling the legacy
+         ReactDOM.render() API without needing a createRoot migration. Defer
+         preserves ordering: React → ReactDOM → Recharts. -->
+    <script src="https://unpkg.com/react@17.0.2/umd/react.production.min.js" defer></script>
+    <script src="https://unpkg.com/react-dom@17.0.2/umd/react-dom.production.min.js" defer></script>
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/recharts@2.12.7/umd/Recharts.min.js" defer></script>
+</head>
+<body>
+    <div id="app"></div>
+    
+    <script>
+        // Supabase configuration
+        var SUPABASE_URL = 'https://sedpmsgiscowohpqdjza.supabase.co';
+        var SUPABASE_KEY = 'sb_publishable_yBluf2LlIAhewDUbNz3f5w_iiCNK6eY';
+        
+        console.log('========================================');
+        console.log('Spartan CRM - Loading Logical Modules');
+        console.log('========================================\n');
+        
+        // Logical loading order based on dependencies
+        const modules = [
+            // Layer 1: Core Foundation
+            '01-persistence.js',
+            //needed for DEALS
+            '02-mock-data.js',
+            '04-cad-integration.js',
+            
+            // Layer 2: State & Auth
+            '05-state-auth-rbac.js',
+            
+            // Layer 3: Data Structures
+            '03-jobs-workflow.js',
+            
+            // Layer 4: Shared UI
+            '07-shared-ui.js',
+            
+            // Layer 5: CRM Core
+            '08-sales-crm.js',
+            
+            // Layer 6: Feature Modules
+            '14-google-maps-mock.js',  // mock exports window.initGoogleMaps / refreshMapData — used if no API key / SDK fails
+            '13-leads-maps.js',
+            '15-jobs-crm.js',
+            '22-jobs-page.js',
+            
+            // Layer 7: Advanced Features
+            '16-factory-crm.js',
+            '17-install-schedule.js',
+            '21-cm-schedule.js',
+            
+            // Layer 8: Financial & Reporting
+            '18-accounts-crm.js',
+            '25-invoicing.js',
+            '26-invoicing-page.js',
+            '24-commission.js',
+            '09-reports.js',
+            
+            // Layer 9: Communication
+            '06-email-tracking.js',
+            '10-integrations.js',
+            '11-email-page.js',
+            '14a-google-maps-real.js', // must load AFTER 11-email-page.js so it can wrap the real onGoogleMapsLoaded instead of being clobbered by it
+            
+            // Layer 10: Service & Settings
+            '19-service-crm.js',
+            '20-job-settings.js',
+            '23-won-deals.js',
+            '14-profile.js',
+            '12-settings.js',
+            
+            // Layer 11: Calendar
+            '27-calendar-page.js',
+            
+            // Layer 12: Initialization (MUST BE LAST)
+            '99-init.js'
+        ];
+        
+        let current = 0;
+        let errors = [];
+        
+        function loadNext() {
+            if (current >= modules.length) {
+                console.log('\n========================================');
+                console.log('✓✓✓ ALL MODULES LOADED SUCCESSFULLY! ✓✓✓');
+                console.log('Total modules: ' + modules.length);
+                console.log('Errors: ' + errors.length);
+                console.log('========================================\n');
+                
+                // Verify critical functions
+                console.log('=== Verification ===');
+                console.log('getState:', typeof getState === 'function' ? '✓' : '✗');
+                console.log('getCurrentUser:', typeof getCurrentUser === 'function' ? '✓' : '✗');
+                console.log('renderPage:', typeof renderPage === 'function' ? '✓' : '✗');
+                console.log('renderDeals:', typeof renderDeals === 'function' ? '✓' : '✗');
+                console.log('renderJobs:', typeof renderJobs === 'function' ? '✓' : '✗');
+                
+                // Start the app
+                // setTimeout(function() {
+                //     console.log('\n=== Starting Spartan CRM ===');
+                //     if (typeof initSupabase === 'function') {
+                //         initSupabase();
+                //     }
+                //     if (typeof renderPage === 'function') {
+                //         renderPage();
+                //     } else if (typeof renderDashboard === 'function') {
+                //         renderDashboard();
+                //     } else {
+                //         console.log('No render function found. Manual start needed.');
+                //     }
+                // }, 200);
+
+                // setTimeout(function() {
+                //     console.log('\n=== Starting Spartan CRM ===');
+                //     // 99-init.js already handles startup (login screen vs. loading vs. renderPage).
+                //     // Don't re-trigger rendering here or it will clobber the login screen
+                //     // when no user is signed in.
+                // }, 200);
+                return;
+            }
+            
+            const modulePath = 'modules/' + modules[current];
+            const script = document.createElement('script');
+            script.src = modulePath;
+            script.onload = function() {
+                console.log((current+1) + '/' + modules.length + ' ✓ ' + modules[current]);
+                current++;
+                loadNext();
+            };
+            script.onerror = function() {
+                console.error((current+1) + '/' + modules.length + ' ✗ FAILED: ' + modules[current]);
+                errors.push(modules[current]);
+                current++;
+                loadNext();
+            };
+            document.head.appendChild(script);
+        }
+        
+        console.log('Loading ' + modules.length + ' modules in dependency order...\n');
+        loadNext();
+    </script>
+</body>
+</html>
