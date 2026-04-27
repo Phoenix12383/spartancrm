@@ -367,41 +367,77 @@ if(!u){var el=document.getElementById('loginErr');el.textContent='Invalid email/
 setCurrentUser(u.id);location.reload();
 }
 var adminEditingUser = null;
-function adminAddUser(){ adminEditingUser = 'new'; renderPage(); }
-function adminEditUser(uid){ adminEditingUser = uid; renderPage(); }
-function adminCloseModal(){ adminEditingUser = null; renderPage(); }
+// Draft form state for the Add/Edit User modal. Mirrors the inputs so a full
+// renderPage() (notif timer, realtime echo, toast lifecycle, …) can rebuild
+// the modal HTML without dropping unsaved typing. Seeded on open from the
+// user being edited, mutated by oninput/onchange handlers, cleared on close.
+var adminEditDraft = null;
+
+function _seedAdminDraftFromUser(u){
+  u = u || {};
+  var role = u.role || 'sales_rep';
+  return {
+    name: u.name || '',
+    email: u.email || '',
+    role: role,
+    branch: u.branch || 'VIC',
+    phone: u.phone || '',
+    pw: '',
+    color: getRepColor(u.name||'') || '#c41230',
+    customPerms: (u.customPerms || DEFAULT_ROLE_PERMS[role] || []).slice(),
+    serviceStates: getUserStates(u).slice(),
+  };
+}
+function adminAddUser(){
+  adminEditingUser = 'new';
+  adminEditDraft = _seedAdminDraftFromUser({role:'sales_rep',branch:'VIC'});
+  renderPage();
+}
+function adminEditUser(uid){
+  adminEditingUser = uid;
+  adminEditDraft = _seedAdminDraftFromUser(getUsers().find(function(x){return x.id===uid;}));
+  renderPage();
+}
+function adminCloseModal(){ adminEditingUser = null; adminEditDraft = null; renderPage(); }
+function adminDraftSet(field, value){ if(adminEditDraft) adminEditDraft[field] = value; }
+function adminDraftTogglePerm(key, on){
+  if(!adminEditDraft) return;
+  var arr = adminEditDraft.customPerms || [];
+  var idx = arr.indexOf(key);
+  if(on && idx<0) arr.push(key);
+  else if(!on && idx>=0) arr.splice(idx,1);
+  adminEditDraft.customPerms = arr;
+}
+function adminDraftToggleSvcState(st, on){
+  if(!adminEditDraft) return;
+  var arr = adminEditDraft.serviceStates || [];
+  var idx = arr.indexOf(st);
+  if(on && idx<0) arr.push(st);
+  else if(!on && idx>=0) arr.splice(idx,1);
+  adminEditDraft.serviceStates = arr;
+}
 function adminSaveUser(){
-  var name = document.getElementById('au_name').value.trim();
-  var email = document.getElementById('au_email').value.trim();
-  var role = document.getElementById('au_role').value;
-  var branch = document.getElementById('au_branch').value;
-  var phone = document.getElementById('au_phone').value.trim();
-  var color = (document.getElementById('au_color') || {}).value || '';
+  var d = adminEditDraft;
+  if(!d){return;}
+  var name = (d.name||'').trim();
+  var email = (d.email||'').trim();
+  var role = d.role;
+  var branch = d.branch;
+  var phone = (d.phone||'').trim();
+  var color = d.color || '';
   if(!name||!email){addToast('Name and email required','error');return;}
   // Persist the rep colour in localStorage. Keyed by name rather than id so
   // the same colour follows the rep even if their user id changes.
   if (color) setRepColor(name, color);
-  // Collect custom permissions from checkboxes
-  var permCbs = document.querySelectorAll('.perm-cb');
-  var customPerms = null;
-  if (permCbs.length > 0) {
-    customPerms = [];
-    permCbs.forEach(function(cb){ if(cb.checked) customPerms.push(cb.dataset.perm); });
-    // If perms match the role defaults exactly, don't save custom (use role default)
-    var defaults = DEFAULT_ROLE_PERMS[role] || [];
-    if (customPerms.length === defaults.length && customPerms.every(function(p){return defaults.indexOf(p)>=0;})) customPerms = null;
-  }
-  // Collect service states from checkboxes — only persisted for roles that
-  // actually use them (sales reps + managers claiming unassigned leads).
-  var stateCbs = document.querySelectorAll('.svcstate-cb');
-  var serviceStates = null;
-  if (stateCbs.length > 0) {
-    serviceStates = [];
-    stateCbs.forEach(function(cb){ if(cb.checked) serviceStates.push(cb.dataset.st); });
-  }
+  // Collapse customPerms to null when they match the role defaults exactly,
+  // so role-default changes still flow through to this user.
+  var customPerms = (d.customPerms || []).slice();
+  var defaults = DEFAULT_ROLE_PERMS[role] || [];
+  if (customPerms.length === defaults.length && customPerms.every(function(p){return defaults.indexOf(p)>=0;})) customPerms = null;
+  var serviceStates = (d.serviceStates || []).slice();
   var users = getUsers();
   if(adminEditingUser==='new'){
-    var pw = document.getElementById('au_pw').value;
+    var pw = d.pw;
     if(!pw){addToast('Password required for new user','error');return;}
     if(users.find(function(u){return u.email.toLowerCase()===email.toLowerCase();})){addToast('Email already in use','error');return;}
     var newUser = {id:'u'+Date.now(),name:name,email:email,role:role,branch:branch,phone:phone,initials:name.split(' ').map(function(w){return w[0];}).join('').slice(0,2).toUpperCase(),active:true,pw:pw};
@@ -416,10 +452,10 @@ function adminSaveUser(){
     u.initials=name.split(' ').map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();
     if (customPerms) u.customPerms = customPerms; else delete u.customPerms;
     if (serviceStates) u.serviceStates = serviceStates; else delete u.serviceStates;
-    var np=document.getElementById('au_pw').value;if(np)u.pw=np;
+    if (d.pw) u.pw = d.pw;
     saveUsers(users);addToast(name+' updated','success');
   }
-  adminEditingUser=null;renderPage();
+  adminEditingUser=null; adminEditDraft=null; renderPage();
 }
 function adminToggleUser(uid){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;if(u.id===(getCurrentUser()||{}).id){addToast('Cannot deactivate yourself','error');return;}u.active=!u.active;saveUsers(us);addToast(u.name+(u.active?' activated':' deactivated'));renderPage();}
 function adminChangeRole(uid,nr){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;u.role=nr;saveUsers(us);addToast(u.name+' role: '+nr);renderPage();}
@@ -427,56 +463,65 @@ function adminChangeBranch(uid,nb){var us=getUsers();var u=us.find(function(x){r
 function adminDeleteUser(uid){if(!confirm('Permanently delete this user? This cannot be undone.'))return;saveUsers(getUsers().filter(function(u){return u.id!==uid;}));addToast('User deleted','warning');adminEditingUser=null;renderPage();}
 function renderAdminUserModal(){
   var isNew = adminEditingUser === 'new';
-  var user = isNew ? {name:'',email:'',role:'sales_rep',branch:'VIC',phone:''} : getUsers().find(function(u){return u.id===adminEditingUser;});
-  if(!user) return '';
+  // The draft is the source of truth while the modal is open. If it isn't
+  // seeded yet (defensive — adminAddUser/adminEditUser always seed it before
+  // opening), bail out so we don't render with undefined values.
+  if (!adminEditDraft) return '';
+  var d = adminEditDraft;
+  var existingUser = isNew ? null : getUsers().find(function(u){return u.id===adminEditingUser;});
+  // If we're editing a user who has since been deleted (another tab, realtime
+  // echo), close silently — matches the original behavior.
+  if (!isNew && !existingUser) return '';
+  var titleName = isNew ? '' : existingUser.name;
+  var deletableId = (!isNew && existingUser && existingUser.id !== (getCurrentUser()||{}).id) ? existingUser.id : null;
   return '<div class="modal-bg" onclick="if(event.target===this)adminCloseModal()"><div class="modal" style="max-width:480px">'
-  +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">'+(isNew?'Add New User':'Edit User: '+user.name)+'</h3><button onclick="adminCloseModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button></div>'
+  +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">'+(isNew?'Add New User':'Edit User: '+_escAttr(titleName))+'</h3><button onclick="adminCloseModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button></div>'
   +'<div style="padding:20px;display:flex;flex-direction:column;gap:14px">'
-  +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Full Name *</label><input class="inp" id="au_name" value="'+user.name+'" placeholder="Jane Smith"></div>'
-  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Email *</label><input class="inp" id="au_email" value="'+user.email+'" type="email" placeholder="jane@spartandg.com.au"></div></div>'
-  +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Role</label><select class="sel" id="au_role">'
-  +'<option value="admin"'+(user.role==='admin'?' selected':'')+'>Admin</option>'
-  +'<option value="sales_manager"'+(user.role==='sales_manager'?' selected':'')+'>Sales Manager</option>'
-  +'<option value="sales_rep"'+(user.role==='sales_rep'?' selected':'')+'>Sales Rep</option>'
-  +'<option value="production_manager"'+(user.role==='production_manager'?' selected':'')+'>Production Manager</option>'
-  +'<option value="production_staff"'+(user.role==='production_staff'?' selected':'')+'>Production Staff</option>'
-  +'<option value="installer"'+(user.role==='installer'?' selected':'')+'>Installer</option>'
-  +'<option value="accounts"'+(user.role==='accounts'?' selected':'')+'>Accounts</option>'
-  +'<option value="service_staff"'+(user.role==='service_staff'?' selected':'')+'>Service Staff</option>'
-  +'<option value="viewer"'+(user.role==='viewer'?' selected':'')+'>Viewer</option></select></div>'
-  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Branch</label><select class="sel" id="au_branch">'
-  +'<option value="All"'+(user.branch==='All'?' selected':'')+'>All</option>'
-  +'<option value="VIC"'+(user.branch==='VIC'?' selected':'')+'>VIC</option>'
-  +'<option value="ACT"'+(user.branch==='ACT'?' selected':'')+'>ACT</option>'
-  +'<option value="SA"'+(user.branch==='SA'?' selected':'')+'>SA</option></select></div></div>'
-  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Phone</label><input class="inp" id="au_phone" value="'+(user.phone||'')+'" placeholder="+61 4xx xxx xxx"></div>'
+  +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Full Name *</label><input class="inp" id="au_name" value="'+_escAttr(d.name)+'" placeholder="Jane Smith" oninput="adminDraftSet(\'name\',this.value)"></div>'
+  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Email *</label><input class="inp" id="au_email" value="'+_escAttr(d.email)+'" type="email" placeholder="jane@spartandg.com.au" oninput="adminDraftSet(\'email\',this.value)"></div></div>'
+  +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Role</label><select class="sel" id="au_role" onchange="adminDraftSet(\'role\',this.value)">'
+  +'<option value="admin"'+(d.role==='admin'?' selected':'')+'>Admin</option>'
+  +'<option value="sales_manager"'+(d.role==='sales_manager'?' selected':'')+'>Sales Manager</option>'
+  +'<option value="sales_rep"'+(d.role==='sales_rep'?' selected':'')+'>Sales Rep</option>'
+  +'<option value="production_manager"'+(d.role==='production_manager'?' selected':'')+'>Production Manager</option>'
+  +'<option value="production_staff"'+(d.role==='production_staff'?' selected':'')+'>Production Staff</option>'
+  +'<option value="installer"'+(d.role==='installer'?' selected':'')+'>Installer</option>'
+  +'<option value="accounts"'+(d.role==='accounts'?' selected':'')+'>Accounts</option>'
+  +'<option value="service_staff"'+(d.role==='service_staff'?' selected':'')+'>Service Staff</option>'
+  +'<option value="viewer"'+(d.role==='viewer'?' selected':'')+'>Viewer</option></select></div>'
+  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Branch</label><select class="sel" id="au_branch" onchange="adminDraftSet(\'branch\',this.value)">'
+  +'<option value="All"'+(d.branch==='All'?' selected':'')+'>All</option>'
+  +'<option value="VIC"'+(d.branch==='VIC'?' selected':'')+'>VIC</option>'
+  +'<option value="ACT"'+(d.branch==='ACT'?' selected':'')+'>ACT</option>'
+  +'<option value="SA"'+(d.branch==='SA'?' selected':'')+'>SA</option></select></div></div>'
+  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Phone</label><input class="inp" id="au_phone" value="'+_escAttr(d.phone)+'" placeholder="+61 4xx xxx xxx" oninput="adminDraftSet(\'phone\',this.value)"></div>'
   +function(){
     // Service states — AU states this user can claim unassigned leads from.
     // Shown for all roles (harmless for non-sales) so admin can configure
     // coverage for e.g. a sales-manager doubling up as a claims-handler.
-    var cur = getUserStates(user);
+    var cur = d.serviceStates || [];
     return '<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Service States <span style="font-size:10px;color:#9ca3af;font-weight:400">(can claim unassigned leads in these states)</span></label>'
       +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
       +ALL_AU_STATES.map(function(st){
         var on = cur.indexOf(st) >= 0;
-        return '<label style="display:flex;align-items:center;gap:4px;font-size:11px;padding:3px 9px;border-radius:6px;cursor:pointer;background:'+(on?'#fef2f2':'#f3f4f6')+';border:1px solid '+(on?'#fca5a5':'#e5e7eb')+'"><input type="checkbox" class="svcstate-cb" data-st="'+st+'" '+(on?'checked':'')+' style="accent-color:#c41230;width:12px;height:12px">'+st+'</label>';
+        return '<label style="display:flex;align-items:center;gap:4px;font-size:11px;padding:3px 9px;border-radius:6px;cursor:pointer;background:'+(on?'#fef2f2':'#f3f4f6')+';border:1px solid '+(on?'#fca5a5':'#e5e7eb')+'"><input type="checkbox" class="svcstate-cb" data-st="'+st+'" '+(on?'checked':'')+' onchange="adminDraftToggleSvcState(\''+st+'\',this.checked)" style="accent-color:#c41230;width:12px;height:12px">'+st+'</label>';
       }).join('')
       +'</div></div>';
   }()
   +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Map pin colour</label>'
   +'<div style="display:flex;align-items:center;gap:10px">'
-  +'<input type="color" id="au_color" value="'+(getRepColor(user.name||'')||'#c41230')+'" style="width:50px;height:34px;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;padding:2px">'
+  +'<input type="color" id="au_color" value="'+_escAttr(d.color||'#c41230')+'" style="width:50px;height:34px;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;padding:2px" onchange="adminDraftSet(\'color\',this.value)" oninput="adminDraftSet(\'color\',this.value)">'
   +'<span style="font-size:11px;color:#6b7280">Used on the Leads / Schedule / Calendar maps for this rep\u2019s pins.</span>'
   +'</div></div>'
-  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">'+(isNew?'Password *':'New Password (blank = keep current)')+'</label><input class="inp" id="au_pw" type="password" placeholder="'+(isNew?'Set password':'Leave blank to keep')+'"></div>'
+  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">'+(isNew?'Password *':'New Password (blank = keep current)')+'</label><input class="inp" id="au_pw" type="password" value="'+_escAttr(d.pw)+'" placeholder="'+(isNew?'Set password':'Leave blank to keep')+'" oninput="adminDraftSet(\'pw\',this.value)"></div>'
   +'<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-size:12px;font-weight:600;color:#0369a1">Role Permissions</div><button onclick="document.getElementById(\'permEditor\').style.display=document.getElementById(\'permEditor\').style.display===\'block\'?\'none\':\'block\'" style="font-size:10px;padding:3px 8px;border:1px solid #bae6fd;border-radius:4px;background:#fff;cursor:pointer;color:#0369a1;font-weight:600">Customise \u25bc</button></div><div style="font-size:11px;color:#475569;line-height:1.7"><strong>Admin:</strong> Full access<br><strong>Sales Manager:</strong> Sales + Jobs + limited Accounts<br><strong>Sales Rep:</strong> Own leads, deals, contacts<br><strong>Production Manager:</strong> Factory + Jobs production<br><strong>Production Staff:</strong> Factory floor only<br><strong>Installer:</strong> Assigned jobs, CM, schedule<br><strong>Accounts:</strong> All financials, read-only ops<br><strong>Service Staff:</strong> Service CRM + view Jobs<br><strong>Viewer:</strong> Read-only</div>'
   +'<div id="permEditor" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #bae6fd">'
   +'<div style="font-size:10px;font-weight:700;color:#0369a1;margin-bottom:6px;text-transform:uppercase">Custom Permission Overrides (Admin Only)</div>'
-  +function(){var groups={};ALL_PERMISSIONS.forEach(function(p){if(!groups[p.module])groups[p.module]=[];groups[p.module].push(p);});var perms=user.customPerms||DEFAULT_ROLE_PERMS[user.role]||[];var html='';Object.entries(groups).forEach(function(g){html+='<div style="margin-bottom:8px"><div style="font-size:10px;font-weight:700;color:#374151;margin-bottom:3px">'+g[0]+'</div><div style="display:flex;flex-wrap:wrap;gap:3px">';g[1].forEach(function(p){var on=perms.indexOf(p.key)>=0;html+='<label style="display:flex;align-items:center;gap:3px;font-size:10px;padding:2px 6px;border-radius:4px;cursor:pointer;background:'+(on?'#dcfce7':'#f3f4f6')+';border:1px solid '+(on?'#86efac':'#e5e7eb')+'"><input type="checkbox" class="perm-cb" data-perm="'+p.key+'" '+(on?'checked':'')+' style="accent-color:#22c55e;width:12px;height:12px">'+p.label+'</label>';});html+='</div></div>';});return html;}()
+  +function(){var groups={};ALL_PERMISSIONS.forEach(function(p){if(!groups[p.module])groups[p.module]=[];groups[p.module].push(p);});var perms=d.customPerms||[];var html='';Object.entries(groups).forEach(function(g){html+='<div style="margin-bottom:8px"><div style="font-size:10px;font-weight:700;color:#374151;margin-bottom:3px">'+g[0]+'</div><div style="display:flex;flex-wrap:wrap;gap:3px">';g[1].forEach(function(p){var on=perms.indexOf(p.key)>=0;html+='<label style="display:flex;align-items:center;gap:3px;font-size:10px;padding:2px 6px;border-radius:4px;cursor:pointer;background:'+(on?'#dcfce7':'#f3f4f6')+';border:1px solid '+(on?'#86efac':'#e5e7eb')+'"><input type="checkbox" class="perm-cb" data-perm="'+p.key+'" '+(on?'checked':'')+' onchange="adminDraftTogglePerm(\''+p.key+'\',this.checked)" style="accent-color:#22c55e;width:12px;height:12px">'+p.label+'</label>';});html+='</div></div>';});return html;}()
   +'</div></div>'
   +'</div>'
   +'<div style="padding:16px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;border-radius:0 0 16px 16px;display:flex;justify-content:'+(isNew?'flex-end':'space-between')+';gap:10px">'
-  +(!isNew&&user.id!==(getCurrentUser()||{}).id?'<button onclick="adminDeleteUser(\''+user.id+'\')" style="padding:8px 14px;border:1px solid #fca5a5;border-radius:8px;background:#fef2f2;color:#b91c1c;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600">Delete User</button>':'<div></div>')
+  +(deletableId?'<button onclick="adminDeleteUser(\''+deletableId+'\')" style="padding:8px 14px;border:1px solid #fca5a5;border-radius:8px;background:#fef2f2;color:#b91c1c;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600">Delete User</button>':'<div></div>')
   +'<div style="display:flex;gap:8px"><button class="btn-w" onclick="adminCloseModal()">Cancel</button><button class="btn-r" onclick="adminSaveUser()">'+(isNew?'Create User':'Save Changes')+'</button></div>'
   +'</div></div></div>';
 }

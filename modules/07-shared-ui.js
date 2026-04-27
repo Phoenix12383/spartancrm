@@ -341,6 +341,15 @@ function generateNotifications() {
   var jobNotifs = getState().notifs.filter(function(n){ return n.type === 'job_created'; });
   jobNotifs.forEach(function(n){ notifs.push(n); });
 
+  // Skip the setState (and the full-page rerender it triggers via the global
+  // subscribe() listener) when the regenerated list is structurally identical
+  // to what's already in state. The timer fires every 60s, so without this
+  // guard the page rebuilds itself once a minute even when nothing changed —
+  // which wipes uncontrolled DOM input values (e.g. the Users & Roles modal).
+  try {
+    var prev = getState().notifs || [];
+    if (prev.length === notifs.length && JSON.stringify(prev) === JSON.stringify(notifs)) return;
+  } catch(e) {}
   setState({ notifs: notifs });
 }
 
