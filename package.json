@@ -8,7 +8,8 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "test:audit-retention": "node tests/audit-retention.test.cjs"
+    "test:audit-retention": "node tests/audit-retention.test.cjs",
+    "test:commission-config": "node tests/commission-config.test.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
