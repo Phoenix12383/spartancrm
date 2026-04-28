@@ -57,7 +57,7 @@ function smartBookCm(jobId) {
   var jobs = getState().jobs || [];
   var upd = { cmBookedDate: s.date, cmBookedTime: s.time, cmAssignedTo: s.installerId };
   setState({ jobs: jobs.map(function(j){ return j.id === jobId ? Object.assign({}, j, upd) : j; }) });
-  dbUpdate('jobs', jobId, { cm_booked_date: s.date, cm_booked_time: s.time, cm_assigned_to: s.installerId, updated: new Date().toISOString() });
+  dbUpdate('jobs', jobId, { cm_booked_date: s.date, cm_booked_time: s.time, cm_assigned_to: s.installerId });
   delete cmSuggestions[jobId];
   addToast('CM booked — ' + s.installerName + ' on ' + s.date, 'success');
 }

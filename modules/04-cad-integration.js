@@ -760,7 +760,7 @@ function updateJobField(jobId, field, value) {
   upd[field] = value;
   setState({ jobs: jobs.map(function(j){ return j.id === jobId ? Object.assign({}, j, upd) : j; }) });
   var dbField = field.replace(/([A-Z])/g, function(m){ return '_' + m.toLowerCase(); });
-  var dbChanges = {}; dbChanges[dbField] = value; dbChanges['updated'] = new Date().toISOString();
+  var dbChanges = {}; dbChanges[dbField] = value;
   dbUpdate('jobs', jobId, dbChanges);
 }
 
