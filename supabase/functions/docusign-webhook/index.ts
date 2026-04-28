@@ -71,6 +71,12 @@ Deno.serve(async (req) => {
   try { payload = JSON.parse(rawBody); }
   catch (_e) { return new Response('bad json', { status: 400, headers: corsHeaders }); }
 
+  // Debug: log incoming payload top-level keys + event field so we can see
+  // what DocuSign is actually sending. Trim to keep logs readable.
+  console.log('[docusign-webhook] event=', payload.event, 'eventType=', payload.eventType,
+              'envelopeId=', payload.data?.envelopeId || payload.envelopeId,
+              'top-keys=', Object.keys(payload || {}).join(','));
+
   // DocuSign Connect (JSON v2 format) sends:
   //   payload.event            — e.g. "envelope-completed"
   //   payload.data.envelopeId
