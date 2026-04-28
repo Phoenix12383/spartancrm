@@ -850,6 +850,25 @@ function saveDealEdit() {
   });
   try { dbInsert('activities', actToDb(actObj, 'deal', id)); } catch (e) { }
 
+  // Audit (Brief 2 Phase 2 followup, exposed by the saveDealEdit dedupe).
+  // The audit hook used to live on the kanban-quick-edit version of
+  // saveDealEdit, which was running for both call sites because of the
+  // duplicate-declaration bug. After the dedupe (`saveDealKanbanQuickEdit`
+  // is its own function now), the drawer save needs its own hook so
+  // edits made through the deal-detail Edit drawer are audited too.
+  // metadata.source distinguishes drawer edits from kanban-quick-edits.
+  if (typeof appendAuditEntry === 'function') {
+    var beforeObj = {}; var afterObj = {};
+    changes.forEach(function (ch) { beforeObj[ch.field] = ch.from; afterObj[ch.field] = ch.to; });
+    appendAuditEntry({
+      entityType: 'deal', entityId: id, action: 'deal.field_edited',
+      summary: 'Edited "' + title + '" — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : ''),
+      before: beforeObj, after: afterObj,
+      metadata: { source: 'edit-drawer' },
+      branch: updated.branch || null,
+    });
+  }
+
   addToast('Saved — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : '') + ' updated', 'success');
 }
 
