@@ -783,28 +783,24 @@ function renderJobDetail() {
       +(job.installTime?'<div style="font-size:11px;color:#9ca3af">'+formatTime12(job.installTime)+'</div>':'')
       +'</div></div>';
 
-    // Scheduling card
+    // Scheduling — read-only summary, edit via Install Schedule page
     tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
-      +'<h5 style="font-size:13px;font-weight:700;margin:0 0 10px">Scheduling</h5>'
-      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
-      +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Install Date</label>'
-      +'<input type="date" class="inp" value="'+(job.installDate||'')+'" onchange="updateJobField(\''+job.id+'\',\'installDate\',this.value);if(typeof checkPreInstallInvoice===\'function\')checkPreInstallInvoice(\''+job.id+'\')"></div>'
-      +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Arrival Time</label>'
-      +'<select class="sel" onchange="updateJobField(\''+job.id+'\',\'installTime\',this.value)">'
-      +'<option value="">Select…</option>'
-      +['07:00','07:30','08:00','08:30','09:00','09:30','10:00','10:30','11:00','12:00','13:00','14:00'].map(function(t){return '<option value="'+t+'"'+(job.installTime===t?' selected':'')+'>'+formatTime12(t)+'</option>';}).join('')
-      +'</select></div></div>'
-      // Crew chips + add dropdown
-      +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Install Crew (Lead + Installers)</label>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;min-height:28px">'
-      +(crewIds.length===0?'<span style="font-size:11px;color:#9ca3af;font-style:italic">No crew assigned yet</span>':crewIds.map(function(cid,idx){var inst=installerById[cid]||{name:'Unknown',colour:'#9ca3af'};return '<span style="display:inline-flex;align-items:center;gap:6px;background:'+inst.colour+'18;border:1px solid '+inst.colour+'66;color:'+inst.colour+';padding:3px 8px;border-radius:14px;font-size:11px;font-weight:600">'+(idx===0?'👑 ':'')+inst.name+'<button onclick="updateJobField(\''+job.id+'\',\'installCrew\',(getState().jobs.find(function(x){return x.id===\''+job.id+'\'}).installCrew||[]).filter(function(c){return c!==\''+cid+'\'}));renderPage()" style="background:none;border:none;color:'+inst.colour+';cursor:pointer;padding:0;font-size:13px;line-height:1">×</button></span>';}).join(''))
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+      +'<h5 style="font-size:13px;font-weight:700;margin:0">Scheduling</h5>'
+      +'<button onclick="setState({page:\'schedule\',jobDetailId:null})" class="btn-r" style="font-size:12px;padding:6px 14px;gap:4px">📅 Open in Install Schedule →</button>'
       +'</div>'
-      +'<select class="sel" onchange="if(this.value){var cur=(getState().jobs.find(function(x){return x.id===\''+job.id+'\'}).installCrew||[]);if(cur.indexOf(this.value)<0){updateJobField(\''+job.id+'\',\'installCrew\',cur.concat([this.value]));renderPage();}this.value=\'\';}" style="font-size:12px;padding:6px 10px;max-width:260px">'
-      +'<option value="">+ Add crew member…</option>'
-      +installers.filter(function(i){return crewIds.indexOf(i.id)<0;}).map(function(i){return '<option value="'+i.id+'">'+i.name+'</option>';}).join('')
-      +'</select>'
-      +(crewIds.length>0?'<div style="font-size:10px;color:#9ca3af;margin-top:6px">👑 First crew member is the lead. Drag-reorder coming soon.</div>':'')
-      +'</div></div>';
+      +'<div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:12px;font-size:12px">'
+      +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:3px">Install Date</div>'
+      +'<div style="font-weight:600">'+(job.installDate?new Date(job.installDate+'T12:00').toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short',year:'numeric'}):'<span style="color:#9ca3af;font-weight:400">— not scheduled —</span>')+'</div></div>'
+      +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:3px">Arrival Time</div>'
+      +'<div style="font-weight:600">'+(job.installTime?formatTime12(job.installTime):'<span style="color:#9ca3af;font-weight:400">—</span>')+'</div></div>'
+      +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:3px">Install Crew</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
+      +(crewIds.length===0?'<span style="color:#9ca3af;font-weight:400">— no crew assigned —</span>':crewIds.map(function(cid,idx){var inst=installerById[cid]||{name:'Unknown',colour:'#9ca3af'};return '<span style="display:inline-flex;align-items:center;gap:4px;background:'+inst.colour+'18;border:1px solid '+inst.colour+'66;color:'+inst.colour+';padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">'+(idx===0?'👑 ':'')+inst.name+'</span>';}).join(''))
+      +'</div></div>'
+      +'</div>'
+      +'<div style="font-size:10px;color:#9ca3af;margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6">ℹ️ Date, time and crew are set via the Smart Install Scheduler — the Install Schedule page runs capacity, vehicle and glass-timing checks.</div>'
+      +'</div>';
 
     // Site Conditions
     tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
