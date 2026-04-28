@@ -21,6 +21,38 @@
 // ═════════════════════════════════════════════════════════════════════════════
 
 var DOCUSIGN_ENVELOPES_LS_KEY = 'spartan_docusign_envelopes';
+var DEV_MODE_LS_KEY = 'spartan_dev_mode';
+
+// ─── Dev mode flag ─────────────────────────────────────────────────────────
+// Production gates (per Jobs CRM Manual §4.5 + §6.5) hide the testing
+// buttons that fire DocuSign envelopes outside the strict workflow:
+//   - Sending before status reaches c1_final_sign_off (45% paid)
+//   - Sending before Final Design saved in CAD
+//   - Resending after the customer has already signed
+// Dev mode bypasses those gates so we can exercise the integration end-
+// to-end during sandbox testing.
+//
+// Toggle:
+//   - URL `?dev=1` → enable (also persists via localStorage so it sticks
+//     across navigation until cleared)
+//   - URL `?dev=0` or `?dev=off` → clear
+//   - DevTools console: localStorage.setItem('spartan_dev_mode','true')
+function isDevMode() {
+  try {
+    var qp = new URLSearchParams(location.search);
+    var d  = qp.get('dev');
+    if (d === '1' || d === 'on' || d === 'true') {
+      try { localStorage.setItem(DEV_MODE_LS_KEY, 'true'); } catch (e) {}
+      return true;
+    }
+    if (d === '0' || d === 'off' || d === 'false') {
+      try { localStorage.removeItem(DEV_MODE_LS_KEY); } catch (e) {}
+      return false;
+    }
+  } catch (e) {}
+  try { return localStorage.getItem(DEV_MODE_LS_KEY) === 'true'; }
+  catch (e) { return false; }
+}
 
 // ─── Local store: jobId → envelope record ──────────────────────────────────
 function _dsLoadEnvelopes() {
@@ -394,3 +426,4 @@ window.sendFinalDesignDocuSign = sendFinalDesignDocuSign;
 window.refreshDocuSignStatus = refreshDocuSignStatus;
 window.getDocuSignEnvelopeForJob = getDocuSignEnvelopeForJob;
 window.buildFinalDesignPdfBase64 = buildFinalDesignPdfBase64;
+window.isDevMode = isDevMode;

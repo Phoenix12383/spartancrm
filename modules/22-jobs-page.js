@@ -590,11 +590,20 @@ function renderJobDetail() {
     var cu = getCurrentUser() || {};
     var isManager = cu.role === 'admin' || cu.role === 'sales_manager';
     var surveyFrames = hasSurvey ? job.cadSurveyData.projectItems : [];
+    // Dev mode bypasses production gates (45%-paid status, must-have-CAD-saved,
+    // can't-resend-after-signed) so the integration can be exercised end-to-end
+    // during sandbox testing. Toggle: ?dev=1 in URL or DevTools console.
+    var devMode = (typeof isDevMode === 'function') && isDevMode();
+    // Production gate per manual \u00a73 Step 4 + \u00a74.5: real DocuSign send only
+    // after the 45% payment lands (status = c1_final_sign_off).
+    var atFinalSignOff = job.status === 'c1_final_sign_off';
 
     tabContent = '<div class="card" style="padding:20px;margin-bottom:14px">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
       +'<div><h4 style="font-size:16px;font-weight:700;margin:0">\ud83d\udcdd Final Design & Sign-Off</h4>'
-      +'<p style="color:#6b7280;font-size:12px;margin:4px 0 0">Sales Manager locks the final design from the check-measure data, client signs, then it goes to production</p></div></div>';
+      +'<p style="color:#6b7280;font-size:12px;margin:4px 0 0">Sales Manager locks the final design from the check-measure data, client signs, then it goes to production</p></div>'
+      + (devMode ? '<div style="padding:6px 12px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:11px;font-weight:700;color:#92400e">\ud83e\uddea DEV MODE \u2014 gates bypassed</div>' : '')
+      +'</div>';
 
     // Pipeline status — updated to reflect the three-state model
     tabContent += '<div style="display:flex;gap:8px;margin-bottom:16px">';
@@ -653,29 +662,30 @@ function renderJobDetail() {
         }
         tabContent += '<button onclick="pushJobToFactory(\''+job.id+'\');renderPage();" class="btn-r" style="font-size:13px;padding:8px 24px;gap:6px">\ud83c\udfed Push to Production</button>'
           +'<button onclick="setState({jobDetailTab:\'installation\'})" class="btn-w" style="font-size:13px;padding:8px 24px;gap:6px">\ud83d\udee0\ufe0f Installation Scheduling \u2192</button></div>';
-        // Resend / test DocuSign on already-signed jobs (useful for verifying
-        // the integration end-to-end on a job that's been through the manual
-        // stand-in flow). Sandbox-only \u2014 production normally hides this.
-        tabContent += '<div style="margin-top:14px;padding-top:12px;border-top:1px dashed #e5e7eb">'
-          + '<div style="font-size:11px;color:#6b7280;margin-bottom:8px">DocuSign testing \u2014 re-send the envelope without affecting the signed status above.</div>'
-          + (function(){
-            var dsRec = (typeof getDocuSignEnvelopeForJob === 'function') ? getDocuSignEnvelopeForJob(job.id) : null;
-            var html = '<div style="display:flex;gap:8px;flex-wrap:wrap">'
-              + '<button onclick="sendFinalDesignDocuSign(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:6px 14px;gap:4px"' + (isManager?'':' disabled') + '>\ud83d\udce4 ' + (dsRec && dsRec.envelopeId ? 'Resend' : 'Send') + ' DocuSign (Test)</button>';
-            if (dsRec && dsRec.envelopeId) {
-              html += '<button onclick="refreshDocuSignStatus(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:6px 14px;gap:4px">\ud83d\udd04 Refresh Status</button>';
-            }
-            html += '</div>';
-            if (dsRec && dsRec.envelopeId) {
-              var dsCol = dsRec.signedAt || dsRec.status === 'completed' ? '#15803d'
-                        : dsRec.status === 'declined' || dsRec.status === 'voided' ? '#b91c1c'
-                        : '#1d4ed8';
-              html += '<div style="margin-top:8px;font-size:10px;color:'+dsCol+'">Envelope: <span style="font-family:monospace">'+dsRec.envelopeId+'</span> \u00b7 '+(dsRec.status||'sent').toUpperCase()+'</div>';
-            }
-            return html;
-          })()
-          + '</div>'
-          +'</div>';
+        // Dev-only resend/test block \u2014 production normally hides this since
+        // the envelope is already signed and the workflow has moved on.
+        if (devMode) {
+          tabContent += '<div style="margin-top:14px;padding-top:12px;border-top:1px dashed #e5e7eb">'
+            + '<div style="font-size:11px;color:#92400e;margin-bottom:8px">\ud83e\uddea Dev tools \u2014 re-send the envelope without affecting the signed status above.</div>'
+            + (function(){
+              var dsRec = (typeof getDocuSignEnvelopeForJob === 'function') ? getDocuSignEnvelopeForJob(job.id) : null;
+              var html = '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+                + '<button onclick="sendFinalDesignDocuSign(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:6px 14px;gap:4px"' + (isManager?'':' disabled') + '>\ud83d\udce4 ' + (dsRec && dsRec.envelopeId ? 'Resend' : 'Send') + ' DocuSign (Test)</button>';
+              if (dsRec && dsRec.envelopeId) {
+                html += '<button onclick="refreshDocuSignStatus(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:6px 14px;gap:4px">\ud83d\udd04 Refresh Status</button>';
+              }
+              html += '</div>';
+              if (dsRec && dsRec.envelopeId) {
+                var dsCol = dsRec.signedAt || dsRec.status === 'completed' ? '#15803d'
+                          : dsRec.status === 'declined' || dsRec.status === 'voided' ? '#b91c1c'
+                          : '#1d4ed8';
+                html += '<div style="margin-top:8px;font-size:10px;color:'+dsCol+'">Envelope: <span style="font-family:monospace">'+dsRec.envelopeId+'</span> \u00b7 '+(dsRec.status||'sent').toUpperCase()+'</div>';
+              }
+              return html;
+            })()
+            + '</div>';
+        }
+        tabContent += '</div>';
       } else if (hasFinal) {
         // STATE 2 — Final Design In Progress (not yet signed)
         tabContent += '<div class="card" style="padding:16px;margin-bottom:14px;border-left:3px solid #3b82f6">'
@@ -699,7 +709,6 @@ function renderJobDetail() {
         // Signature sub-section (legacy markFinalDesignSigned button — DocuSign is Step 6)
         tabContent += '<div style="margin-top:14px;padding-top:12px;border-top:1px dashed #e5e7eb">'
           +'<h6 style="font-size:12px;font-weight:700;margin:0 0 6px;color:#374151">\u270d\ufe0f Client Signature</h6>'
-          +'<div style="font-size:11px;color:#6b7280;margin-bottom:10px">Send the Final Design to the customer for DocuSign e-signature (per manual §6.5). The 7 clauses are placed via anchor strings; conditional clauses (Render Warning, Special Colour, Variation) are only included when the matching job flag is set.</div>'
           +(function(){
             var dsRec = (typeof getDocuSignEnvelopeForJob === 'function') ? getDocuSignEnvelopeForJob(job.id) : null;
             var html = '';
@@ -715,15 +724,33 @@ function renderJobDetail() {
                 + (dsRec.signedAt ? '<div style="font-size:10px;color:#15803d;margin-top:1px">Signed ' + new Date(dsRec.signedAt).toLocaleString('en-AU') + '</div>' : '')
                 + '</div>';
             }
-            html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
-              + '<button onclick="sendFinalDesignDocuSign(\'' + job.id + '\')" class="btn-r" style="font-size:13px;padding:8px 20px;gap:6px"' + (isManager?'':' disabled title="Manager only"') + '>\ud83d\udce4 ' + (dsRec && dsRec.envelopeId ? 'Resend' : 'Send') + ' DocuSign</button>'
-              + (dsRec && dsRec.envelopeId
-                  ? '<button onclick="refreshDocuSignStatus(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px">\ud83d\udd04 Refresh Status</button>'
-                  : '')
-              + '</div>';
+            if (atFinalSignOff) {
+              html += '<div style="font-size:11px;color:#6b7280;margin-bottom:10px">Send the Final Design to the customer for DocuSign e-signature (per manual \u00a76.5). Conditional clauses (Render Warning, Special Colour, Variation) are only included when the matching job flag is set.</div>'
+                + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+                + '<button onclick="sendFinalDesignDocuSign(\'' + job.id + '\')" class="btn-r" style="font-size:13px;padding:8px 20px;gap:6px"' + (isManager?'':' disabled title="Manager only"') + '>\ud83d\udce4 ' + (dsRec && dsRec.envelopeId ? 'Resend' : 'Send') + ' DocuSign</button>'
+                + (dsRec && dsRec.envelopeId
+                    ? '<button onclick="refreshDocuSignStatus(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px">\ud83d\udd04 Refresh Status</button>'
+                    : '')
+                + '</div>';
+            } else {
+              html += '<div style="padding:10px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px">'
+                + '<div>\u26a0\ufe0f Final Design DocuSign can only be sent after the 45% payment has cleared (manual \u00a76.5). Job status must reach <strong>Final Sign Off</strong> first.</div>'
+                + '<button onclick="setState({jobDetailTab:\'progress_claims\'})" style="padding:6px 12px;background:#c41230;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:inherit">Go to Progress Claims \u2192</button>'
+                + '</div>';
+              if (devMode) {
+                html += '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+                  + '<button onclick="sendFinalDesignDocuSign(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px"' + (isManager?'':' disabled') + '>\ud83e\uddea Send DocuSign (Dev \u2014 bypass 45% gate)</button>'
+                  + (dsRec && dsRec.envelopeId
+                      ? '<button onclick="refreshDocuSignStatus(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px">\ud83d\udd04 Refresh Status</button>'
+                      : '')
+                  + '</div>';
+              }
+            }
             return html;
           })()
-          +'<button onclick="markFinalDesignSigned(\''+job.id+'\')" class="btn-w" style="font-size:11px;padding:6px 12px;gap:4px;color:#9ca3af" title="Manual stand-in if DocuSign is not deployed"'+(isManager?'':' disabled')+'>\u270d\ufe0f Manual Stand-in (no DocuSign)</button>'
+          + (devMode
+              ? '<div style="margin-top:10px"><button onclick="markFinalDesignSigned(\''+job.id+'\')" class="btn-w" style="font-size:11px;padding:6px 12px;gap:4px;color:#9ca3af" title="Manual stand-in - dev only"'+(isManager?'':' disabled')+'>\ud83e\uddea Manual Stand-in (Dev)</button></div>'
+              : '')
           +'</div>'
           +'</div>';
       } else {
@@ -739,22 +766,28 @@ function renderJobDetail() {
         } else {
           tabContent += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
           tabContent += '<button onclick="openCadDesigner(\'job\',\''+job.id+'\',\'final\')" class="btn-r" style="font-size:13px;padding:8px 20px;gap:6px">\ud83d\udd12 Start Final Design</button>';
-          // Sandbox/test path: skip CAD and send DocuSign immediately. The PDF
+          // Dev-only: skip CAD and send DocuSign immediately. The PDF
           // builder falls back to survey/original CAD data when cadFinalData
-          // is missing, so the envelope still has frame info \u2014 just not the
-          // Sales-Manager-locked Final version. Useful for end-to-end DocuSign
-          // testing before the full CAD flow has been exercised.
-          tabContent += '<button onclick="sendFinalDesignDocuSign(\''+job.id+'\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px" title="Send DocuSign without finalising in CAD first \u2014 useful for testing">\ud83d\udce4 Send DocuSign (Testing)</button>';
-          var dsRec1 = (typeof getDocuSignEnvelopeForJob === 'function') ? getDocuSignEnvelopeForJob(job.id) : null;
-          if (dsRec1 && dsRec1.envelopeId) {
-            tabContent += '<button onclick="refreshDocuSignStatus(\''+job.id+'\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px">\ud83d\udd04 Refresh Status</button>';
-          }
-          tabContent += '</div>';
-          if (dsRec1 && dsRec1.envelopeId) {
-            var dsCol1 = dsRec1.signedAt || dsRec1.status === 'completed' ? '#15803d'
-                       : dsRec1.status === 'declined' || dsRec1.status === 'voided' ? '#b91c1c'
-                       : '#1d4ed8';
-            tabContent += '<div style="margin-top:10px;padding:8px 12px;background:#f9fafb;border:1px solid '+dsCol1+'40;border-radius:6px;font-size:11px;color:'+dsCol1+'">\ud83d\udcdd DocuSign envelope <strong>'+(dsRec1.status||'sent').toUpperCase()+'</strong> \u00b7 <span style="font-family:monospace;color:#6b7280">'+dsRec1.envelopeId+'</span></div>';
+          // is missing, so the envelope still has frame info \u2014 just not
+          // the Sales-Manager-locked Final version. Useful for end-to-end
+          // DocuSign testing before the full CAD flow has been exercised.
+          if (devMode) {
+            tabContent += '<button onclick="sendFinalDesignDocuSign(\''+job.id+'\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px" title="Send DocuSign without finalising in CAD first - dev only">\ud83e\uddea Send DocuSign (Dev)</button>';
+            var dsRec1 = (typeof getDocuSignEnvelopeForJob === 'function') ? getDocuSignEnvelopeForJob(job.id) : null;
+            if (dsRec1 && dsRec1.envelopeId) {
+              tabContent += '<button onclick="refreshDocuSignStatus(\''+job.id+'\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px">\ud83d\udd04 Refresh Status</button>';
+            }
+            tabContent += '</div>';
+            if (dsRec1 && dsRec1.envelopeId) {
+              var dsCol1 = dsRec1.signedAt || dsRec1.status === 'completed' ? '#15803d'
+                         : dsRec1.status === 'declined' || dsRec1.status === 'voided' ? '#b91c1c'
+                         : '#1d4ed8';
+              tabContent += '<div style="margin-top:10px;padding:8px 12px;background:#f9fafb;border:1px solid '+dsCol1+'40;border-radius:6px;font-size:11px;color:'+dsCol1+'">\ud83d\udcdd DocuSign envelope <strong>'+(dsRec1.status||'sent').toUpperCase()+'</strong> \u00b7 <span style="font-family:monospace;color:#6b7280">'+dsRec1.envelopeId+'</span></div>';
+            }
+          } else {
+            // Production: only the Start Final Design button is shown above.
+            // DocuSign send happens after CAD save + 45% payment.
+            tabContent += '</div>';
           }
         }
         tabContent += '</div>';
