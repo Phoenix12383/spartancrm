@@ -20,6 +20,50 @@
 import { verifyGoogleAndLookupUser } from '../_lib/auth.js';
 import { getServerSupabase } from '../_lib/supabase.js';
 
+// Backend-side mirror of the browser's hasPermission. The user record
+// returned from auth lookup doesn't include custom_perms (we'd add it to the
+// select if recordings.team adoption gets wider — for v1 we infer perms from
+// the role and assume defaults aren't customised on a per-user basis for the
+// recordings.* subkeys).
+function hasPerm(user, key) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  const defaults = ROLE_DEFAULT_PERMS[user.role] || [];
+  return defaults.indexOf(key) >= 0;
+}
+
+const ROLE_DEFAULT_PERMS = {
+  // Mirrors DEFAULT_ROLE_PERMS in modules/05-state-auth-rbac.js for the
+  // phone.recordings.* keys. Browser-side has the canonical list; this is
+  // the minimal projection the proxy needs.
+  admin:           ['phone.recordings.all'],
+  sales_manager:   ['phone.recordings.team', 'phone.recordings.own'],
+  sales_rep:       ['phone.recordings.own'],
+  accounts:        ['phone.recordings.own'],
+  service_staff:   ['phone.recordings.own'],
+  production_manager: [],
+  production_staff: [],
+  installer: [],
+  viewer: [],
+};
+
+// Two reps are in the "same team" when they're in the same role family.
+// sales_manager + sales_rep count together so a sales manager can hear their
+// reps' calls. service_staff and accounts are singletons.
+function sameRoleFamily(roleA, roleB) {
+  if (roleA === roleB) return true;
+  const salesRoles = ['sales_rep', 'sales_manager'];
+  if (salesRoles.includes(roleA) && salesRoles.includes(roleB)) return true;
+  return false;
+}
+
+async function fetchUserRole(supabase, userId) {
+  const { data, error } = await supabase
+    .from('users').select('role').eq('id', userId).maybeSingle();
+  if (error || !data) return null;
+  return data.role;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     res.setHeader('Allow', 'GET, POST');
@@ -63,16 +107,32 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Permission gate: admin sees all, others only their own outbound calls and
-  // inbound calls that landed on records they have access to. For v1 we use a
-  // simple proxy: admin OR (recording's user_id matches the rep). Inbound calls
-  // without a user_id (which is most of them — only the answering rep gets
-  // bound) are visible to anyone with phone.access until stage 6 adds the
-  // recordings.own / .team / .all subdivision.
-  const isAdmin = user.role === 'admin';
-  const isOwn = row.user_id && row.user_id === user.id;
-  const isUnboundInbound = row.direction === 'inbound' && !row.user_id;
-  if (!isAdmin && !isOwn && !isUnboundInbound) {
+  // Permission gate (stage 6 RBAC subdivisions):
+  //   phone.recordings.all   → any recording (admin)
+  //   phone.recordings.team  → calls placed/answered by anyone in the same
+  //                            role family (sales_manager hears all sales_*)
+  //   phone.recordings.own   → only the rep's own user_id matches
+  //   (no perm)              → only unbound-inbound (no rep ever picked up)
+  //                            calls are visible — these are nobody's calls,
+  //                            anyone with phone.access can listen.
+  let allowed = false;
+  if (user.role === 'admin' || hasPerm(user, 'phone.recordings.all')) {
+    allowed = true;
+  } else if (row.user_id && row.user_id === user.id) {
+    // Own recording — covered by phone.recordings.own (or .team / .all)
+    allowed = hasPerm(user, 'phone.recordings.own') || hasPerm(user, 'phone.recordings.team') || hasPerm(user, 'phone.recordings.all');
+  } else if (row.user_id && hasPerm(user, 'phone.recordings.team')) {
+    // Team recording — verify the call's user is in the same role family.
+    // We resolve the role family from a small lookup; sales_rep+sales_manager
+    // count as the same family.
+    const otherRole = await fetchUserRole(supabase, row.user_id);
+    if (otherRole && sameRoleFamily(user.role, otherRole)) allowed = true;
+  } else if (row.direction === 'inbound' && !row.user_id) {
+    // Unbound inbound — no rep ever owned this call. Anyone with phone.access
+    // can listen, as a fallback path for missed-call recovery.
+    allowed = true;
+  }
+  if (!allowed) {
     res.status(403).json({ error: 'You do not have permission to access this recording' });
     return;
   }

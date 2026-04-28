@@ -223,11 +223,27 @@ function twilioCall(phone, entityId, entityType) {
   });
 }
 
-// End the active call. Twilio fires the `disconnect` event which then runs
-// _twilioOnDisconnect() to clean up state and write the activity row.
+// End the active call. Robust against any call lifecycle state — works
+// whether the call is connecting, ringing, or in-progress. We clear UI state
+// immediately so the End button feels responsive, then asynchronously tell
+// Twilio to disconnect. The SDK's later 'disconnect' event becomes a no-op
+// since _twilioActiveCall is already null.
 function twilioHangup() {
-  if (!_twilioActiveCall || !_twilioActiveCall.callObject) return;
-  try { _twilioActiveCall.callObject.disconnect(); } catch(e) {}
+  if (!_twilioActiveCall) return;
+  var call = _twilioActiveCall.callObject;
+  // Clear UI + state right now so the banner disappears the instant the rep
+  // clicks End — no waiting for Twilio's gateway round-trip.
+  _twilioOnDisconnect();
+  // Then fire the actual disconnect at Twilio. Try every applicable method
+  // since the available ones depend on the call's lifecycle stage:
+  //   - .disconnect() works once the call is live
+  //   - .reject()/.ignore() for incoming calls that haven't been accepted
+  //   - .cancel() if the SDK supports it for outbound-still-ringing
+  if (call) {
+    try { call.disconnect(); } catch(e) {}
+    try { if (typeof call.reject === 'function') call.reject(); } catch(e) {}
+    try { if (typeof call.cancel === 'function') call.cancel(); } catch(e) {}
+  }
 }
 
 function twilioMute(on) {
@@ -815,6 +831,12 @@ async function loadAndPlayRecording(callSid, slotId) {
     var blobUrl = URL.createObjectURL(blob);
     _phoneAudioBlobs[callSid] = blobUrl;
     slot.innerHTML = '<audio controls autoplay src="' + blobUrl + '" style="height:30px;vertical-align:middle"></audio>';
+    // Mark voicemails as read when played. No-op for non-voicemail rows.
+    var s = (typeof getState === 'function') ? getState() : {};
+    var matchingLog = ((s.callLogs || []).find(function(c){ return c.twilio_sid === callSid; }));
+    if (matchingLog && matchingLog.status === 'voicemail' && !matchingLog.read_at) {
+      markVoicemailRead(callSid);
+    }
   } catch (e) {
     console.error('[Spartan] Recording fetch failed:', e);
     slot.innerHTML = '<span style="font-size:11px;color:#b91c1c">⚠️ Network error</span>';
@@ -945,6 +967,39 @@ function renderCallHistoryRow(call, opts) {
     + (recordingHtml ? '<div style="flex-shrink:0">' + recordingHtml + '</div>' : '')
     + (actions ? '<div style="flex-shrink:0;display:flex;align-items:center">' + actions + '</div>' : '')
     + '</div>';
+}
+
+// Mark a voicemail as read — called when a rep plays its audio.
+// Fire-and-forget update; realtime sub will reflect it back into state.
+function markVoicemailRead(callSid) {
+  if (!callSid) return;
+  if (typeof getState === 'function') {
+    var s = getState();
+    var logs = s.callLogs || [];
+    var changed = false;
+    var next = logs.map(function(c) {
+      if (c.twilio_sid === callSid && !c.read_at) {
+        changed = true;
+        return Object.assign({}, c, { read_at: new Date().toISOString() });
+      }
+      return c;
+    });
+    if (changed) setState({ callLogs: next });
+  }
+  if (typeof _sb !== 'undefined' && _sb) {
+    _sb.from('call_logs').update({ read_at: new Date().toISOString() }).eq('twilio_sid', callSid).then(function(r){
+      if (r.error) console.warn('[Spartan] mark voicemail read failed:', r.error.message);
+    });
+  }
+}
+
+// Count of unread voicemails for the topbar badge. Voicemails are communal —
+// any rep with phone.access can see/play them, so the count is account-wide
+// rather than per-rep.
+function unreadVoicemailCount() {
+  if (typeof hasPermission === 'function' && !hasPermission('phone.access')) return 0;
+  var logs = (typeof getState === 'function') ? (getState().callLogs || []) : [];
+  return logs.filter(function(c){ return c.status === 'voicemail' && !c.read_at; }).length;
 }
 
 function formatRelativeTime(iso) {

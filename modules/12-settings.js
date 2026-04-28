@@ -50,6 +50,7 @@ function renderSettings(){
     ['statuses','Statuses'],
     ['tags','Tags'],
     ['smstemplates','SMS Templates'],
+    ['phoneivr','Phone & IVR'],
     ['installers','Installers'],
     ['users','Users & Roles'],
   ];
@@ -369,6 +370,113 @@ function renderSettings(){
 
       ${_tpls.length === 0 ? '<div style="margin-top:16px"><button class="btn-w" onclick="smsTemplateSeedDefaults()" style="font-size:12px">📥 Seed 5 default templates</button></div>' : ''}
     `;
+
+  // ── PHONE & IVR (stage 6) ───────────────────────────────────────────────────
+  } else if(settTab==='phoneivr'){
+    var _isAdmin = (getCurrentUser()||{}).role === 'admin';
+    if (!_isAdmin) {
+      content = '<div style="padding:30px;text-align:center;color:#9ca3af;font-size:13px">Only admins can manage phone & IVR settings.</div>';
+    } else {
+      var _ps = getState().phoneSettings || {};
+      var _greeting = _ps.greeting || '';
+      var _vmGreeting = _ps.voicemail_greeting || '';
+      var _voiceName = _ps.voice_name || 'Polly.Nicole';
+      var _menu = _ps.ivr_menu || {};
+      var _bh = _ps.business_hours || { days:['Mon','Tue','Wed','Thu','Fri'], open_hour:8, close_hour:17 };
+
+      var todayCount = (getState().callLogs || []).filter(function(c){
+        if (!c.started_at) return false;
+        return c.started_at.slice(0, 10) === new Date().toISOString().slice(0, 10);
+      }).length;
+      var lastCall = (getState().callLogs || [])[0];
+      var lastCallLabel = lastCall ? new Date(lastCall.started_at).toISOString().slice(0, 16).replace('T', ' ') : 'Never';
+
+      content=`
+        <!-- Connection status -->
+        <div style="padding:16px;background:${window._twilioReady?'#f0fdf4':'#fef9c3'};border:1px solid ${window._twilioReady?'#86efac':'#fde68a'};border-radius:12px;margin-bottom:20px;display:flex;align-items:center;gap:14px">
+          <div style="font-size:24px">${window._twilioReady?'✓':'⚠'}</div>
+          <div style="flex:1">
+            <div style="font-size:14px;font-weight:700;color:${window._twilioReady?'#15803d':'#92400e'}">${window._twilioReady?'Phone connected':'Phone not connected'}</div>
+            <div style="font-size:12px;color:#6b7280;margin-top:2px">Account ${(window.TWILIO_ACCOUNT_SID_HINT||'AC...').slice(0,8)}… · Last call: ${lastCallLabel} · ${todayCount} calls today</div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button onclick="if(typeof twilioInit==='function'){twilioInit(true);addToast('Reconnecting…','info')}" class="btn-w" style="font-size:12px">Reconnect</button>
+            <button onclick="phoneTestCall()" class="btn-r" style="font-size:12px">Test call</button>
+          </div>
+        </div>
+
+        <!-- Greeting -->
+        <div style="margin-bottom:18px">
+          <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Greeting (played to inbound callers during business hours)</label>
+          <textarea id="ps_greeting" class="inp" rows="3" style="font-size:13px;resize:vertical;border-radius:8px;padding:8px 10px">${_greeting.replace(/</g,'&lt;')}</textarea>
+        </div>
+
+        <!-- Voicemail greeting -->
+        <div style="margin-bottom:18px">
+          <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Voicemail greeting (after-hours / no-answer)</label>
+          <textarea id="ps_vmGreeting" class="inp" rows="3" style="font-size:13px;resize:vertical;border-radius:8px;padding:8px 10px">${_vmGreeting.replace(/</g,'&lt;')}</textarea>
+        </div>
+
+        <!-- Voice picker -->
+        <div style="margin-bottom:18px">
+          <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Voice</label>
+          <select id="ps_voiceName" class="sel" style="font-size:13px;max-width:260px">
+            <option value="Polly.Nicole" ${_voiceName==='Polly.Nicole'?'selected':''}>Nicole (AU female)</option>
+            <option value="Polly.Russell" ${_voiceName==='Polly.Russell'?'selected':''}>Russell (AU male)</option>
+            <option value="Polly.Olivia-Neural" ${_voiceName==='Polly.Olivia-Neural'?'selected':''}>Olivia (AU female, neural)</option>
+          </select>
+        </div>
+
+        <!-- Business hours -->
+        <div style="margin-bottom:18px">
+          <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Business hours (calls outside this window go straight to voicemail)</label>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <div>
+              <span style="font-size:12px;color:#6b7280;margin-right:6px">Open</span>
+              <input id="ps_openHour" type="number" min="0" max="23" value="${_bh.open_hour}" class="inp" style="width:70px;font-size:13px">
+            </div>
+            <div>
+              <span style="font-size:12px;color:#6b7280;margin-right:6px">Close</span>
+              <input id="ps_closeHour" type="number" min="0" max="23" value="${_bh.close_hour}" class="inp" style="width:70px;font-size:13px">
+            </div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-left:6px">
+              ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(function(d){
+                var on = (_bh.days||[]).indexOf(d) >= 0;
+                return '<label style="display:flex;align-items:center;gap:4px;font-size:11px;padding:4px 9px;border-radius:6px;cursor:pointer;background:'+(on?'#dcfce7':'#f3f4f6')+';border:1px solid '+(on?'#86efac':'#e5e7eb')+'"><input type="checkbox" class="ps-day-cb" data-day="'+d+'" '+(on?'checked':'')+' style="width:12px;height:12px;accent-color:#15803d">'+d+'</label>';
+              }).join('')}
+            </div>
+          </div>
+        </div>
+
+        <!-- IVR menu -->
+        <div style="margin-bottom:18px">
+          <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">IVR menu (digit → label → roles to ring)</label>
+          <div id="ps_menuRows" style="display:flex;flex-direction:column;gap:6px">
+            ${Object.keys(_menu).sort().map(function(d){
+              var row = _menu[d] || {};
+              return '<div class="ps-menu-row" data-digit="'+d+'" style="display:flex;gap:8px;align-items:center;padding:8px 10px;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb">'
+                + '<span style="font-size:14px;font-weight:700;width:28px;text-align:center">'+d+'</span>'
+                + '<input class="inp ps-menu-label" value="'+(row.label||'').replace(/"/g,'&quot;')+'" placeholder="Sales" style="font-size:12px;width:160px">'
+                + '<input class="inp ps-menu-roles" value="'+((row.roles||[]).join(', ')).replace(/"/g,'&quot;')+'" placeholder="sales_rep, sales_manager" style="font-size:12px;flex:1;font-family:monospace">'
+                + '<button onclick="phoneSettingsRemoveMenuRow(\''+d+'\')" class="btn-g" style="font-size:11px;padding:4px 10px;color:#b91c1c">Remove</button>'
+              + '</div>';
+            }).join('')}
+          </div>
+          <div style="margin-top:8px">
+            <button onclick="phoneSettingsAddMenuRow()" class="btn-w" style="font-size:12px">+ Add menu option</button>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;padding-top:12px;border-top:1px solid #f0f0f0;gap:8px">
+          <button onclick="phoneSettingsSave()" class="btn-r" style="font-size:13px;padding:8px 18px">Save settings</button>
+        </div>
+
+        <!-- Info -->
+        <div style="margin-top:20px;padding:12px 14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;font-size:12px;color:#475569;line-height:1.7">
+          <strong style="color:#0369a1">Heads-up:</strong> changes propagate to inbound calls within ~60 seconds (backend caches settings to keep call latency low). Account credentials (Auth Token, API keys) are stored in Vercel env vars — they cannot be edited here.
+        </div>
+      `;
+    }
 
   // ── SMS (legacy stub kept for now) ──────────────────────────────────────────
   } else if(settTab==='_disabled_sms'){
@@ -692,6 +800,86 @@ function extractPlaceholders(body) {
   var seen = {}; var out = [];
   keys.forEach(function(k){ if (!seen[k]) { seen[k] = 1; out.push(k); } });
   return out;
+}
+
+// ── Phone & IVR Settings management (stage 6) ──────────────────────────────
+// Backed by Supabase public.phone_settings (singleton row id='singleton').
+// Backend reads this on every inbound call (with a 60s cache).
+
+function phoneSettingsAddMenuRow() {
+  // Find the next available digit (not already used)
+  var existing = (getState().phoneSettings || {}).ivr_menu || {};
+  var nextDigit = '0';
+  for (var d = 5; d <= 9; d++) { if (!existing[String(d)]) { nextDigit = String(d); break; } }
+  if (existing[nextDigit]) {
+    // All digits taken — try 0 or *
+    nextDigit = !existing['0'] ? '0' : (!existing['*'] ? '*' : '#');
+  }
+  var ps = JSON.parse(JSON.stringify(getState().phoneSettings || {}));
+  ps.ivr_menu = ps.ivr_menu || {};
+  ps.ivr_menu[nextDigit] = { label: '', roles: [] };
+  setState({ phoneSettings: ps });
+}
+function phoneSettingsRemoveMenuRow(digit) {
+  var ps = JSON.parse(JSON.stringify(getState().phoneSettings || {}));
+  ps.ivr_menu = ps.ivr_menu || {};
+  delete ps.ivr_menu[digit];
+  setState({ phoneSettings: ps });
+}
+function phoneSettingsSave() {
+  // Read current values from the form
+  var greeting = (document.getElementById('ps_greeting') || {}).value || '';
+  var vmGreeting = (document.getElementById('ps_vmGreeting') || {}).value || '';
+  var voiceName = (document.getElementById('ps_voiceName') || {}).value || 'Polly.Nicole';
+  var openHour = parseInt((document.getElementById('ps_openHour') || {}).value, 10);
+  var closeHour = parseInt((document.getElementById('ps_closeHour') || {}).value, 10);
+  if (isNaN(openHour) || openHour < 0 || openHour > 23) { addToast('Open hour must be 0-23', 'error'); return; }
+  if (isNaN(closeHour) || closeHour < 0 || closeHour > 23) { addToast('Close hour must be 0-23', 'error'); return; }
+  if (closeHour <= openHour) { addToast('Close hour must be after open hour', 'error'); return; }
+
+  var days = [];
+  document.querySelectorAll('.ps-day-cb').forEach(function(cb){ if (cb.checked) days.push(cb.dataset.day); });
+
+  var menu = {};
+  document.querySelectorAll('.ps-menu-row').forEach(function(rowEl){
+    var digit = rowEl.dataset.digit;
+    var label = (rowEl.querySelector('.ps-menu-label') || {}).value || '';
+    var rolesStr = (rowEl.querySelector('.ps-menu-roles') || {}).value || '';
+    var roles = rolesStr.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+    if (digit && label) {
+      menu[digit] = { label: label.trim(), roles: roles };
+    }
+  });
+
+  var settings = {
+    id: 'singleton',
+    greeting: greeting.trim(),
+    voicemail_greeting: vmGreeting.trim(),
+    voice_name: voiceName,
+    ivr_menu: menu,
+    business_hours: { days: days, open_hour: openHour, close_hour: closeHour, timezone: 'Australia/Melbourne' },
+    updated_by: ((getCurrentUser() || {}).id) || null,
+  };
+
+  if (typeof dbUpsert === 'function') dbUpsert('phone_settings', settings);
+  setState({ phoneSettings: settings });
+  addToast('Phone & IVR settings saved — propagates to live calls within 60s', 'success');
+  renderPage();
+}
+
+// Test call — admin enters their mobile, /api/twilio/voice fires, their phone rings.
+// Effectively the same as twilioCall(<their mobile>) but with a confirmation
+// modal so the admin can't accidentally fat-finger and dial a customer.
+function phoneTestCall() {
+  var mobile = prompt('Enter your mobile number to receive the test call (e.g. +61412345678):');
+  if (!mobile) return;
+  mobile = mobile.trim();
+  if (!confirm('Twilio will now place a call to ' + mobile + '. Continue?')) return;
+  if (typeof twilioCall === 'function') {
+    twilioCall(mobile, null, null);
+  } else {
+    addToast('Twilio not connected', 'error');
+  }
 }
 
 
