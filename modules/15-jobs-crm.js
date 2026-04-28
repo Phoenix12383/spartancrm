@@ -85,6 +85,83 @@ function renderJobDashboard() {
     +'<a href="#" onclick="event.preventDefault();setState({page:\'schedule\'})" class="btn-r" style="flex-shrink:0;text-decoration:none;font-size:12px;padding:8px 16px;gap:6px">'+Icon({n:'schedule',size:14})+' Open Schedule</a>'
     +'</div>';
 
+  // ── Stale Alerts (manual §4.1 thresholds) ─────────────────────────────────
+  // Per the manual, jobs flag amber/red if they sit too long at certain stages.
+  var STALE_THRESHOLDS = {
+    'a_check_measure':         {days:7,  label:'CM not booked within 7 days of deposit'},
+    'c_awaiting_2nd_payment':  {days:14, label:'Awaiting 45% > 14 days post-CM'},
+    'c1_final_sign_off':       {days:5,  label:'Awaiting customer DocuSign > 5 days'},
+    'b_check_status':          {days:2,  label:'Awaiting bookkeeper triage > 2 days'},
+  };
+  function _enteredStatusAt(j) {
+    var hist = j.statusHistory || [];
+    if (hist.length > 0) return hist[hist.length-1].at;
+    return j.created || null;
+  }
+  function _daysSince(iso) {
+    if (!iso) return 0;
+    return Math.floor((now - new Date(iso)) / 86400000);
+  }
+  // 24-hour CM scheduling KPI: jobs at a_check_measure with deposit paid but not booked > 24h
+  var cmKpiOverdue = jobs.filter(function(j){
+    if (j.status !== 'a_check_measure' || j.cmBookedDate) return false;
+    var dep = (typeof getDepositPaidInfo === 'function') ? getDepositPaidInfo(j.id) : null;
+    if (!dep || !dep.paidDate) return false;
+    var hours = (now - new Date(dep.paidDate)) / 3600000;
+    return hours > 24;
+  });
+  // Stale jobs at any of the 4 monitored statuses
+  var stale = [];
+  Object.keys(STALE_THRESHOLDS).forEach(function(statusKey) {
+    var rule = STALE_THRESHOLDS[statusKey];
+    jobs.forEach(function(j){
+      if (j.status !== statusKey) return;
+      var enteredAt = _enteredStatusAt(j);
+      var days = _daysSince(enteredAt);
+      if (days > rule.days) {
+        stale.push({job:j, days:days, threshold:rule.days, label:rule.label, statusKey:statusKey});
+      }
+    });
+  });
+  stale.sort(function(a,b){return b.days-a.days;});
+
+  if (stale.length > 0 || cmKpiOverdue.length > 0) {
+    h += '<div class="card" style="padding:16px;margin-bottom:16px;border-left:4px solid #ef4444">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+      +'<div style="font-size:13px;font-weight:700;font-family:Syne,sans-serif;color:#b91c1c">🚩 Stale Alerts <span style="font-size:11px;font-weight:400;color:#9ca3af;margin-left:6px">'+(stale.length+cmKpiOverdue.length)+' job'+((stale.length+cmKpiOverdue.length)!==1?'s':'')+' need attention</span></div>'
+      +'</div>';
+    if (cmKpiOverdue.length > 0) {
+      h += '<div style="padding:10px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;margin-bottom:8px;font-size:12px;color:#92400e">'
+        +'<strong>⏱️ 24h CM Booking KPI Breached:</strong> '+cmKpiOverdue.length+' job'+(cmKpiOverdue.length!==1?'s':'')+' with deposit paid but no Check Measure booked. Manual §3 Step 3 — KPI is 24 hours. '
+        +cmKpiOverdue.slice(0,4).map(function(j){return '<a href="#" onclick="event.preventDefault();setState({crmMode:\'jobs\',page:\'jobs\',jobDetailId:\''+j.id+'\'})" style="color:#c41230;font-weight:600;text-decoration:none">'+(j.jobNumber||j.id)+'</a>';}).join(' · ')
+        +(cmKpiOverdue.length>4?' · +'+(cmKpiOverdue.length-4)+' more':'')
+        +'</div>';
+    }
+    if (stale.length > 0) {
+      h += '<div style="display:flex;flex-direction:column;gap:6px">';
+      stale.slice(0, 8).forEach(function(s){
+        var sev = s.days > s.threshold * 2 ? 'red' : 'amber';
+        var bg = sev === 'red' ? '#fef2f2' : '#fffbeb';
+        var bdr = sev === 'red' ? '#fecaca' : '#fde68a';
+        var col = sev === 'red' ? '#b91c1c' : '#92400e';
+        var statusObj = JOB_STATUSES.find(function(x){return x.key===s.statusKey;}) || {label:s.statusKey,col:'#9ca3af'};
+        var c = contacts.find(function(ct){return ct.id===s.job.contactId;}); var cn = c?c.fn+' '+c.ln:'—';
+        h += '<a href="#" onclick="event.preventDefault();setState({crmMode:\'jobs\',page:\'jobs\',jobDetailId:\''+s.job.id+'\'})" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 12px;background:'+bg+';border:1px solid '+bdr+';border-radius:6px;text-decoration:none;color:inherit">'
+          +'<div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">'
+          +'<span style="font-size:12px;font-weight:700;color:#c41230;flex-shrink:0">'+(s.job.jobNumber||'')+'</span>'
+          +'<span style="font-size:12px;color:#374151;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+cn+'</span>'
+          +'<span style="font-size:10px;background:'+statusObj.col+'20;color:'+statusObj.col+';padding:2px 6px;border-radius:4px;font-weight:600;flex-shrink:0">'+statusObj.label+'</span>'
+          +'<span style="font-size:11px;color:'+col+';flex-shrink:0">'+s.label+'</span>'
+          +'</div>'
+          +'<span style="font-size:14px;font-weight:800;color:'+col+';font-family:Syne,sans-serif;flex-shrink:0">'+s.days+'d</span>'
+          +'</a>';
+      });
+      if (stale.length > 8) h += '<div style="font-size:11px;color:#9ca3af;text-align:center;padding:4px">+'+(stale.length-8)+' more stale jobs</div>';
+      h += '</div>';
+    }
+    h += '</div>';
+  }
+
   // ── Two-column layout ─────────────────────────────────────────────────────
   h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">';
 

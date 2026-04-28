@@ -229,6 +229,25 @@ window.setInstallProgress = setInstallProgress;
 window.getInstallProgressPct = getInstallProgressPct;
 window.setFrameStage = setFrameStage;
 window.markCrewArrived = markCrewArrived;
+
+// ── Deposit gate (manual §3 Step 2) ─────────────────────────────────────────
+// Hard rule from the manual: no CM can be booked until the 5% deposit clears.
+// Returns the cl_dep claim if paid (or zip-received), else null.
+function getDepositPaidInfo(jobId) {
+  var claims = (typeof getJobClaims === 'function') ? getJobClaims(jobId) : [];
+  var dep = claims.find(function(c){ return c.id === 'cl_dep'; });
+  if (!dep) return null;
+  if (dep.status === 'paid' || dep.status === 'zip_received') return dep;
+  return null;
+}
+function isDepositPaid(jobId) { return !!getDepositPaidInfo(jobId); }
+function canBookCm(jobId) {
+  if (isDepositPaid(jobId)) return {ok:true};
+  return {ok:false, reason:'5% deposit must be paid before booking the Check Measure (manual §3 Step 2).'};
+}
+window.getDepositPaidInfo = getDepositPaidInfo;
+window.isDepositPaid = isDepositPaid;
+window.canBookCm = canBookCm;
 function addInstaller(name, phone, branch, colour) {
   var list = getInstallers();
   var parts = (name||'').trim().split(' ');

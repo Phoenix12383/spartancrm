@@ -54,6 +54,10 @@ function suggestCmSlot(job, allBooked, installers) {
 function smartBookCm(jobId) {
   var s = cmSuggestions[jobId];
   if (!s) { addToast('No suggestion available', 'error'); return; }
+  if (typeof canBookCm === 'function') {
+    var gate = canBookCm(jobId);
+    if (!gate.ok) { addToast(gate.reason, 'error'); return; }
+  }
   var jobs = getState().jobs || [];
   var upd = { cmBookedDate: s.date, cmBookedTime: s.time, cmAssignedTo: s.installerId };
   setState({ jobs: jobs.map(function(j){ return j.id === jobId ? Object.assign({}, j, upd) : j; }) });
@@ -206,7 +210,7 @@ function renderCMMapPage() {
           +'<select class="sel" style="font-size:10px;padding:2px 4px;width:60px" id="cmb_time_'+j.id+'">'
           +['08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','13:00','13:30','14:00','14:30','15:00','15:30','16:00'].map(function(t){var sel=sug&&sug.time===t?' selected':'';return '<option value="'+t+'"'+sel+'>'+formatTime12(t)+'</option>';}).join('')
           +'</select>'
-          +'<button onclick="var d=document.getElementById(\'cmb_date_'+j.id+'\').value;var t=document.getElementById(\'cmb_time_'+j.id+'\').value;var inst=document.getElementById(\'cmb_inst_'+j.id+'\').value;if(!d){addToast(\'Pick a date\',\'error\');return;}updateJobField(\''+j.id+'\',\'cmBookedDate\',d);updateJobField(\''+j.id+'\',\'cmBookedTime\',t);if(inst)updateJobField(\''+j.id+'\',\'cmAssignedTo\',inst);addToast(\''+(j.jobNumber||'Job')+' CM booked\',\'success\');renderPage();" class="btn-r" style="font-size:10px;padding:2px 10px;white-space:nowrap">Book</button>'
+          +'<button onclick="var g=canBookCm(\''+j.id+'\');if(!g.ok){addToast(g.reason,\'error\');return;}var d=document.getElementById(\'cmb_date_'+j.id+'\').value;var t=document.getElementById(\'cmb_time_'+j.id+'\').value;var inst=document.getElementById(\'cmb_inst_'+j.id+'\').value;if(!d){addToast(\'Pick a date\',\'error\');return;}updateJobField(\''+j.id+'\',\'cmBookedDate\',d);updateJobField(\''+j.id+'\',\'cmBookedTime\',t);if(inst)updateJobField(\''+j.id+'\',\'cmAssignedTo\',inst);addToast(\''+(j.jobNumber||'Job')+' CM booked\',\'success\');renderPage();" class="btn-r" style="font-size:10px;padding:2px 10px;white-space:nowrap">Book</button>'
           +'</div>'
           +'</div>';
       }); // end grp.forEach

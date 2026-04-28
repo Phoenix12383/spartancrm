@@ -458,11 +458,13 @@ function renderJobDetail() {
       +'</div></div>';
 
     // Scheduling fields
+    var depositGate = (typeof canBookCm === 'function') ? canBookCm(job.id) : {ok:true};
     tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
       +'<h5 style="font-size:13px;font-weight:700;margin:0 0 10px">Scheduling</h5>'
+      +(!depositGate.ok && !job.cmBookedDate ? '<div style="padding:10px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e;margin-bottom:10px">⚠️ '+depositGate.reason+'</div>' : '')
       +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">'
       +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Booked Date</label>'
-      +'<input type="date" class="inp" value="'+(job.cmBookedDate||'')+'" onchange="updateJobField(\''+job.id+'\',\'cmBookedDate\',this.value)"></div>'
+      +'<input type="date" class="inp" '+(!depositGate.ok && !job.cmBookedDate ? 'disabled' : '')+' value="'+(job.cmBookedDate||'')+'" onchange="var g=canBookCm(\''+job.id+'\');if(!g.ok){addToast(g.reason,\'error\');this.value=\''+(job.cmBookedDate||'')+'\';return;}updateJobField(\''+job.id+'\',\'cmBookedDate\',this.value)"></div>'
       +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Time</label>'
       +'<select class="sel" onchange="updateJobField(\''+job.id+'\',\'cmBookedTime\',this.value)">'
       +'<option value="">Select\u2026</option>'
