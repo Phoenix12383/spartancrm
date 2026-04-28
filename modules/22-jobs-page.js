@@ -187,17 +187,17 @@ function renderJobsPage() {
       var glassOk = fo && fo.glassStatus && fo.glassStatus !== 'not_ordered';
       var profileOk = fo && fo.profileStatus && fo.profileStatus !== 'not_ordered';
       var matDateOk = fo && fo.materialDeliveryDate;
-      if (!glassOk) warnings.push('\ud83e\ude9f Glass');
-      if (!profileOk) warnings.push('\ud83d\udce6 Profiles');
-      if (!matDateOk) warnings.push('\ud83d\udcc5 Mat. Date');
+      if (!glassOk) warnings.push({label:'\ud83e\ude9f Glass', tip:'Glass not ordered yet \u2014 Production Manager needs to place the glass order in Factory CRM.'});
+      if (!profileOk) warnings.push({label:'\ud83d\udce6 Profiles', tip:'Aluminium profiles (frame extrusions) not ordered yet \u2014 Production Manager needs to order them in Factory CRM.'});
+      if (!matDateOk) warnings.push({label:'\ud83d\udcc5 Mat. Date', tip:'No material delivery date set yet \u2014 Production Manager needs to confirm the date in Factory CRM.'});
       if (warnings.length === 0) barCol = '#22c55e';
       else if (warnings.length <= 1) barCol = '#f59e0b';
       else barCol = '#ef4444';
     } else if (j.finalSignedAt && !j.productionStatus) {
-      warnings.push('\ud83c\udfed Not in factory');
+      warnings.push({label:'\ud83c\udfed Not in factory', tip:'Final design signed but not yet picked up by Factory CRM. Production Manager hasn\'t accepted it for production.'});
       barCol = '#9ca3af';
     }
-    var warningHtml = warnings.length > 0 ? '<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:2px">' + warnings.map(function(w){return '<span style="font-size:8px;font-weight:700;color:#fff;background:'+(barCol==='#ef4444'?'#ef4444':'#f59e0b')+';padding:0 4px;border-radius:3px;white-space:nowrap">'+w+'</span>';}).join('') + '</div>' : '';
+    var warningHtml = warnings.length > 0 ? '<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:2px">' + warnings.map(function(w){return '<span title="'+(w.tip||'').replace(/"/g,'&quot;')+'" style="font-size:8px;font-weight:700;color:#fff;background:'+(barCol==='#ef4444'?'#ef4444':barCol==='#9ca3af'?'#9ca3af':'#f59e0b')+';padding:0 4px;border-radius:3px;white-space:nowrap;cursor:help">'+w.label+'</span>';}).join('') + '</div>' : '';
 
     return '<tr onclick="setState({jobDetailId:\''+j.id+'\'})" style="cursor:pointer;border-left:4px solid '+barCol+'" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'#fff\'">'
       +colDefs.map(function(col,ci){
