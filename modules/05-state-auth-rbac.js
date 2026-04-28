@@ -92,6 +92,7 @@ var AUDIT_ACTIONS = Object.freeze({
   // System / housekeeping
   'system.audit_pruned':           'Audit log pruned',
   'system.commission_state_migrated': 'Commission state migrated',
+  'system.dealtype_backfilled':    'Deal type backfilled',
 });
 
 var AUDIT_LOG_KEY = 'spartan_audit_log';

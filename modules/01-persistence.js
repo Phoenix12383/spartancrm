@@ -288,6 +288,99 @@ function runWonQuoteMigrationIfNeeded(deals) {
   return { ran: true, dealCount: touched.length };
 }
 
+// ── Brief 5 Phase 3: dealType backfill for legacy deals ────────────────────
+// Existing deals (those created before Brief 5 Phase 1 landed) carry
+// dealType=null because the field didn't exist when they were written.
+// Phase 1's dbToDeal explicitly preserves the null on read so this
+// migration can detect them. Backfill rule: read the linked contact's
+// type field — fall back to 'residential' for orphan deals (no contact
+// found) since residential is the safer default in this business.
+//
+// Idempotent: once dealType is set on a deal, subsequent runs see no
+// nulls and touch nothing. The flag prevents the per-deal scan on
+// every reload after the first run completes.
+//
+// Caveat documented in the brief: a residential contact's commercial
+// deal (or vice versa) gets misclassified. The audit entry + admin
+// toast surface the migration so it can be reviewed. Phase 4 lands an
+// inline-editable badge on Deal Detail for fixing individual cases.
+var DEALTYPE_MIGRATION_FLAG = 'spartan_dealtype_migration_v1';
+
+function _migrateDealTypeInPlace(deals, contacts) {
+  var contactsById = {};
+  (contacts || []).forEach(function (c) { if (c && c.id) contactsById[c.id] = c; });
+  var touched = [];
+  (deals || []).forEach(function (d) {
+    // Already typed (either set by Phase 1 saveNewDeal, Phase 2 lead
+    // conversion, or a previous run of this migration in another browser
+    // session that wrote to Supabase). Skip — no work to do.
+    if (d.dealType === 'residential' || d.dealType === 'commercial') return;
+    var contact = d.cid ? contactsById[d.cid] : null;
+    var inferred = (contact && contact.type === 'commercial') ? 'commercial' : 'residential';
+    d.dealType = inferred;
+    touched.push(d);
+  });
+  return touched;
+}
+
+function runDealTypeMigrationIfNeeded(deals, contacts) {
+  try {
+    if (localStorage.getItem(DEALTYPE_MIGRATION_FLAG) === '1') {
+      return { ran: false, dealCount: 0, residentialCount: 0, commercialCount: 0 };
+    }
+  } catch(e) { /* localStorage unavailable — run anyway, safer than skipping */ }
+
+  var touched = _migrateDealTypeInPlace(deals, contacts);
+  var residentialCount = 0, commercialCount = 0;
+  touched.forEach(function (d) {
+    if (d.dealType === 'commercial') commercialCount++; else residentialCount++;
+  });
+
+  // Persist touched rows. Same fire-and-forget pattern as the other migrations.
+  // If Supabase is offline the in-memory migration still applies for this
+  // session; another browser will rerun and write on its own first boot.
+  touched.forEach(function (d) { try { dbUpsert('deals', dealToDb(d)); } catch(e) {} });
+
+  // Audit (Brief 2 Phase 2). One entry summarising the backfill — not one
+  // per deal, which would flood the log. Skip if appendAuditEntry isn't
+  // loaded yet (boot order is module-by-module; the audit primitive lands
+  // before this in 05-state-auth-rbac.js so it should always be present,
+  // but the typeof guard keeps us robust to future load-order changes).
+  if (typeof appendAuditEntry === 'function' && touched.length > 0) {
+    try {
+      appendAuditEntry({
+        entityType: 'system', entityId: null,
+        action: 'system.dealtype_backfilled',
+        summary: 'Backfilled dealType on ' + touched.length + ' deal' + (touched.length !== 1 ? 's' : '') + ' from linked contact (' + residentialCount + ' residential, ' + commercialCount + ' commercial)',
+        metadata: { count: touched.length, residentialCount: residentialCount, commercialCount: commercialCount },
+      });
+    } catch(e) { /* audit is best-effort */ }
+  }
+
+  // Set flag BEFORE the toast — if the toast somehow throws, the flag
+  // still gets set so we don't re-run the migration on next reload.
+  try { localStorage.setItem(DEALTYPE_MIGRATION_FLAG, '1'); } catch(e) {}
+
+  // Admin-only one-time toast surfacing the auto-classification so the
+  // first admin who happens to load the app post-deploy can review.
+  // Uses a long-lived toast (10s) since the user may be looking elsewhere
+  // when boot completes. Deferred via setTimeout(0) so it doesn't get
+  // wiped by the next renderPage that follows state-merge.
+  if (touched.length > 0 && typeof addToast === 'function') {
+    var cu = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+    if (cu && cu.role === 'admin') {
+      setTimeout(function () {
+        try {
+          addToast(touched.length + ' deals were auto-classified by type (' + residentialCount + ' residential, ' + commercialCount + ' commercial). Review and adjust on Deal Detail if needed.', 'info');
+        } catch(e) {}
+      }, 0);
+    }
+  }
+
+  console.log('[Spartan] dealType migration complete — backfilled', touched.length, 'deals (' + residentialCount + ' residential, ' + commercialCount + ' commercial)');
+  return { ran: true, dealCount: touched.length, residentialCount: residentialCount, commercialCount: commercialCount };
+}
+
 // Structural equality check for arrays of CRM records. Realtime echoes and
 // periodic refetches produce fresh-reference arrays whose contents are
 // identical to current state; without this, every refetch triggers a full
@@ -410,6 +503,12 @@ async function dbLoadAll() {
     // Step 4 §6: backfill wonQuoteId for legacy won deals. MUST run after Step 1
     // migration so every deal has a quotes[] array before this one reads it.
     runWonQuoteMigrationIfNeeded(deals);
+    // Brief 5 Phase 3: backfill dealType for legacy deals from the linked
+    // contact's type field. MUST run after contacts are loaded (above) — we
+    // need the contact lookup to infer the type. New deals (Brief 5 Phase
+    // 1+2) already carry a non-null dealType so the migration only touches
+    // pre-Brief-5 records.
+    runDealTypeMigrationIfNeeded(deals, contacts);
     var invoices = results[4].data||[];
     var factoryOrders = results[5].data||[];
     var factoryItems = results[6].data||[];
