@@ -620,7 +620,6 @@ function renderJobDetail() {
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
       +'<div><h4 style="font-size:16px;font-weight:700;margin:0">\ud83d\udcdd Final Design & Sign-Off</h4>'
       +'<p style="color:#6b7280;font-size:12px;margin:4px 0 0">Sales Manager locks the final design from the check-measure data, client signs, then it goes to production</p></div>'
-      + (devMode ? '<div style="padding:6px 12px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:11px;font-weight:700;color:#92400e">\ud83e\uddea DEV MODE \u2014 gates bypassed</div>' : '')
       +'</div>';
 
     // Pipeline status — updated to reflect the three-state model
