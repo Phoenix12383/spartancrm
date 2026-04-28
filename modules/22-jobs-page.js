@@ -652,7 +652,29 @@ function renderJobDetail() {
           tabContent += '<button onclick="window.open(\''+job.finalRenderedPdfUrl+'\',\'_blank\')" class="btn-w" style="font-size:12px;gap:4px">\ud83d\udcc4 View Final PDF</button>';
         }
         tabContent += '<button onclick="pushJobToFactory(\''+job.id+'\');renderPage();" class="btn-r" style="font-size:13px;padding:8px 24px;gap:6px">\ud83c\udfed Push to Production</button>'
-          +'<button onclick="setState({jobDetailTab:\'installation\'})" class="btn-w" style="font-size:13px;padding:8px 24px;gap:6px">\ud83d\udee0\ufe0f Installation Scheduling \u2192</button></div>'
+          +'<button onclick="setState({jobDetailTab:\'installation\'})" class="btn-w" style="font-size:13px;padding:8px 24px;gap:6px">\ud83d\udee0\ufe0f Installation Scheduling \u2192</button></div>';
+        // Resend / test DocuSign on already-signed jobs (useful for verifying
+        // the integration end-to-end on a job that's been through the manual
+        // stand-in flow). Sandbox-only \u2014 production normally hides this.
+        tabContent += '<div style="margin-top:14px;padding-top:12px;border-top:1px dashed #e5e7eb">'
+          + '<div style="font-size:11px;color:#6b7280;margin-bottom:8px">DocuSign testing \u2014 re-send the envelope without affecting the signed status above.</div>'
+          + (function(){
+            var dsRec = (typeof getDocuSignEnvelopeForJob === 'function') ? getDocuSignEnvelopeForJob(job.id) : null;
+            var html = '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+              + '<button onclick="sendFinalDesignDocuSign(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:6px 14px;gap:4px"' + (isManager?'':' disabled') + '>\ud83d\udce4 ' + (dsRec && dsRec.envelopeId ? 'Resend' : 'Send') + ' DocuSign (Test)</button>';
+            if (dsRec && dsRec.envelopeId) {
+              html += '<button onclick="refreshDocuSignStatus(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:6px 14px;gap:4px">\ud83d\udd04 Refresh Status</button>';
+            }
+            html += '</div>';
+            if (dsRec && dsRec.envelopeId) {
+              var dsCol = dsRec.signedAt || dsRec.status === 'completed' ? '#15803d'
+                        : dsRec.status === 'declined' || dsRec.status === 'voided' ? '#b91c1c'
+                        : '#1d4ed8';
+              html += '<div style="margin-top:8px;font-size:10px;color:'+dsCol+'">Envelope: <span style="font-family:monospace">'+dsRec.envelopeId+'</span> \u00b7 '+(dsRec.status||'sent').toUpperCase()+'</div>';
+            }
+            return html;
+          })()
+          + '</div>'
           +'</div>';
       } else if (hasFinal) {
         // STATE 2 — Final Design In Progress (not yet signed)
