@@ -385,6 +385,18 @@ async function dbLoadAll() {
     var leads = (results[1].data||[]).map(dbToLead);
     var deals = (results[2].data||[]).map(function(r){ return dbToDeal(r); });
     var jobs = (results[3].data||[]).map(dbToJob);
+    // Auto-migrate legacy status keys (e.g. e_ready_to_schedule → c2_order_schedule_standard)
+    // so old jobs created before status rename render correctly and can advance through gates.
+    if (typeof resolveStatusKey === 'function') {
+      jobs.forEach(function(j){
+        var canonical = resolveStatusKey(j.status);
+        if (canonical !== j.status) {
+          console.log('[Spartan] Migrating legacy status', j.status, '→', canonical, 'on job', j.jobNumber || j.id);
+          j.status = canonical;
+          if (typeof dbUpdate === 'function') dbUpdate('jobs', j.id, {status: canonical});
+        }
+      });
+    }
 
     // ── Activities: bucket by entity so we can attach them below ────────────
     // Activities live in their own table (not embedded on the entity row).

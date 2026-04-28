@@ -60,7 +60,17 @@ const JOB_STATUS_GROUPS = [
   {key:'complete',   label:'Complete',    col:'#16a34a'},
 ];
 
-function getJobStatusObj(key) { return JOB_STATUSES.find(function(s){ return s.key === key; }) || {key:key, label:key, group:'', col:'#9ca3af'}; }
+// Legacy status keys that have been renamed. Display the new label and let
+// callers know the canonical key so any pending writes can migrate the data.
+var LEGACY_STATUS_ALIASES = {
+  'e_ready_to_schedule': 'c2_order_schedule_standard'
+};
+function resolveStatusKey(key) { return LEGACY_STATUS_ALIASES[key] || key; }
+function getJobStatusObj(key) {
+  var canonical = resolveStatusKey(key);
+  return JOB_STATUSES.find(function(s){ return s.key === canonical; }) || {key:key, label:key, group:'', col:'#9ca3af'};
+}
+window.resolveStatusKey = resolveStatusKey;
 function getJobStatusLabel(key) { return getJobStatusObj(key).label; }
 function getJobStatusCol(key) { return getJobStatusObj(key).col; }
 function getJobStatusGroup(key) { return getJobStatusObj(key).group; }
