@@ -651,24 +651,29 @@ function refreshCMGoogleMapData() {
     coords = spread(coords);
     var inst = instById[j.cmAssignedTo];
     var bg = inst ? (inst.colour || '#c41230') : (j.cmBookedDate ? '#9ca3af' : '#f59e0b');
-    var glyph = inst ? (inst.name || '').charAt(0).toUpperCase() : (j.cmBookedDate ? '✓' : '·');
-    var pin = new Pin({ background: bg, borderColor: '#fff', glyphText: glyph, glyphColor: '#fff', scale: 1.0 });
-    var marker = new AdvancedMarker({
-      position: coords, map: _cmMap,
-      title: (j.jobNumber || j.id) + ' — ' + (j.suburb || ''),
-      content: pin.element, gmpClickable: true,
-    });
-    marker.addListener('gmp-click', function() {
-      var iw = new google.maps.InfoWindow({
-        content: '<div style="font-family:system-ui;font-size:12px;min-width:160px">' +
-          '<strong>' + (j.jobNumber || j.id) + '</strong><br>' +
-          (j.suburb || '') + ' (' + (j.branch || '') + ')<br>' +
-          '<span style="color:#6b7280">' + (j.cmBookedDate ? 'Booked ' + j.cmBookedDate + (inst ? ' · ' + inst.name : '') : 'Unbooked') + '</span></div>'
+    var glyphRaw = inst ? (inst.name || '').charAt(0).toUpperCase() : (j.cmBookedDate ? '✓' : '·');
+    var glyph = glyphRaw || '·';
+    try {
+      var pin = new Pin({ background: bg, borderColor: '#fff', glyphText: glyph, glyphColor: '#fff', scale: 1.0 });
+      var marker = new AdvancedMarker({
+        position: coords, map: _cmMap,
+        title: (j.jobNumber || j.id) + ' — ' + (j.suburb || ''),
+        content: pin.element, gmpClickable: true,
       });
-      iw.open({ anchor: marker, map: _cmMap });
-    });
-    _cmMarkers.push(marker);
-    _cmPts.push(coords);
+      marker.addListener('gmp-click', function() {
+        var iw = new google.maps.InfoWindow({
+          content: '<div style="font-family:system-ui;font-size:12px;min-width:160px">' +
+            '<strong>' + (j.jobNumber || j.id) + '</strong><br>' +
+            (j.suburb || '') + ' (' + (j.branch || '') + ')<br>' +
+            '<span style="color:#6b7280">' + (j.cmBookedDate ? 'Booked ' + j.cmBookedDate + (inst ? ' · ' + inst.name : '') : 'Unbooked') + '</span></div>'
+        });
+        iw.open({ anchor: marker, map: _cmMap });
+      });
+      _cmMarkers.push(marker);
+      _cmPts.push(coords);
+    } catch (e) {
+      console.warn('[CM Map] Skipped marker for', j.jobNumber || j.id, e);
+    }
   });
 
   // Re-centre (0 / 1 / 2+ points).
