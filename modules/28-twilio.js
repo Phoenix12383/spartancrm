@@ -223,29 +223,56 @@ function twilioCall(phone, entityId, entityType) {
   });
 }
 
-// End the active call. Order is critical here:
+// End the active call. Belt-and-braces: fire BOTH the SDK's .disconnect()
+// AND a backend REST-API hangup in parallel. Whichever arrives at Twilio's
+// gateway first ends the call; the other becomes a no-op on the second
+// trip.
 //
-//   1. Tell Twilio to disconnect FIRST. The SDK propagates the hangup signal
-//      to the gateway, the gateway hangs up the customer leg, and only then
-//      does the SDK fire the local 'disconnect' event. That event triggers
-//      _twilioOnDisconnect() which clears UI state and writes the activity row.
+// Why both:
+//   - SDK .disconnect() is fast (no network round-trip from us, just a
+//     WebRTC signal) but unreliable — has historically silently no-op'd
+//     in some call states, leaving the gateway running the call for ~30s
+//     until it times out on its own.
+//   - Backend REST-API hangup goes directly to Twilio's API
+//     (api.twilio.com/Calls/{Sid}.json with Status=completed) using our
+//     server credentials. Bypasses WebRTC entirely. Bulletproof.
 //
-//   2. Don't call other lifecycle methods after .disconnect() — calling
-//      .reject() on an outbound call (or any method after .disconnect()) puts
-//      the v2 Voice SDK in a state where it ignores the original disconnect.
-//      That was the stage-6 bug: UI cleared instantly but Twilio kept the call
-//      alive until the gateway timed out ~30s later.
-//
-//   3. Safety net: if the SDK doesn't fire its 'disconnect' event within 2s
-//      (rare — happens for calls that never fully connected, or when Twilio's
-//      gateway is sluggish), force-clear local state so the banner doesn't
-//      stay stuck on screen.
+// Plus a 2s safety-net timeout to force-clear UI if neither path produces
+// the SDK's 'disconnect' event for some reason.
 function twilioHangup() {
   if (!_twilioActiveCall || !_twilioActiveCall.callObject) return;
+
+  // Fire path 1: SDK disconnect
   try { _twilioActiveCall.callObject.disconnect(); } catch(e) {
     console.warn('[Spartan] call.disconnect() threw:', e);
   }
-  // Safety net for edge cases where the SDK doesn't fire 'disconnect'.
+
+  // Fire path 2: backend REST hangup. Pull CallSid from the call object's
+  // parameters — set by the SDK once Twilio assigns the real CA... id (early
+  // in the lifecycle there's only a temp_call_sid, but by the time the rep
+  // sees the End button the real one is available).
+  var callSid = null;
+  try {
+    var p = _twilioActiveCall.callObject.parameters;
+    if (p && p.CallSid) callSid = p.CallSid;
+  } catch(e) {}
+
+  if (callSid) {
+    var googleToken = (typeof getState === 'function') ? getState().gmailToken : null;
+    if (googleToken) {
+      fetch('/api/twilio/hangup?sid=' + encodeURIComponent(callSid), {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + googleToken }
+      }).then(function(resp) {
+        if (!resp.ok) console.warn('[Spartan] /api/twilio/hangup returned', resp.status);
+      }).catch(function(e) {
+        console.warn('[Spartan] /api/twilio/hangup fetch failed:', e);
+      });
+    }
+  }
+
+  // Safety net: force-clear UI state after 2s in case neither path fires
+  // the SDK's 'disconnect' event (rare but possible).
   setTimeout(function() {
     if (_twilioActiveCall) {
       console.log('[Spartan] Force-clearing active call state after hangup timeout');
