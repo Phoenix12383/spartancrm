@@ -91,6 +91,15 @@ function renderPage(){
   `;
   _restoreFocus(_focusSnap);
   renderToasts();
+  // Lock body scroll while any modal is open so the background page doesn't
+  // scroll behind the modal. Re-evaluated every render — closing a modal (next
+  // renderPage) restores normal scroll. iOS edge case (virtual keyboard
+  // pushing the viewport) isn't handled — known limitation, document later.
+  if (document.querySelector('.modal-bg')) {
+    document.body.style.overflow = 'hidden';
+  } else if (document.body.style.overflow === 'hidden') {
+    document.body.style.overflow = '';
+  }
   // Remount persistent DOM (map elements) so they aren't destroyed and
   // re-initialised on every render. Each function no-ops if its slot isn't
   // present on the current page.

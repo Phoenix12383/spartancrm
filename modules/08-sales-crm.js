@@ -526,7 +526,7 @@ function renderNewContactModal() {
         <h3 style="margin:0;font-size:16px;font-weight:700">New Contact</h3>
         <button onclick="setState({modal:null})" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({ n: 'x', size: 16 })}</button>
       </div>
-      <div style="padding:24px">
+      <div class="modal-body" style="padding:24px">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
           <div><label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">First Name *</label>
             <input class="inp" id="nc_fn" placeholder="Jane"></div>
@@ -1033,7 +1033,7 @@ function renderKanbanModal() {
             <button onclick="closeKanbanModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px">×</button>
           </div>
         </div>
-        <div style="padding:20px;display:flex;flex-direction:column;gap:14px">
+        <div class="modal-body" style="display:flex;flex-direction:column;gap:14px">
           <div>
             <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:5px">Title *</label>
             <input id="de_title" class="inp" value="${data.title}" style="font-size:14px;font-weight:500">
@@ -2689,12 +2689,12 @@ function openTemplatePickerInline(entityId, entityType) {
   const byCat = {};
   all.forEach(function (t) { var c = t.category || 'Other'; (byCat[c] = byCat[c] || []).push(t); });
   const html = '<div class="modal-bg" onclick="if(event.target===this)this.remove()">' +
-    '<div class="modal" style="max-height:80vh">' +
-    '<div style="padding:16px 20px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">' +
+    '<div class="modal">' +
+    '<div class="modal-header">' +
     '<h3 style="margin:0;font-size:15px;font-weight:700">Pick a template</h3>' +
     '<button onclick="this.closest(\'.modal-bg\').remove()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:18px">×</button>' +
     '</div>' +
-    '<div style="overflow-y:auto;max-height:calc(80vh - 60px);padding:8px">' +
+    '<div class="modal-body" style="padding:8px">' +
     Object.keys(byCat).sort().map(function (cat) {
       return '<div style="padding:8px 12px 4px;font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">' + cat + '</div>' +
         byCat[cat].map(function (t) {
@@ -3144,12 +3144,12 @@ function renderWonQuoteSelectionModal() {
 
   var canContinue = !!pend.selectedQuoteId;
   return '<div id="wonQuoteModal" class="modal-bg" style="display:flex" onclick="if(event.target===this)cancelWonQuoteSelection()">'
-    + '<div class="modal" style="max-width:520px;padding:0;overflow:hidden">'
+    + '<div class="modal" style="max-width:520px">'
     + '<div style="padding:20px 24px;border-bottom:1px solid #f0f0f0">'
     + '<h3 style="font-family:Syne,sans-serif;font-weight:800;font-size:17px;margin:0">Which quote did the customer accept?</h3>'
     + '<p style="color:#6b7280;font-size:12px;margin:6px 0 0">Once confirmed, this choice is locked and drives job creation.</p>'
     + '</div>'
-    + '<div style="padding:18px 24px;max-height:60vh;overflow-y:auto">' + rowsHtml + '</div>'
+    + '<div class="modal-body" style="padding:18px 24px">' + rowsHtml + '</div>'
     + '<div style="padding:14px 24px;border-top:1px solid #f0f0f0;display:flex;justify-content:flex-end;gap:8px;background:#f9fafb">'
     + '<button onclick="cancelWonQuoteSelection()" class="btn-g" style="font-size:12px">Cancel</button>'
     + '<button onclick="confirmWonQuoteSelection()" ' + (canContinue ? '' : 'disabled')
@@ -4248,7 +4248,7 @@ function renderSchModal() {
         <h3 style="margin:0;font-size:16px;font-weight:700">Schedule Job</h3>
         <button onclick="schModalOpen=false;renderPage()" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({ n: 'x', size: 16 })}</button>
       </div>
-      <div style="padding:20px;display:flex;flex-direction:column;gap:13px;max-height:70vh;overflow-y:auto">
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:13px">
 
         <div><label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">Job</label>
           <select class="sel" style="font-size:13px" onchange="schModalData.jid=this.value;renderPage()">

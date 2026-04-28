@@ -368,7 +368,7 @@ function renderCalEventModal() {
     +'<div style="padding:16px 20px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
     +'<h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">'+(mode==='create'?'\ud83d\udcc5 New Appointment':isView?'\ud83d\udcc5 Appointment Detail':'\u270f\ufe0f Edit Appointment')+'</h3>'
     +'<button onclick="calCloseModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:18px">\u00d7</button></div>'
-    +'<div style="padding:20px;display:flex;flex-direction:column;gap:12px">'
+    +'<div class="modal-body" style="display:flex;flex-direction:column;gap:12px">'
 
     // Title
     +(isView ? '<div><div style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase">Title</div><div style="font-size:15px;font-weight:600">'+(e.client||e.title||'')+'</div></div>'

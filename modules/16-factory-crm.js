@@ -171,9 +171,9 @@ function showGlassOrderModal(orderId) {
   var totalPanes = Object.values(glassSpecs).reduce(function(s,g){return s+g.qty;},0);
   var isOverdue = (order.glassStatus||'not_ordered') === 'not_ordered';
 
-  var m = '<div class="modal-bg" id="glassModal" onclick="if(event.target===this){this.remove();}"><div class="modal" style="max-width:620px;max-height:90vh;overflow-y:auto">'
-    +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;'+(isOverdue?'background:#fef2f2':'')+'"><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">\ud83e\ude9f Glass Order \u2014 '+order.jid+(isOverdue?' <span style="color:#ef4444;font-size:12px">\ud83d\udea8 NOT ORDERED</span>':'')+'</h3><button onclick="this.closest(\'.modal-bg\').remove()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px">\u00d7</button></div>'
-    +'<div style="padding:20px">';
+  var m = '<div class="modal-bg" id="glassModal" onclick="if(event.target===this){this.remove();}"><div class="modal" style="max-width:620px">'
+    +'<div class="modal-header" style="'+(isOverdue?'background:#fef2f2':'')+'"><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">\ud83e\ude9f Glass Order \u2014 '+order.jid+(isOverdue?' <span style="color:#ef4444;font-size:12px">\ud83d\udea8 NOT ORDERED</span>':'')+'</h3><button onclick="this.closest(\'.modal-bg\').remove()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px">\u00d7</button></div>'
+    +'<div class="modal-body">';
 
   // Status strip
   m += '<div style="display:flex;gap:8px;margin-bottom:16px"><div style="flex:1;padding:10px;border-radius:8px;background:'+(isOverdue?'#ef4444':''+gs.col)+'15;border:1.5px solid '+(isOverdue?'#ef4444':gs.col)+'40;text-align:center"><div style="font-size:18px">'+gs.icon+'</div><div style="font-size:12px;font-weight:700;color:'+(isOverdue?'#ef4444':gs.col)+'">'+gs.label+'</div></div>'
@@ -285,9 +285,9 @@ function showProfileOrderModal(orderId) {
   });
   var SYSNAMES = {ideal_4000:'Aluplast Ideal 4000',vario_slide:'Aluplast Vario-Slide',casement_75:'Casement 75.5 T-Sash',lift_slide:'Lift-Slide 85mm',smart_slide:'Smart-Slide'};
 
-  var m = '<div class="modal-bg" id="profileModal" onclick="if(event.target===this){this.remove();}"><div class="modal" style="max-width:620px;max-height:90vh;overflow-y:auto">'
-    +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;'+(isOverdue?'background:#fef2f2':'')+'"><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">\ud83d\udce6 Profile Order \u2014 '+order.jid+(isOverdue?' <span style="color:#ef4444;font-size:12px">\ud83d\udea8 NOT ORDERED</span>':'')+'</h3><button onclick="this.closest(\'.modal-bg\').remove()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px">\u00d7</button></div>'
-    +'<div style="padding:20px">';
+  var m = '<div class="modal-bg" id="profileModal" onclick="if(event.target===this){this.remove();}"><div class="modal" style="max-width:620px">'
+    +'<div class="modal-header" style="'+(isOverdue?'background:#fef2f2':'')+'"><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">\ud83d\udce6 Profile Order \u2014 '+order.jid+(isOverdue?' <span style="color:#ef4444;font-size:12px">\ud83d\udea8 NOT ORDERED</span>':'')+'</h3><button onclick="this.closest(\'.modal-bg\').remove()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px">\u00d7</button></div>'
+    +'<div class="modal-body">';
 
   // Status strip
   m += '<div style="display:flex;gap:8px;margin-bottom:16px"><div style="flex:1;padding:10px;border-radius:8px;background:'+(isOverdue?'#ef4444':''+ps.col)+'15;border:1.5px solid '+(isOverdue?'#ef4444':ps.col)+'40;text-align:center"><div style="font-size:18px">'+ps.icon+'</div><div style="font-size:12px;font-weight:700;color:'+(isOverdue?'#ef4444':ps.col)+'">'+ps.label+'</div></div>'

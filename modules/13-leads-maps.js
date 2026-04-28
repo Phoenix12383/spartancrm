@@ -499,7 +499,7 @@ function renderConvertLeadModal(lead){
         <h3 style="margin:0;font-size:16px;font-weight:700">Convert to Deal</h3>
         <button onclick="setState({modal:null})" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({n:'x',size:16})}</button>
       </div>
-      <div style="padding:24px;display:flex;flex-direction:column;gap:14px">
+      <div class="modal-body" style="padding:24px;display:flex;flex-direction:column;gap:14px">
         <div style="background:#f9fafb;border-radius:10px;padding:12px">
           <div style="font-size:14px;font-weight:600">${lead.fn} ${lead.ln}</div>
           <div style="font-size:12px;color:#6b7280;margin-top:2px">${lead.suburb||''} · ${lead.source} · ${fmt$(lead.val)}</div>
