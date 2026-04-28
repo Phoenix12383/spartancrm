@@ -285,6 +285,12 @@ function renderJobDetail() {
   var cName = contact ? contact.fn + ' ' + contact.ln : '—';
   var st = getJobStatusObj(job.status);
   var tab = getState().jobDetailTab || 'overview';
+  // Dev mode: hides every test/stand-in button that simulates an external
+  // system trigger (Xero payment received, Factory CRM status hops, Mobile
+  // App crew lead taps Complete, customer signature capture). When the real
+  // integrations ship those buttons should never need to be clicked. Toggle
+  // with ?dev=1 in the URL or DevTools localStorage.setItem('spartan_dev_mode','true').
+  var jobDetailDevMode = (typeof isDevMode === 'function') && isDevMode();
 
   // Compact Status card — replaces the long 25-pill stepper.
   // Shows: current status + days at status (colour-coded by staleness, manual §4.1)
@@ -368,9 +374,11 @@ function renderJobDetail() {
     // Per the manual, these status changes happen automatically (Xero detects
     // payment, Factory CRM moves through production, Mobile App taps Arrived/Complete).
     // Until those integrations ship, admin can fire each step manually here.
-    var testActions = [];
+    // Hidden outside dev mode so production users don't see / accidentally
+    // click these stand-ins. Toggle with ?dev=1.
+    var testActions = jobDetailDevMode ? [] : null;
     var jid = job.id; var jn = job.jobNumber || jid;
-    switch (job.status) {
+    if (testActions) switch (job.status) {
       case 'c_awaiting_2nd_payment':
         testActions.push({icon:'💰', label:'Mark 45% Payment Received', source:'Accounts CRM (Xero)', onclick:'markPaymentReceived(\''+jid+'\',\'cl_cm\',\'c1_final_sign_off\',\'45% received — moving to Final Sign Off\')'});
         break;
@@ -405,7 +413,7 @@ function renderJobDetail() {
         break;
     }
     var workflowCard = '';
-    if (testActions.length > 0) {
+    if (testActions && testActions.length > 0) {
       workflowCard = '<div class="card" style="padding:0;margin-bottom:16px;border:2px dashed #c4b5fd;overflow:hidden">'
         +'<div style="padding:12px 16px;background:linear-gradient(180deg,#faf5ff,#fff);border-bottom:1px solid #ede9fe;display:flex;align-items:center;gap:10px">'
         +'<span style="font-size:18px">🧪</span>'
@@ -1122,8 +1130,12 @@ function renderJobDetail() {
         +'<div style="font-size:11px;color:#9ca3af;margin-top:2px">Auto-issued when job is marked complete</div>'
         +'</div></div>'
         +'<div style="display:flex;gap:8px;align-items:center">'
-        +'<button onclick="markJobComplete(\''+job.id+'\')" '+(canComplete?'':'disabled')+' class="btn-r" style="font-size:13px;padding:8px 20px;'+(canComplete?'':'opacity:.5;cursor:not-allowed')+'">✅ Mark Installation Complete</button>'
-        +(!job.completionSignedAt?'<span style="font-size:11px;color:#9ca3af">Customer must sign the completion certificate first</span>':'')
+        // Mobile-app stand-in (manual §7.8 — crew lead taps Complete on tablet).
+        // Dev only until the mobile app ships.
+        +(jobDetailDevMode
+          ? '<button onclick="markJobComplete(\''+job.id+'\')" '+(canComplete?'':'disabled')+' class="btn-r" style="font-size:13px;padding:8px 20px;'+(canComplete?'':'opacity:.5;cursor:not-allowed')+'" title="Dev only — mobile app stand-in for §7.8">🧪 Mark Installation Complete (Dev)</button>'
+          : '<span style="font-size:11px;color:#9ca3af;padding:8px 0">Auto-fired by Mobile App when crew lead taps Complete (manual §7.8)</span>')
+        +(jobDetailDevMode && !job.completionSignedAt?'<span style="font-size:11px;color:#9ca3af">Customer must sign the completion certificate first</span>':'')
         +'</div>';
     }
     tabContent += '</div>';
@@ -1210,10 +1222,16 @@ function renderJobDetail() {
     + '<div style="display:flex;gap:6px;align-items:center">'
     + '<span class="bdg" style="background:' + st.col + '20;color:' + st.col + ';border:1px solid ' + st.col + '40;font-size:12px;padding:4px 12px">' + st.label + '</span>'
     + (job.paymentMethod==='zip' ? '<span style="background:#faf5ff;color:#7c3aed;font-size:11px;font-weight:800;padding:4px 12px;border-radius:20px;border:1.5px solid #c4b5fd">ZIP MONEY</span>' : '<span style="background:#f0fdf4;color:#15803d;font-size:11px;font-weight:800;padding:4px 12px;border-radius:20px;border:1.5px solid #86efac">COD</span>')
+    // Mobile-app stand-in actions (capture customer completion signature on
+    // the installer's tablet, then crew lead taps 'Complete' \u2014 manual \u00a77.7 +
+    // \u00a77.8). Until the mobile app ships, dev mode exposes these as web
+    // buttons so the workflow can still be exercised end-to-end.
     + (job.status !== 'h_completed_standard' && job.status !== 'h1_completed_service'
-        ? (!job.completionSignedAt
-            ? '<button onclick="if(confirm(\'Record customer completion signature? This confirms the customer has signed off on the completed work.\')){var now=new Date().toISOString();setState({jobs:getState().jobs.map(function(j){return j.id===\'' + job.id + '\'?Object.assign({},j,{completionSignedAt:now}):j;})});dbUpdate(\'jobs\',\'' + job.id + '\',{completion_signed_at:now,updated:now});logJobAudit(\'' + job.id + '\',\'Completion Signed\',\'Customer completion signature recorded by \'+getCurrentUser().name);addToast(\'Completion signature recorded\',\'success\');renderPage();}" class="btn-w" style="font-size:11px;padding:5px 14px;gap:4px">' + Icon({n:'check',size:13}) + ' Record Completion Signature</button>'
-            : '<button onclick="if(confirm(\'Mark this job as complete? This will generate the final 5% invoice.\')){markJobComplete(\'' + job.id + '\');renderPage();}" class="btn-r" style="font-size:11px;padding:5px 14px;gap:4px">' + Icon({n:'check',size:13}) + ' Mark Complete</button>')
+        ? (jobDetailDevMode
+            ? (!job.completionSignedAt
+                ? '<button onclick="if(confirm(\'Record customer completion signature? This confirms the customer has signed off on the completed work.\')){var now=new Date().toISOString();setState({jobs:getState().jobs.map(function(j){return j.id===\'' + job.id + '\'?Object.assign({},j,{completionSignedAt:now}):j;})});dbUpdate(\'jobs\',\'' + job.id + '\',{completion_signed_at:now,updated:now});logJobAudit(\'' + job.id + '\',\'Completion Signed\',\'Customer completion signature recorded by \'+getCurrentUser().name);addToast(\'Completion signature recorded\',\'success\');renderPage();}" class="btn-w" style="font-size:11px;padding:5px 14px;gap:4px" title="Dev only \u2014 mobile app stand-in for \u00a77.7">' + Icon({n:'check',size:13}) + ' Record Completion Signature (Dev)</button>'
+                : '<button onclick="if(confirm(\'Mark this job as complete? This will generate the final 5% invoice.\')){markJobComplete(\'' + job.id + '\');renderPage();}" class="btn-r" style="font-size:11px;padding:5px 14px;gap:4px" title="Dev only \u2014 mobile app stand-in for \u00a77.8">' + Icon({n:'check',size:13}) + ' Mark Complete (Dev)</button>')
+            : '')
         : '<span style="font-size:11px;padding:5px 14px;background:#f0fdf4;color:#15803d;border-radius:8px;font-weight:600">\u2705 Completed</span>')
     + '<button onclick="var type=prompt(\'Service call type (warranty/callback/repair/leak):\',\'callback\');if(!type)return;var desc=prompt(\'Description:\',\'\');addServiceCall(\'' + job.id + '\',type,\'medium\',desc);setState({crmMode:\'service\',page:\'servicelist\'});" class="btn-w" style="font-size:11px;padding:5px 10px;gap:4px">' + Icon({n:'phone',size:12}) + ' Service Call</button>'
     + '</div>'
