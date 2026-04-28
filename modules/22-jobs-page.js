@@ -715,7 +715,25 @@ function renderJobDetail() {
         if (!isManager) {
           tabContent += '<div style="font-size:12px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;padding:10px 12px;border-radius:8px">\ud83d\udd12 Only admins and Sales Managers can start the Final Design. Ask a manager to take the next step.</div>';
         } else {
+          tabContent += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
           tabContent += '<button onclick="openCadDesigner(\'job\',\''+job.id+'\',\'final\')" class="btn-r" style="font-size:13px;padding:8px 20px;gap:6px">\ud83d\udd12 Start Final Design</button>';
+          // Sandbox/test path: skip CAD and send DocuSign immediately. The PDF
+          // builder falls back to survey/original CAD data when cadFinalData
+          // is missing, so the envelope still has frame info \u2014 just not the
+          // Sales-Manager-locked Final version. Useful for end-to-end DocuSign
+          // testing before the full CAD flow has been exercised.
+          tabContent += '<button onclick="sendFinalDesignDocuSign(\''+job.id+'\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px" title="Send DocuSign without finalising in CAD first \u2014 useful for testing">\ud83d\udce4 Send DocuSign (Testing)</button>';
+          var dsRec1 = (typeof getDocuSignEnvelopeForJob === 'function') ? getDocuSignEnvelopeForJob(job.id) : null;
+          if (dsRec1 && dsRec1.envelopeId) {
+            tabContent += '<button onclick="refreshDocuSignStatus(\''+job.id+'\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px">\ud83d\udd04 Refresh Status</button>';
+          }
+          tabContent += '</div>';
+          if (dsRec1 && dsRec1.envelopeId) {
+            var dsCol1 = dsRec1.signedAt || dsRec1.status === 'completed' ? '#15803d'
+                       : dsRec1.status === 'declined' || dsRec1.status === 'voided' ? '#b91c1c'
+                       : '#1d4ed8';
+            tabContent += '<div style="margin-top:10px;padding:8px 12px;background:#f9fafb;border:1px solid '+dsCol1+'40;border-radius:6px;font-size:11px;color:'+dsCol1+'">\ud83d\udcdd DocuSign envelope <strong>'+(dsRec1.status||'sent').toUpperCase()+'</strong> \u00b7 <span style="font-family:monospace;color:#6b7280">'+dsRec1.envelopeId+'</span></div>';
+          }
         }
         tabContent += '</div>';
       }
