@@ -518,6 +518,199 @@ function setRepRate(repName, pct) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// SETTINGS HELPERS (Brief 4 Phase 5)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Concise wrappers used by the "Commission Rules" tab in Settings. Each
+// helper loads rules, mutates the relevant slice, and persists via
+// saveCommissionRules — which writes the audit entry. Empty-string /
+// null inputs on per-rep / per-branch overrides clear the field so it
+// falls back to defaults via getEffectiveRuleForRep's merge order.
+
+function _commValidGate(g) {
+  return g === 'won' || g === 'final_signed' || g === 'final_payment';
+}
+
+function setCommissionDefault(field, value) {
+  if (field !== 'baseRate' && field !== 'ageThresholdDays' && field !== 'agePenaltyPct' && field !== 'realisationGate') return;
+  var rules = getCommissionRules();
+  var prev = rules.defaults[field];
+  var next;
+  if (field === 'realisationGate') {
+    if (!_commValidGate(value)) { addToast('Invalid gate value', 'error'); return; }
+    next = value;
+  } else {
+    next = parseFloat(value);
+    if (isNaN(next) || next < 0) { addToast('Invalid number', 'error'); return; }
+  }
+  if (prev === next) return; // no-op — don't pollute audit log with no-changes
+  rules.defaults[field] = next;
+  saveCommissionRules(rules, {
+    summary: 'Default ' + field + ': ' + (prev == null ? '—' : prev) + ' → ' + next,
+    before: { defaults: { field: field, value: prev } },
+    after:  { defaults: { field: field, value: next } },
+    metadata: { kind: 'default', field: field },
+  });
+  addToast('Default ' + field + ' updated', 'success');
+  renderPage();
+}
+
+// Set a per-rep override field. Empty / null value clears the field
+// (falls back to defaults via the merge order). Pass field='__delete'
+// to wipe the entire perRep[repName] entry.
+function setCommissionPerRep(repName, field, value) {
+  if (!repName) return;
+  var rules = getCommissionRules();
+  if (!rules.perRep[repName]) rules.perRep[repName] = {};
+  var rec = rules.perRep[repName];
+  var prev = rec[field];
+  var next;
+  if (value === '' || value == null) {
+    // Clear the field — caller wants to fall back to default.
+    delete rec[field];
+    next = null;
+  } else if (field === 'realisationGate') {
+    if (!_commValidGate(value)) { addToast('Invalid gate value', 'error'); return; }
+    next = value;
+    rec[field] = next;
+  } else {
+    next = parseFloat(value);
+    if (isNaN(next) || next < 0) { addToast('Invalid number', 'error'); return; }
+    rec[field] = next;
+  }
+  // If the per-rep record is now empty, drop it so getEffectiveRuleForRep
+  // cleanly falls through to defaults / perBranch.
+  if (Object.keys(rec).length === 0) delete rules.perRep[repName];
+  if (prev === next) return; // no-op
+  saveCommissionRules(rules, {
+    summary: repName + ' ' + field + ': ' + (prev == null ? '—' : prev) + ' → ' + (next == null ? '(use default)' : next),
+    before: { repName: repName, field: field, value: prev == null ? null : prev },
+    after:  { repName: repName, field: field, value: next },
+    metadata: { kind: 'per_rep_override', repName: repName, field: field },
+  });
+  addToast(repName + ' ' + field + ' updated', 'success');
+  renderPage();
+}
+
+// Per-branch baseRate override. Same clear-on-empty semantics as per-rep.
+function setCommissionPerBranch(branchCode, value) {
+  if (!branchCode) return;
+  var rules = getCommissionRules();
+  if (!rules.perBranch[branchCode]) rules.perBranch[branchCode] = {};
+  var rec = rules.perBranch[branchCode];
+  var prev = rec.baseRate;
+  var next;
+  if (value === '' || value == null) {
+    delete rec.baseRate;
+    next = null;
+  } else {
+    next = parseFloat(value);
+    if (isNaN(next) || next < 0) { addToast('Invalid number', 'error'); return; }
+    rec.baseRate = next;
+  }
+  if (Object.keys(rec).length === 0) delete rules.perBranch[branchCode];
+  if (prev === next) return;
+  saveCommissionRules(rules, {
+    summary: branchCode + ' branch baseRate: ' + (prev == null ? '—' : prev + '%') + ' → ' + (next == null ? '(use default)' : next + '%'),
+    before: { branchCode: branchCode, baseRate: prev == null ? null : prev },
+    after:  { branchCode: branchCode, baseRate: next },
+    metadata: { kind: 'per_branch_base_rate', branchCode: branchCode },
+  });
+  addToast(branchCode + ' rate updated', 'success');
+  renderPage();
+}
+
+// ── Product multipliers ─────────────────────────────────────────────────────
+function addCommissionMultiplier() {
+  var rules = getCommissionRules();
+  rules.productMultipliers.push({ productKey: '', label: 'New product', multiplier: 1.0 });
+  saveCommissionRules(rules, {
+    summary: 'Added new product multiplier row',
+    metadata: { kind: 'product_multiplier_added' },
+  });
+  renderPage();
+}
+function removeCommissionMultiplier(idx) {
+  var rules = getCommissionRules();
+  if (idx < 0 || idx >= rules.productMultipliers.length) return;
+  var removed = rules.productMultipliers[idx];
+  if (removed && removed.productKey === '_default') {
+    addToast("Cannot remove the '_default' multiplier — it's the catch-all", 'error');
+    return;
+  }
+  rules.productMultipliers.splice(idx, 1);
+  saveCommissionRules(rules, {
+    summary: "Removed product multiplier '" + (removed && removed.productKey) + "'",
+    before: { multiplier: removed },
+    metadata: { kind: 'product_multiplier_removed' },
+  });
+  addToast('Multiplier removed', 'warning');
+  renderPage();
+}
+function setCommissionMultiplier(idx, field, value) {
+  if (field !== 'productKey' && field !== 'label' && field !== 'multiplier') return;
+  var rules = getCommissionRules();
+  if (idx < 0 || idx >= rules.productMultipliers.length) return;
+  var row = rules.productMultipliers[idx];
+  var prev = row[field];
+  var next = (field === 'multiplier') ? parseFloat(value) : String(value || '');
+  if (field === 'multiplier' && (isNaN(next) || next < 0)) { addToast('Invalid multiplier', 'error'); return; }
+  if (prev === next) return;
+  row[field] = next;
+  saveCommissionRules(rules, {
+    summary: "Multiplier '" + (row.productKey || '?') + "' " + field + ': ' + (prev == null ? '—' : prev) + ' → ' + next,
+    before: { idx: idx, field: field, value: prev },
+    after:  { idx: idx, field: field, value: next },
+    metadata: { kind: 'product_multiplier_edited', productKey: row.productKey || null, field: field },
+  });
+  addToast('Multiplier updated', 'success');
+  renderPage();
+}
+
+// ── Volume bonuses ──────────────────────────────────────────────────────────
+function addCommissionBonus() {
+  var rules = getCommissionRules();
+  rules.volumeBonuses.push({ threshold: 0, bonusPct: 0 });
+  saveCommissionRules(rules, {
+    summary: 'Added new volume bonus row',
+    metadata: { kind: 'volume_bonus_added' },
+  });
+  renderPage();
+}
+function removeCommissionBonus(idx) {
+  var rules = getCommissionRules();
+  if (idx < 0 || idx >= rules.volumeBonuses.length) return;
+  var removed = rules.volumeBonuses[idx];
+  rules.volumeBonuses.splice(idx, 1);
+  saveCommissionRules(rules, {
+    summary: 'Removed volume bonus (threshold $' + (removed && removed.threshold) + ')',
+    before: { bonus: removed },
+    metadata: { kind: 'volume_bonus_removed' },
+  });
+  addToast('Bonus removed', 'warning');
+  renderPage();
+}
+function setCommissionBonus(idx, field, value) {
+  if (field !== 'threshold' && field !== 'bonusPct') return;
+  var rules = getCommissionRules();
+  if (idx < 0 || idx >= rules.volumeBonuses.length) return;
+  var row = rules.volumeBonuses[idx];
+  var prev = row[field];
+  var next = parseFloat(value);
+  if (isNaN(next) || next < 0) { addToast('Invalid number', 'error'); return; }
+  if (prev === next) return;
+  row[field] = next;
+  saveCommissionRules(rules, {
+    summary: 'Volume bonus ' + field + ': ' + (prev == null ? '—' : prev) + ' → ' + next,
+    before: { idx: idx, field: field, value: prev },
+    after:  { idx: idx, field: field, value: next },
+    metadata: { kind: 'volume_bonus_edited', field: field },
+  });
+  addToast('Bonus updated', 'success');
+  renderPage();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // CALC ENGINE (Brief 4 Phase 2)
 // ════════════════════════════════════════════════════════════════════════════
 //
