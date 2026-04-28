@@ -764,6 +764,17 @@ function renderInstallSchedule() {
     });
   });
   gapRecs.sort(function(a,b){return b.freeH-a.freeH;});
+  // Dedupe: keep the best gap per unscheduled job, then per installer.
+  var seenJobs = {};
+  var seenInstDay = {};
+  gapRecs = gapRecs.filter(function(gr){
+    if (seenJobs[gr.bestJob.id]) return false;
+    var key = gr.inst.id;
+    if (seenInstDay[key]) return false;
+    seenJobs[gr.bestJob.id] = true;
+    seenInstDay[key] = true;
+    return true;
+  });
   gapRecs.slice(0,4).forEach(function(gr){
     var c=contacts.find(function(ct){return ct.id===gr.bestJob.contactId;});var cn=c?c.fn+' '+c.ln:'';
     recs.push({type:'capacity',priority:2,icon:'\ud83d\udcc5',
