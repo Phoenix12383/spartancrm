@@ -818,6 +818,23 @@ function renderJobDetail() {
       +'<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" '+(job.petOnPremises?'checked':'')+' onchange="updateJobField(\''+job.id+'\',\'petOnPremises\',this.checked)"> Pet on Premises</label>'
       +'</div></div>';
 
+    // Tools Required card (admin/install manager picks which tools the job needs)
+    var allTools = (typeof getTools === 'function' ? getTools() : []).filter(function(t){return t.active!==false;});
+    var requiredToolIds = (typeof getJobTools === 'function') ? getJobTools(job.id) : [];
+    var TICONS = {lifting:'🏗️',access:'🪜',sealing:'🧴',fastening:'🔩',measuring:'📏',other:'🛠️'};
+    if (allTools.length > 0 || requiredToolIds.length > 0) {
+      tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
+        +'<h5 style="font-size:13px;font-weight:700;margin:0 0 10px">Tools Required</h5>'
+        +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;min-height:28px">'
+        +(requiredToolIds.length===0?'<span style="font-size:11px;color:#9ca3af;font-style:italic">No tools specified</span>':requiredToolIds.map(function(tid){var t=allTools.find(function(x){return x.id===tid;})||{name:'(removed tool)',category:'other'};return '<span style="display:inline-flex;align-items:center;gap:6px;background:#f3f4f6;border:1px solid #e5e7eb;color:#374151;padding:3px 8px;border-radius:14px;font-size:11px;font-weight:600">'+(TICONS[t.category]||'🛠️')+' '+t.name+'<button onclick="setJobTools(\''+job.id+'\',getJobTools(\''+job.id+'\').filter(function(c){return c!==\''+tid+'\'}));renderPage()" style="background:none;border:none;color:#6b7280;cursor:pointer;padding:0;font-size:13px;line-height:1">×</button></span>';}).join(''))
+        +'</div>'
+        +(allTools.filter(function(t){return requiredToolIds.indexOf(t.id)<0;}).length>0?'<select class="sel" onchange="if(this.value){var cur=getJobTools(\''+job.id+'\');if(cur.indexOf(this.value)<0){setJobTools(\''+job.id+'\',cur.concat([this.value]));renderPage();}this.value=\'\';}" style="font-size:12px;padding:6px 10px;max-width:280px">'
+          +'<option value="">+ Add required tool…</option>'
+          +allTools.filter(function(t){return requiredToolIds.indexOf(t.id)<0;}).map(function(t){return '<option value="'+t.id+'">'+(TICONS[t.category]||'🛠️')+' '+t.name+'</option>';}).join('')
+          +'</select>':'<div style="font-size:10px;color:#9ca3af">All available tools added.</div>')
+        +'</div>';
+    }
+
     // Completion card
     var canComplete = !!job.completionSignedAt && !installDone;
     tabContent += '<div class="card" style="padding:16px">'

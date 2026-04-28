@@ -138,6 +138,31 @@ function saveVehicles(list) { localStorage.setItem('spartan_vehicles', JSON.stri
 function addVehicle(data) { var list = getVehicles(); data.id = 'veh_' + Date.now(); data.active = true; list.push(data); saveVehicles(list); renderPage(); }
 function updateVehicle(id, changes) { saveVehicles(getVehicles().map(function(v){ return v.id === id ? Object.assign({}, v, changes) : v; })); renderPage(); }
 function removeVehicle(id) { saveVehicles(getVehicles().filter(function(v){ return v.id !== id; })); addToast('Vehicle removed', 'warning'); renderPage(); }
+
+// ── Tools registry ──────────────────────────────────────────────────────────
+// Tools are either pool-shared (any crew can use) or assigned to an installer.
+// Jobs declare toolsRequired[] (array of tool ids); the Smart Recommendations
+// flag scheduled jobs whose crew lacks any required tool.
+function getTools() { try { return JSON.parse(localStorage.getItem('spartan_tools') || '[]'); } catch(e) { return []; } }
+function saveTools(list) { localStorage.setItem('spartan_tools', JSON.stringify(list)); }
+function addTool(data) { var list = getTools(); data.id = 'tool_' + Date.now(); data.active = true; list.push(data); saveTools(list); renderPage(); }
+function updateTool(id, changes) { saveTools(getTools().map(function(t){ return t.id === id ? Object.assign({}, t, changes) : t; })); renderPage(); }
+function removeTool(id) { saveTools(getTools().filter(function(t){ return t.id !== id; })); addToast('Tool removed', 'warning'); renderPage(); }
+window.getTools = getTools; window.saveTools = saveTools; window.addTool = addTool; window.updateTool = updateTool; window.removeTool = removeTool;
+
+// Per-job required-tool list (side store — until Supabase has tools_required column on jobs)
+function getJobTools(jobId) {
+  try { var m = JSON.parse(localStorage.getItem('spartan_job_tools') || '{}'); return m[jobId] || []; }
+  catch(e) { return []; }
+}
+function setJobTools(jobId, toolIds) {
+  try {
+    var m = JSON.parse(localStorage.getItem('spartan_job_tools') || '{}');
+    m[jobId] = toolIds;
+    localStorage.setItem('spartan_job_tools', JSON.stringify(m));
+  } catch(e) {}
+}
+window.getJobTools = getJobTools; window.setJobTools = setJobTools;
 function addInstaller(name, phone, branch, colour) {
   var list = getInstallers();
   var parts = (name||'').trim().split(' ');
@@ -835,6 +860,30 @@ function renderInstallSchedule() {
       recs.push({type:'overload',priority:0,icon:'\u26a0\ufe0f',
         title:'Too many frames for vehicle on '+jobLabel,
         detail:fr+' frames vs vehicle limit of '+bestCap+'. Consider splitting the job across two days or using a larger vehicle.'
+      });
+    }
+  });
+
+  // 7. Tool match validation per scheduled job
+  var allTools = (typeof getTools === 'function' ? getTools() : []).filter(function(t){return t.active!==false;});
+  weekJobs.forEach(function(j){
+    var crew = j.installCrew || [];
+    if (crew.length === 0) return;
+    var required = (typeof getJobTools === 'function') ? getJobTools(j.id) : [];
+    if (required.length === 0) return;
+    var missing = [];
+    required.forEach(function(tid){
+      var tool = allTools.find(function(t){return t.id===tid;});
+      if (!tool) return; // tool was deleted, skip
+      // Shared tools assumed available; assigned tools require their owner in the crew.
+      if (tool.shared !== false) return;
+      if (!tool.assignedTo) { missing.push(tool.name + ' (unassigned)'); return; }
+      if (crew.indexOf(tool.assignedTo) < 0) { missing.push(tool.name); }
+    });
+    if (missing.length > 0) {
+      recs.push({type:'overload',priority:1,icon:'\ud83d\udee0\ufe0f',
+        title:'Crew missing tool'+(missing.length>1?'s':'')+' for '+(j.jobNumber||'')+(j.suburb?' \u00b7 '+j.suburb:''),
+        detail:'Required: '+missing.join(', ')+'. Reassign a crew member who has the tool, or share/reassign the tool in Settings \u2192 Tools.'
       });
     }
   });

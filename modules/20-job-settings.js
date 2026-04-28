@@ -12,11 +12,13 @@ var jsNewField = {label:'',type:'text',options:[],required:false,newOpt:''};
 var jsAddingField = false;
 var jsEditFieldId = null;
 var editingVehicleId = null;
+var editingToolId = null;
 
 function renderJobSettings() {
   var TABS = [
     ['installers','Installers & Crew'],
     ['vehicles','Vehicles'],
+    ['tools','Tools'],
     ['capacity','Capacity'],
     ['targets','Weekly Targets'],
     ['jobfields','Job Custom Fields'],
@@ -212,6 +214,64 @@ function renderJobSettings() {
             +(v.active?'<span style="font-size:10px;background:#dcfce7;color:#15803d;padding:2px 8px;border-radius:4px;font-weight:600">Active</span>':'<span style="font-size:10px;background:#f3f4f6;color:#9ca3af;padding:2px 8px;border-radius:4px;font-weight:600">Inactive</span>')
             +(isAdmin?'<button onclick="event.stopPropagation();updateVehicle(\''+v.id+'\',{active:'+(!v.active)+'});addToast(\''+(v.active?'Deactivated':'Activated')+'\',\'success\')" class="btn-g" style="font-size:11px;padding:4px 8px">'+(v.active?'Deactivate':'Activate')+'</button>':'')
             +(isAdmin?'<button onclick="event.stopPropagation();if(confirm(\'Remove '+v.name+'?\')){removeVehicle(\''+v.id+'\')}" class="btn-g" style="font-size:11px;padding:4px 8px;color:#ef4444">✕</button>':'')
+            +'</div></div>';
+        });
+        content += '</div>';
+      }
+    }
+
+  // ── TOOLS ─────────────────────────────────────────────────────────────────
+  } else if (jobSettTab === 'tools') {
+    var toolList = (typeof getTools === 'function') ? getTools() : [];
+    var isAdmin = ((getCurrentUser()||{role:''}).role === 'admin');
+    var TCATS = {lifting:'Lifting',access:'Access',sealing:'Sealing',fastening:'Fastening',measuring:'Measuring',other:'Other'};
+    var TICONS = {lifting:'🏗️',access:'🪜',sealing:'🧴',fastening:'🔩',measuring:'📏',other:'🛠️'};
+    var editTool = editingToolId ? toolList.find(function(t){return t.id===editingToolId;}) : null;
+
+    if ((editingToolId === '_new' || editTool) && isAdmin) {
+      var tt = editTool || {name:'',category:'lifting',assignedTo:'',shared:true,notes:'',active:true};
+      content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+        +'<h4 style="font-size:15px;font-weight:700;margin:0">'+(editTool?'Edit Tool':'New Tool')+'</h4>'
+        +'<button onclick="editingToolId=null;renderPage()" class="btn-g" style="font-size:12px">Cancel</button></div>';
+      content += '<div class="card" style="padding:16px;max-width:600px">'
+        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+        +'<div style="grid-column:span 2"><label style="font-size:10px;font-weight:600;color:#6b7280">Tool Name *</label><input class="inp" id="tool_name" value="'+(tt.name||'')+'" placeholder="e.g. Bifold Lift Jig, Aluminium Scaffold" style="font-size:13px;padding:8px"></div>'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Category</label><select class="sel" id="tool_cat" style="font-size:13px;padding:8px">'+Object.entries(TCATS).map(function(e){return '<option value="'+e[0]+'"'+(tt.category===e[0]?' selected':'')+'>'+e[1]+'</option>';}).join('')+'</select></div>'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Availability</label><select class="sel" id="tool_shared" style="font-size:13px;padding:8px"><option value="true"'+(tt.shared!==false?' selected':'')+'>Shared (depot pool)</option><option value="false"'+(tt.shared===false?' selected':'')+'>Assigned to one installer</option></select></div>'
+        +'<div style="grid-column:span 2"><label style="font-size:10px;font-weight:600;color:#6b7280">Assigned Installer (only if not shared)</label>'
+        +'<select class="sel" id="tool_inst" style="font-size:13px;padding:8px"><option value="">— none —</option>'
+        +getInstallers().filter(function(i){return i.active;}).map(function(i){return '<option value="'+i.id+'"'+(tt.assignedTo===i.id?' selected':'')+'>'+i.name+'</option>';}).join('')
+        +'</select></div>'
+        +'<div style="grid-column:span 2"><label style="font-size:10px;font-weight:600;color:#6b7280">Notes</label><textarea class="inp" id="tool_notes" rows="2" style="font-size:12px;resize:vertical">'+(tt.notes||'')+'</textarea></div>'
+        +'</div></div>';
+      content += '<div style="display:flex;gap:8px;margin-top:14px">'
+        +'<button onclick="var name=document.getElementById(\'tool_name\').value.trim();if(!name){addToast(\'Tool name required\',\'error\');return;}'
+        +'var d={name:name,category:document.getElementById(\'tool_cat\').value,shared:document.getElementById(\'tool_shared\').value===\'true\',assignedTo:document.getElementById(\'tool_inst\').value,notes:document.getElementById(\'tool_notes\').value};'
+        +'if(editingToolId&&editingToolId!==\'_new\'){updateTool(editingToolId,d);addToast(name+\' updated\',\'success\');}else{addTool(d);addToast(name+\' added\',\'success\');}editingToolId=null;renderPage();" class="btn-r" style="font-size:13px;padding:8px 24px">'+(editTool?'Update Tool':'Add Tool')+'</button>'
+        +'<button onclick="editingToolId=null;renderPage()" class="btn-w" style="font-size:13px">Cancel</button></div>';
+    } else {
+      content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+        +'<div style="font-size:13px;color:#6b7280">'+toolList.length+' tool'+(toolList.length!==1?'s':'')+'</div>'
+        +(isAdmin?'<button class="btn-r" style="font-size:12px" onclick="editingToolId=\'_new\';renderPage()">+ New Tool</button>':'<span style="font-size:11px;color:#9ca3af;padding:6px 10px;background:#f9fafb;border-radius:6px">Only admins can add tools</span>')
+        +'</div>';
+      if (toolList.length === 0) {
+        content += '<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px">No tools added yet.'+(isAdmin?' Click "New Tool" to add bifold lift jigs, scaffolds, ladders, etc.':'')+'</div>';
+      } else {
+        content += '<div style="display:flex;flex-direction:column;gap:8px">';
+        toolList.forEach(function(t){
+          var assignedInst = (!t.shared && t.assignedTo) ? getInstallers().find(function(i){return i.id===t.assignedTo;}) : null;
+          var catCol = {lifting:'#f59e0b',access:'#3b82f6',sealing:'#22c55e',fastening:'#a855f7',measuring:'#06b6d4',other:'#6b7280'}[t.category] || '#9ca3af';
+          content += '<div style="display:flex;align-items:center;gap:12px;padding:14px 16px;background:#f9fafb;border-radius:10px;'+(isAdmin?'cursor:pointer':'cursor:default')+'" '+(isAdmin?'onclick="editingToolId=\''+t.id+'\';renderPage()" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#f9fafb\'"':'')+'>'
+            +'<div style="width:42px;height:42px;border-radius:10px;background:'+catCol+';color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(TICONS[t.category]||'🛠️')+'</div>'
+            +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:14px;font-weight:600">'+t.name+'</div>'
+            +'<div style="font-size:12px;color:#6b7280;margin-top:2px">'+(TCATS[t.category]||t.category)+(t.shared!==false?' · Shared (pool)':assignedInst?' · '+assignedInst.name:' · Assigned (installer missing)')+'</div>'
+            +(t.notes?'<div style="font-size:11px;color:#9ca3af;margin-top:2px">'+t.notes+'</div>':'')
+            +'</div>'
+            +'<div style="display:flex;gap:6px;align-items:center">'
+            +(t.active!==false?'<span style="font-size:10px;background:#dcfce7;color:#15803d;padding:2px 8px;border-radius:4px;font-weight:600">Active</span>':'<span style="font-size:10px;background:#f3f4f6;color:#9ca3af;padding:2px 8px;border-radius:4px;font-weight:600">Inactive</span>')
+            +(isAdmin?'<button onclick="event.stopPropagation();updateTool(\''+t.id+'\',{active:'+(!(t.active!==false))+'});addToast(\''+(t.active!==false?'Deactivated':'Activated')+'\',\'success\')" class="btn-g" style="font-size:11px;padding:4px 8px">'+(t.active!==false?'Deactivate':'Activate')+'</button>':'')
+            +(isAdmin?'<button onclick="event.stopPropagation();if(confirm(\'Remove '+t.name.replace(/\'/g,'\\\'')+'?\')){removeTool(\''+t.id+'\')}" class="btn-g" style="font-size:11px;padding:4px 8px;color:#ef4444">✕</button>':'')
             +'</div></div>';
         });
         content += '</div>';
