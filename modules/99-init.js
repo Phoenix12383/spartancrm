@@ -147,12 +147,13 @@ if(!getCurrentUser()){
       } else {
         if (el2) el2.textContent = 'Using offline cache\u2026';
       }
-      setTimeout(function(){ renderPage(); gmailInit(); autoRestoreGmail(); setTimeout(loadGoogleMaps, 500); }, 300);
+      setTimeout(function(){ renderPage(); gmailInit(); autoRestoreGmail(); if(typeof twilioInit==='function')twilioInit(); setTimeout(loadGoogleMaps, 500); }, 300);
     }).catch(function(e) {
       console.error('[Spartan] Startup error:', e);
       renderPage();
       gmailInit();
       autoRestoreGmail();
+      if (typeof twilioInit === 'function') twilioInit();
       setTimeout(loadGoogleMaps, 500);
     });
   } else {
@@ -160,6 +161,6 @@ if(!getCurrentUser()){
     console.warn('[Spartan] Running offline — Supabase JS not loaded');
     var el = document.getElementById('loadStatus');
     if (el) el.textContent = 'Offline mode \u2014 launching\u2026';
-    setTimeout(function(){ renderPage(); gmailInit(); autoRestoreGmail(); setTimeout(loadGoogleMaps, 500); }, 300);
+    setTimeout(function(){ renderPage(); gmailInit(); autoRestoreGmail(); if(typeof twilioInit==='function')twilioInit(); setTimeout(loadGoogleMaps, 500); }, 300);
   }
 }

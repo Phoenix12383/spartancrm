@@ -19,6 +19,8 @@
     <script src="https://unpkg.com/react-dom@17.0.2/umd/react-dom.production.min.js" defer></script>
     <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/recharts@2.12.7/umd/Recharts.min.js" defer></script>
+    <!-- Twilio Voice SDK — exposes window.Twilio.Device for the phone module. -->
+    <script src="https://sdk.twilio.com/js/client/releases/2.11.0/twilio.min.js"></script>
 </head>
 <body>
     <div id="app"></div>
@@ -74,8 +76,9 @@
             '06-email-tracking.js',
             '10-integrations.js',
             '11-email-page.js',
+            '28-twilio.js',            // Twilio Voice/SMS — must load AFTER 10-integrations.js (reads getState().gmailToken) and BEFORE 99-init.js (calls twilioInit)
             '14a-google-maps-real.js', // must load AFTER 11-email-page.js so it can wrap the real onGoogleMapsLoaded instead of being clobbered by it
-            
+
             // Layer 10: Service & Settings
             '19-service-crm.js',
             '20-job-settings.js',
