@@ -944,9 +944,14 @@ function moveStage(stageId, dir) {
   pl.stages = [...mid.map((s, i) => ({ ...s, ord: i + 1 })), ...pl.stages.filter(s => s.isWon), ...pl.stages.filter(s => s.isLost)];
   renderPage();
 }
-function saveDealEdit() {
-  // NOTE: this is the kanban quick-edit variant. A second saveDealEdit for the
-  // full Edit Deal drawer lives ~line 771 — keep the two in sync or consolidate.
+// Kanban quick-edit save. Distinct from the full Edit Deal drawer's
+// saveDealEdit() (~line 785), which uses getState().editingDealId and a
+// different DOM (de_closeDate vs de_close, no de_stage). Renamed in the
+// dedupe pass — both functions previously shared the saveDealEdit name,
+// and "last function declaration wins" in browsers meant the kanban
+// version was running for BOTH callers, breaking the drawer save flow
+// (kanbanEditModal would be null when arriving from deal detail).
+function saveDealKanbanQuickEdit() {
   const d = kanbanEditModal.data;
   const title = document.getElementById('de_title')?.value.trim();
   const valEl = document.getElementById('de_val');
@@ -1125,7 +1130,7 @@ function renderKanbanModal() {
           <button onclick="if(confirm('Delete this deal?')){dbDelete('deals','${data.id}');setState({deals:getState().deals.filter(d=>d.id!=='${data.id}')});closeKanbanModal();addToast('Deal deleted','warning')}" style="font-size:12px;color:#b91c1c;background:none;border:none;cursor:pointer;font-family:inherit;font-weight:500">Delete</button>
           <div style="display:flex;gap:8px">
             <button onclick="closeKanbanModal()" class="btn-w">Cancel</button>
-            <button onclick="saveDealEdit()" class="btn-r">Save</button>
+            <button onclick="saveDealKanbanQuickEdit()" class="btn-r">Save</button>
           </div>
         </div>
       </div>
