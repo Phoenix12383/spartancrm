@@ -846,48 +846,52 @@ function renderJobDetail() {
     var frames = frameSource.length;
     // Always render the card so testers can see the feature. Show helpful messages when prerequisites missing.
     {
-      tabContent += '<div class="card" style="padding:16px;margin-bottom:14px;border:2px dashed #c4b5fd">'
-        +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">'
-        +'<div><h5 style="font-size:13px;font-weight:700;margin:0">🔨 Install Progress</h5>'
-        +'<div style="font-size:10px;color:#7c3aed;font-weight:600;margin-top:2px">🧪 TESTING — these stages will be tapped by the install crew on the mobile app once that ships. For now, admin can update manually here.</div></div>'
-        +(frames>0&&hasInstallDate?(instProgress.arrivedAt?'<span style="font-size:10px;color:#15803d;background:#dcfce7;padding:3px 8px;border-radius:4px;font-weight:600">✅ Arrived '+new Date(instProgress.arrivedAt).toLocaleString('en-AU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</span>':'<button onclick="markCrewArrived(\''+job.id+'\')" class="btn-r" style="font-size:11px;padding:4px 10px">📍 Tap Arrived</button>'):'')
-        +'</div>';
-      if (!hasInstallDate) {
-        tabContent += '<div style="padding:14px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e">⏳ Schedule the install date first (above) before tracking progress.</div></div>';
-      } else if (frames === 0) {
-        tabContent += '<div style="padding:14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:12px;color:#1d4ed8">📐 This job has no frames defined yet. Frames are added during Original Design / Check Measure. Once frames exist, each will appear here as a per-stage tracker.</div></div>';
-      } else {
-        tabContent += ''
-        // Overall progress bar
-        +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
-        +'<div style="flex:1;height:10px;background:#f3f4f6;border-radius:5px;overflow:hidden"><div style="height:100%;background:linear-gradient(90deg,#22c55e,#16a34a);width:'+progressPct+'%;border-radius:5px;transition:width .3s"></div></div>'
-        +'<span style="font-size:12px;font-weight:700;color:#15803d;min-width:40px;text-align:right">'+progressPct+'%</span>'
-        +'</div>'
-        // Per-frame stepper
-        +'<div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:6px">Per-frame stages — click to advance</div>'
-        +'<div style="display:flex;flex-direction:column;gap:6px;max-height:300px;overflow-y:auto">';
+      var STAGE_LABELS = ['','Demo','Fit','Foam','Trim','Glaze','HW','Clean'];
+      var STAGE_FULL = ['Not Started','Demo\'d','Fitted','Foamed','Trimmed','Glazed','Hardware Tested','Cleaned'];
       var stageColours = ['#e5e7eb','#fbbf24','#f59e0b','#06b6d4','#3b82f6','#a855f7','#ec4899','#22c55e'];
+
+      tabContent += '<div class="card" style="padding:0;margin-bottom:14px;border:2px dashed #c4b5fd;overflow:hidden">'
+        // Header strip
+        +'<div style="padding:12px 16px;background:linear-gradient(180deg,#faf5ff,#fff);border-bottom:1px solid #ede9fe;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">'
+        +'<div style="display:flex;align-items:center;gap:10px"><span style="font-size:18px">🔨</span><h5 style="font-size:14px;font-weight:700;margin:0">Install Progress</h5></div>'
+        +(frames>0&&hasInstallDate?(instProgress.arrivedAt?'<span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#15803d;background:#dcfce7;padding:5px 10px;border-radius:14px;font-weight:600">✅ Arrived '+new Date(instProgress.arrivedAt).toLocaleString('en-AU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</span>':'<button onclick="markCrewArrived(\''+job.id+'\')" class="btn-r" style="font-size:12px;padding:6px 14px;gap:4px">📍 Tap Arrived</button>'):'')
+        +'</div>'
+        // Testing strip
+        +'<div style="padding:8px 16px;background:#f5f3ff;border-bottom:1px solid #ede9fe;font-size:11px;color:#6d28d9;font-weight:500">🧪 <strong>TESTING</strong> — these stages will be tapped by the install crew on the mobile app once that ships. For now, admin can update manually here.</div>'
+        // Body
+        +'<div style="padding:16px">';
+
+      if (!hasInstallDate) {
+        tabContent += '<div style="padding:14px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e">⏳ Schedule the install date first (above) before tracking progress.</div></div></div>';
+      } else if (frames === 0) {
+        tabContent += '<div style="padding:14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:12px;color:#1d4ed8">📐 This job has no frames defined yet. Frames are added during Original Design / Check Measure. Once frames exist, each will appear here as a per-stage tracker.</div></div></div>';
+      } else {
+        // Overall progress bar
+        tabContent += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">'
+          +'<div style="font-size:11px;font-weight:600;color:#6b7280;min-width:60px">Overall</div>'
+          +'<div style="flex:1;height:12px;background:#f3f4f6;border-radius:6px;overflow:hidden;position:relative"><div style="height:100%;background:linear-gradient(90deg,#22c55e,#16a34a);width:'+progressPct+'%;border-radius:6px;transition:width .3s"></div></div>'
+          +'<span style="font-size:14px;font-weight:800;color:#15803d;min-width:48px;text-align:right;font-family:Syne,sans-serif">'+progressPct+'%</span>'
+          +'</div>'
+          // Per-frame heading
+          +'<div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Per-frame stages · click any stage to advance, click again to roll back</div>'
+          +'<div style="display:flex;flex-direction:column;gap:6px;max-height:340px;overflow-y:auto">';
       for (var fi = 0; fi < frames; fi++) {
         var w = frameSource[fi] || {};
         var curStage = (instProgress.frameStages && instProgress.frameStages[fi]) || 0;
         var frameLabel = (w.position || w.name || w.location || w.label || ('Frame ' + (fi+1)));
-        tabContent += '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#f9fafb;border-radius:6px">'
-          +'<div style="font-size:11px;font-weight:600;min-width:90px;color:#374151">'+frameLabel+'</div>'
-          +'<div style="display:flex;gap:2px;flex:1">';
+        var rowPct = Math.round(curStage / 7 * 100);
+        tabContent += '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:'+(curStage>=7?'#f0fdf4':'#f9fafb')+';border:1px solid '+(curStage>=7?'#bbf7d0':'#f3f4f6')+';border-radius:8px">'
+          +'<div style="min-width:80px;font-size:12px;font-weight:700;color:#374151">'+frameLabel+'</div>'
+          +'<div style="display:flex;gap:3px;flex:1">';
         for (var si = 1; si <= 7; si++) {
           var done = curStage >= si;
-          tabContent += '<button onclick="setFrameStage(\''+job.id+'\','+fi+','+(curStage===si?si-1:si)+');renderPage()" title="'+INSTALL_STAGES[si]+' — click to '+(done?'unset':'mark complete')+'" style="flex:1;padding:4px 0;font-size:9px;font-weight:600;background:'+(done?stageColours[si]:'#fff')+';color:'+(done?'#fff':'#9ca3af')+';border:1px solid '+(done?stageColours[si]:'#e5e7eb')+';border-radius:4px;cursor:pointer">'+INSTALL_STAGES[si].charAt(0)+'</button>';
+          tabContent += '<button onclick="setFrameStage(\''+job.id+'\','+fi+','+(curStage===si?si-1:si)+');renderPage()" title="'+STAGE_FULL[si]+' — click to '+(done?'roll back':'mark complete')+'" style="flex:1;padding:5px 0;font-size:10px;font-weight:700;background:'+(done?stageColours[si]:'#fff')+';color:'+(done?'#fff':'#9ca3af')+';border:1.5px solid '+(done?stageColours[si]:'#e5e7eb')+';border-radius:5px;cursor:pointer;transition:all .15s">'+STAGE_LABELS[si]+'</button>';
         }
         tabContent += '</div>'
-          +'<div style="font-size:10px;color:#6b7280;min-width:70px;text-align:right">'+(curStage===0?'Not started':INSTALL_STAGES[curStage])+'</div>'
+          +'<div style="font-size:11px;color:'+(curStage>=7?'#15803d':curStage>0?'#3b82f6':'#9ca3af')+';font-weight:600;min-width:90px;text-align:right">'+(curStage===0?'Not started':curStage>=7?'✅ '+STAGE_FULL[curStage]:rowPct+'% · '+STAGE_FULL[curStage])+'</div>'
           +'</div>';
       }
-      tabContent += '</div>'
-        // Stage legend
-        +'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;font-size:10px;color:#6b7280">'
-        +'<span><b>D</b>=Demo\'d</span><span><b>F</b>=Fitted</span><span><b>F</b>=Foamed</span><span><b>T</b>=Trimmed</span><span><b>G</b>=Glazed</span><span><b>H</b>=Hardware</span><span><b>C</b>=Cleaned</span>'
-        +'</div>'
-        +'</div>';
+      tabContent += '</div></div></div>';
       } // close else branch
     } // close progress card block
 
