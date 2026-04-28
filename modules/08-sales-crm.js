@@ -2082,8 +2082,15 @@ function renderEntityDetail({
                 </div>
               </div>
 
-              <!-- Body -->
-              ${act.text && act.type !== 'stage' ? `<div style="font-size:13px;color:#374151;line-height:1.6;white-space:pre-wrap;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'}">${act.text}</div>` : ''}
+              <!-- Body. Brief 6 Phase 1: email activities sanitise + render
+                   their HTML body via _sanitizeEmailBody (handles plain-text
+                   vs HTML internally, including pre-wrap for plain text).
+                   Other activity types stay on the existing pre-wrap raw
+                   render — their text is plain and includes intentional
+                   newlines from edit/note/call activities. -->
+              ${act.text && act.type !== 'stage' ? (act.type === 'email' && typeof _sanitizeEmailBody === 'function'
+                ? `<div style="font-size:13px;color:#374151;line-height:1.6;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'};overflow:hidden">${_sanitizeEmailBody(act.text)}</div>`
+                : `<div style="font-size:13px;color:#374151;line-height:1.6;white-space:pre-wrap;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'}">${act.text}</div>`) : ''}
               ${act.type === 'stage' ? `<div style="font-size:13px;color:#6b7280">${act.text}</div>` : ''}
 
               <!-- Email tracking row (emails only) -->

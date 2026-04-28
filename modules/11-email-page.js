@@ -1011,6 +1011,274 @@ function _escHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// HTML SANITISER (Brief 6 Phase 1)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// _sanitizeHtml(html) — returns a safe HTML string suitable for innerHTML.
+// Used to render inbound email bodies (and outbound activity-timeline echoes
+// of those bodies) without escaping every tag to text. The reading pane
+// previously called _escHtml on the entire body, which made every received
+// HTML email look like raw markup. After this lands the pane shows formatted
+// content while still defending against script injection.
+//
+// Threats explicitly mitigated:
+//   - <script>, <style>, <iframe>, <object>, <embed>, <link>, <meta>, <base>,
+//     <svg> (SVG can carry inline scripts) — removed entirely
+//   - on* attributes (onclick, onerror, onload, …) — stripped
+//   - javascript: / vbscript: URIs in href / src — rejected
+//   - data:text/html, data:application/* in href — rejected
+//   - data:image/svg+xml in img src (SVG carries scripts) — rejected
+//   - url(javascript:…), expression(…), @import in style — rejected
+//   - position:absolute/fixed in style — would let an attacker overlay UI
+//
+// What's preserved (allow-listed):
+//   Block tags:    p, div, blockquote, h1-h6, hr, pre, table family
+//   Inline tags:   span, b/strong, i/em, u, a, img, sub, sup, code, s/strike,
+//                  br, font (legacy email)
+//   List tags:     ul, ol, li
+//   Attributes:    href/src (with scheme allow-list), alt/title/width/height,
+//                  table sizing/alignment, font color/face/size, style
+//                  (with property + value allow-list). All anchors get
+//                  rel="noopener noreferrer" target="_blank" added so the
+//                  parent window can't be hijacked via window.opener.
+//
+// Implementation: parse via the browser's native DOMParser (no library),
+// walk the resulting tree, and either keep / unwrap / remove each node.
+// The detached document means side-effecting tags like <iframe src> never
+// fetch anything during sanitisation.
+//
+// Falls back to _escHtml on any parser error (better to show garbled text
+// than expose unsanitised input).
+
+var _SANITIZE_ALLOWED_TAGS = {
+  P:1, BR:1, HR:1, B:1, STRONG:1, I:1, EM:1, U:1, S:1, STRIKE:1,
+  A:1, IMG:1, SPAN:1, DIV:1,
+  UL:1, OL:1, LI:1,
+  H1:1, H2:1, H3:1, H4:1, H5:1, H6:1,
+  BLOCKQUOTE:1, PRE:1, CODE:1, SUB:1, SUP:1,
+  TABLE:1, TR:1, TD:1, TH:1, TBODY:1, THEAD:1, TFOOT:1, CAPTION:1, COLGROUP:1, COL:1,
+  CENTER:1, FONT:1, SMALL:1
+};
+
+// Per-tag attribute allow-list. Tags not listed fall back to _SANITIZE_DEFAULT_ATTRS.
+var _SANITIZE_ALLOWED_ATTRS = {
+  A:    { href:1, title:1, name:1, style:1 },
+  IMG:  { src:1, alt:1, title:1, width:1, height:1, style:1 },
+  TABLE:{ width:1, height:1, cellpadding:1, cellspacing:1, border:1, align:1, bgcolor:1, style:1 },
+  TD:   { width:1, height:1, align:1, valign:1, colspan:1, rowspan:1, bgcolor:1, style:1 },
+  TH:   { width:1, height:1, align:1, valign:1, colspan:1, rowspan:1, bgcolor:1, style:1 },
+  TR:   { align:1, valign:1, bgcolor:1, style:1 },
+  COL:  { width:1, span:1, style:1 },
+  COLGROUP: { width:1, span:1, style:1 },
+  FONT: { color:1, face:1, size:1, style:1 },
+  HR:   { style:1, align:1, size:1, width:1 },
+  OL:   { type:1, start:1, style:1 },
+  UL:   { type:1, style:1 }
+};
+var _SANITIZE_DEFAULT_ATTRS = { style:1, title:1 };
+
+// Allow-listed CSS properties for inbound email styles. Conservative — when
+// in doubt, leave the property out. Email clients do most of their styling
+// via these so the visual fidelity stays high.
+var _SANITIZE_ALLOWED_CSS_PROPS = {
+  'color':1, 'background-color':1, 'background':1,
+  'font':1, 'font-family':1, 'font-size':1, 'font-weight':1, 'font-style':1, 'font-variant':1,
+  'line-height':1, 'letter-spacing':1, 'word-spacing':1,
+  'text-align':1, 'text-decoration':1, 'text-transform':1, 'text-indent':1,
+  'width':1, 'height':1, 'max-width':1, 'max-height':1, 'min-width':1, 'min-height':1,
+  'margin':1, 'margin-top':1, 'margin-right':1, 'margin-bottom':1, 'margin-left':1,
+  'padding':1, 'padding-top':1, 'padding-right':1, 'padding-bottom':1, 'padding-left':1,
+  'border':1, 'border-top':1, 'border-right':1, 'border-bottom':1, 'border-left':1,
+  'border-color':1, 'border-style':1, 'border-width':1, 'border-radius':1,
+  'border-collapse':1, 'border-spacing':1,
+  'display':1, 'vertical-align':1, 'white-space':1,
+  'list-style':1, 'list-style-type':1, 'list-style-position':1
+};
+
+function _sanitizeHtml(html) {
+  if (html == null) return '';
+  if (typeof html !== 'string') html = String(html);
+  if (html.length === 0) return '';
+  try {
+    // Parse in a sandboxed document. Note: <body> contents are a fragment;
+    // we wrap in <!DOCTYPE><html><body> to get the full HTML5 parser
+    // (entity decoding, auto-closing, etc.) without inheriting the live
+    // document's CSP / base href.
+    var doc = new DOMParser().parseFromString(
+      '<!DOCTYPE html><html><body>' + html + '</body></html>',
+      'text/html'
+    );
+    var body = doc && doc.body;
+    if (!body) return '';
+    _sanitizeWalk(body);
+    return body.innerHTML;
+  } catch (e) {
+    // Parser failure (or DOMParser unavailable) — fall back to the safer
+    // option of escape-everything rather than exposing the input unchanged.
+    return _escHtml(html);
+  }
+}
+
+// Walk children depth-first, mutating in place. Iteration is reverse-index
+// so removals and unwraps don't shift the parts we haven't visited yet.
+function _sanitizeWalk(node) {
+  var children = node.childNodes;
+  for (var i = children.length - 1; i >= 0; i--) {
+    var child = children[i];
+    var nt = child.nodeType;
+    if (nt === 1) {
+      // Element node
+      var tag = child.tagName;
+      if (!_SANITIZE_ALLOWED_TAGS[tag]) {
+        // Disallowed: hard-remove for the dangerous set, unwrap (keep
+        // children) for everything else so legitimate text inside an
+        // unknown wrapper isn't silently lost.
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'IFRAME' ||
+            tag === 'OBJECT' || tag === 'EMBED' || tag === 'LINK' ||
+            tag === 'META' || tag === 'BASE' || tag === 'SVG' ||
+            tag === 'FORM' || tag === 'INPUT' || tag === 'BUTTON' ||
+            tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'OPTION') {
+          child.parentNode.removeChild(child);
+        } else {
+          // Unwrap: move children up, then remove the wrapper.
+          while (child.firstChild) child.parentNode.insertBefore(child.firstChild, child);
+          child.parentNode.removeChild(child);
+        }
+      } else {
+        _sanitizeAttrs(child);
+        _sanitizeWalk(child);
+      }
+    } else if (nt === 8) {
+      // Comment node — drop. No legitimate use in email body and they can
+      // hide conditional-comment IE-targeted tricks.
+      child.parentNode.removeChild(child);
+    }
+    // nt === 3 (text) — keep as-is. Text content is HTML-escaped on
+    // serialise (innerHTML) so this is safe.
+  }
+}
+
+function _sanitizeAttrs(el) {
+  var tag = el.tagName;
+  var allowed = _SANITIZE_ALLOWED_ATTRS[tag] || _SANITIZE_DEFAULT_ATTRS;
+  var attrs = el.attributes;
+  // Reverse-index so removals don't shift remaining attrs.
+  for (var i = attrs.length - 1; i >= 0; i--) {
+    var attr = attrs[i];
+    var name = attr.name.toLowerCase();
+    // Strip every event handler. The `on` prefix catches onclick, onerror,
+    // onload, onmouseover, onmouseenter, onfocus, onblur, etc.
+    if (name.indexOf('on') === 0) { el.removeAttribute(attr.name); continue; }
+    // Strip any XML namespace attribute (xmlns, xml:base, …) — can be used
+    // to inject SVG/MathML script semantics into otherwise-plain elements.
+    if (name === 'xmlns' || name.indexOf('xml:') === 0 || name.indexOf('xmlns:') === 0) {
+      el.removeAttribute(attr.name); continue;
+    }
+    // Drop anything not in the allow-list.
+    if (!allowed[name]) { el.removeAttribute(attr.name); continue; }
+    // Sanitise the values that need it.
+    if (name === 'href') {
+      var safeHref = _sanitizeUrl(attr.value, false);
+      if (safeHref == null) { el.removeAttribute(attr.name); continue; }
+      el.setAttribute(attr.name, safeHref);
+    } else if (name === 'src') {
+      var safeSrc = _sanitizeUrl(attr.value, tag === 'IMG');
+      if (safeSrc == null) { el.removeAttribute(attr.name); continue; }
+      el.setAttribute(attr.name, safeSrc);
+    } else if (name === 'style') {
+      var safeStyle = _sanitizeStyle(attr.value);
+      if (safeStyle === '') { el.removeAttribute(attr.name); continue; }
+      el.setAttribute('style', safeStyle);
+    }
+  }
+  // Outbound link hardening: every <a> with an href gets rel="noopener
+  // noreferrer" + target="_blank". This stops window.opener hijacking and
+  // refers leaks, and ensures clicks open in a new tab rather than
+  // navigating away from the CRM.
+  if (tag === 'A' && el.getAttribute('href')) {
+    el.setAttribute('rel', 'noopener noreferrer');
+    el.setAttribute('target', '_blank');
+  }
+}
+
+function _sanitizeUrl(value, isImg) {
+  if (value == null) return null;
+  var raw = String(value).trim();
+  if (raw === '') return null;
+  // Fragment / root-relative / path-relative URLs are always safe.
+  var first = raw.charAt(0);
+  if (first === '#' || first === '/' || first === '?' || first === '.') return raw;
+  // Strip control chars + whitespace from the start of the value to defeat
+  // bypasses like "java\nscript:..." or "  javascript:..."
+  var cleaned = raw.replace(/[\x00-\x20]/g, '');
+  if (cleaned === '') return null;
+  var colon = cleaned.indexOf(':');
+  if (colon < 0) return raw; // No scheme — relative URL, allow.
+  // No '/' before the first ':' guarantees we have a scheme prefix.
+  var slash = cleaned.indexOf('/');
+  if (slash >= 0 && slash < colon) return raw; // path with colon — not a scheme
+  var scheme = cleaned.slice(0, colon).toLowerCase();
+  if (isImg) {
+    // <img src> allows http(s) and a strict subset of data:image/*.
+    if (scheme === 'http' || scheme === 'https') return raw;
+    if (scheme === 'data') {
+      // Allow only common raster image types. Reject SVG explicitly — it
+      // can carry inline <script> elements that fire on render.
+      if (/^data:image\/(png|jpe?g|gif|webp|bmp);/i.test(cleaned)) return raw;
+      return null;
+    }
+    return null;
+  }
+  // <a href> allows http, https, mailto, tel — that covers practically
+  // every legitimate email link without opening data: or javascript:.
+  if (scheme === 'http' || scheme === 'https' || scheme === 'mailto' || scheme === 'tel') return raw;
+  return null;
+}
+
+function _sanitizeStyle(value) {
+  if (value == null) return '';
+  var safe = [];
+  String(value).split(';').forEach(function (decl) {
+    decl = decl.trim();
+    if (!decl) return;
+    var colon = decl.indexOf(':');
+    if (colon < 0) return;
+    var prop = decl.slice(0, colon).trim().toLowerCase();
+    var val  = decl.slice(colon + 1).trim();
+    if (!val) return;
+    if (!_SANITIZE_ALLOWED_CSS_PROPS[prop]) return;
+    var lowerVal = val.toLowerCase();
+    // Reject any value containing dangerous tokens. url() is rejected
+    // entirely — even url(http://…) — since inbound email images can be
+    // tracking pixels and we don't want background-image phoning home.
+    if (lowerVal.indexOf('expression') >= 0) return;
+    if (lowerVal.indexOf('javascript:') >= 0) return;
+    if (lowerVal.indexOf('vbscript:') >= 0) return;
+    if (lowerVal.indexOf('@import') >= 0) return;
+    if (lowerVal.indexOf('url(') >= 0) return;
+    // Reject angle brackets in values — paranoia against parser confusion.
+    if (val.indexOf('<') >= 0 || val.indexOf('>') >= 0) return;
+    safe.push(prop + ':' + val);
+  });
+  return safe.join(';');
+}
+
+// Top-level helper used at the email reading-pane and activity-timeline
+// render sites. Distinguishes plain-text bodies (no tags at all) from
+// HTML bodies, so plain-text emails preserve their newlines via
+// white-space:pre-wrap while HTML emails control their own layout via
+// the explicit tags they ship with. Without this branch, applying
+// pre-wrap to HTML content adds spurious blank lines around block tags.
+function _sanitizeEmailBody(body) {
+  if (body == null) return '';
+  body = String(body);
+  if (body.indexOf('<') === -1) {
+    return '<span style="white-space:pre-wrap">' + _escHtml(body) + '</span>';
+  }
+  return _sanitizeHtml(body);
+}
+
 // ── Email list ────────────────────────────────────────────────────────────────
 function renderEmailList(msgs, folder, selectedId) {
   if (msgs.length===0) return `<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px">No emails here</div>`;
@@ -1097,7 +1365,7 @@ function renderEmailDetail(msg) {
 
     <!-- Email body — escaped to prevent HTML injection (broken tags in inbound
          HTML emails would otherwise collapse the surrounding layout). -->
-    <div style="background:#f9fafb;border-radius:12px;padding:20px 24px;font-size:14px;line-height:1.8;color:#374151;white-space:pre-wrap;font-family:'DM Sans',sans-serif;border:1px solid #f0f0f0">${_escHtml(msg.body||'')}</div>
+    <div style="background:#f9fafb;border-radius:12px;padding:20px 24px;font-size:14px;line-height:1.8;color:#374151;font-family:'DM Sans',sans-serif;border:1px solid #f0f0f0;overflow:hidden">${_sanitizeEmailBody(msg.body||'')}</div>
 
     <!-- Attachments -->
     ${(msg.attachments && msg.attachments.length > 0) ? `
@@ -1332,7 +1600,7 @@ function renderEmailTrackingDetail(msg) {
     </div>`:''}
 
     <!-- Email body (escaped for same reasons as renderEmailDetail) -->
-    <div style="background:#f9fafb;border-radius:12px;padding:20px 24px;font-size:13px;line-height:1.8;color:#374151;white-space:pre-wrap;border:1px solid #f0f0f0">${_escHtml(msg.body||'')}</div>
+    <div style="background:#f9fafb;border-radius:12px;padding:20px 24px;font-size:13px;line-height:1.8;color:#374151;border:1px solid #f0f0f0;overflow:hidden">${_sanitizeEmailBody(msg.body||'')}</div>
   </div>`;
 }
 
