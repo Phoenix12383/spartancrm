@@ -88,6 +88,7 @@ function renderPage(){
     ${_pendingWonDealId ? renderPaymentMethodModal() : ''}
     ${_pendingWonQuoteSelection ? renderWonQuoteSelectionModal() : ''}
     ${_pendingUnwindDealId ? renderUnwindDealModal() : ''}
+    ${typeof _pendingLostTransition !== 'undefined' && _pendingLostTransition ? renderLostReasonModal() : ''}
   `;
   _restoreFocus(_focusSnap);
   renderToasts();

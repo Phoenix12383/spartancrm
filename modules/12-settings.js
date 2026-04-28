@@ -48,6 +48,7 @@ function renderSettings(){
     ['pipelines','Pipeline Manager'],
     ['customfields','Custom Fields'],
     ['statuses','Statuses'],
+    ['lostreasons','Lost Reasons'],
     ['tags','Tags'],
     ['smstemplates','SMS Templates'],
     ['phoneivr','Phone & IVR'],
@@ -306,6 +307,42 @@ function renderSettings(){
       </div>
       <button class="btn-r" onclick="stAddStatus('${stEntityTab}')">${Icon({n:'plus',size:14})} Add Status</button>
     `;
+
+  // ── LOST REASONS (Brief 1) ─────────────────────────────────────────────────
+  } else if(settTab==='lostreasons'){
+    var _cuLR = getCurrentUser() || {};
+    var _canEditLR = _cuLR.role === 'admin' || _cuLR.role === 'sales_manager';
+    var _lrList = (typeof getLostReasons === 'function') ? getLostReasons() : [];
+    if (!_canEditLR) {
+      content = '<div style="padding:30px;text-align:center;color:#9ca3af;font-size:13px">Only admins and sales managers can manage Lost Reasons.</div>';
+    } else {
+      content = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div style="font-size:13px;color:#6b7280">${_lrList.length} reason${_lrList.length!==1?'s':''} · drag-handle replaced with up/down for v1</div>
+          <button class="btn-r" onclick="lostReasonAddNew()" style="font-size:12px">+ Add reason</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${_lrList.map(function(r, i){
+            var isFirst = i === 0;
+            var isLast  = i === _lrList.length - 1;
+            return '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:'+(r.active?'#fff':'#f9fafb')+';border:1px solid #e5e7eb;border-radius:10px">'
+              +   '<div style="display:flex;flex-direction:column;gap:2px">'
+              +     (isFirst ? '<div style="height:14px"></div>' : '<button onclick="lostReasonMove(\''+r.id+'\',-1)" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:11px;line-height:1;padding:1px 4px">▲</button>')
+              +     (isLast  ? '<div style="height:14px"></div>' : '<button onclick="lostReasonMove(\''+r.id+'\',1)"  style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:11px;line-height:1;padding:1px 4px">▼</button>')
+              +   '</div>'
+              +   '<input id="lr_label_'+r.id+'" class="inp" value="'+(r.label||'').replace(/"/g,'&quot;')+'" oninput="lostReasonRename(\''+r.id+'\',this.value)" style="flex:1;font-size:13px"'+(r.active?'':' disabled')+'>'
+              +   '<span style="font-size:10px;font-family:monospace;color:#9ca3af;width:90px;text-align:right">'+r.id+'</span>'
+              +   '<button onclick="lostReasonToggleActive(\''+r.id+'\')" class="btn-w" style="font-size:11px;padding:4px 10px;'+(r.active?'':'background:#fef9c3;border-color:#fde68a;color:#92400e')+'">'+(r.active?'Active':'Inactive')+'</button>'
+              + '</div>';
+          }).join('')}
+        </div>
+        <div style="margin-top:18px;padding:14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px">
+          <div style="font-size:12px;color:#475569;line-height:1.7">
+            <strong style="color:#0369a1">Heads-up:</strong> Deactivating a reason hides it from the modal but leaves historical references intact — existing lost deals keep their original reason. Renaming a reason changes how it shows in reports without breaking any links. Don't delete reasons; deactivate them instead so historical data stays meaningful.
+          </div>
+        </div>
+      `;
+    }
 
   // ── TAGS ────────────────────────────────────────────────────────────────────
   } else if(settTab==='tags'){
@@ -880,6 +917,66 @@ function phoneTestCall() {
   } else {
     addToast('Twilio not connected', 'error');
   }
+}
+
+// ── Lost Reasons management (Brief 1) ─────────────────────────────────────
+function lostReasonAddNew() {
+  var list = (typeof getLostReasons === 'function') ? getLostReasons() : [];
+  var newId = 'reason_' + Date.now().toString(36);
+  list.push({ id: newId, label: 'New reason', active: true });
+  if (typeof saveLostReasons === 'function') saveLostReasons(list);
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({ entityType:'settings', action:'settings.lost_reason_edited', summary:'Added Lost Reason: New reason', after:{ id: newId, label: 'New reason', active: true } });
+  }
+  renderPage();
+  // Focus the new label input so the admin types over the placeholder.
+  setTimeout(function(){ var el = document.getElementById('lr_label_'+newId); if (el) { el.focus(); el.select(); } }, 50);
+}
+
+function lostReasonRename(id, newLabel) {
+  var list = (typeof getLostReasons === 'function') ? getLostReasons() : [];
+  var prev = list.find(function(r){ return r.id === id; });
+  var prevLabel = prev ? prev.label : '';
+  var next = list.map(function(r){ return r.id === id ? Object.assign({}, r, { label: newLabel }) : r; });
+  if (typeof saveLostReasons === 'function') saveLostReasons(next);
+  // No re-render — the input is mid-typing. Audit happens on blur via the
+  // setTimeout debounce below to avoid flooding the audit log on every keystroke.
+  if (_lostReasonRenameTimer) clearTimeout(_lostReasonRenameTimer);
+  _lostReasonRenameTimer = setTimeout(function(){
+    if (typeof appendAuditEntry === 'function' && prevLabel !== newLabel) {
+      appendAuditEntry({ entityType:'settings', action:'settings.lost_reason_edited', summary:'Renamed Lost Reason: '+prevLabel+' → '+newLabel, before:{label:prevLabel}, after:{label:newLabel} });
+    }
+  }, 1500);
+}
+var _lostReasonRenameTimer = null;
+
+function lostReasonToggleActive(id) {
+  var list = (typeof getLostReasons === 'function') ? getLostReasons() : [];
+  var prev = list.find(function(r){ return r.id === id; });
+  if (!prev) return;
+  var next = list.map(function(r){ return r.id === id ? Object.assign({}, r, { active: !r.active }) : r; });
+  if (typeof saveLostReasons === 'function') saveLostReasons(next);
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({ entityType:'settings', action:'settings.lost_reason_edited', summary:(prev.active?'Deactivated':'Activated')+' Lost Reason: '+prev.label, before:{active:prev.active}, after:{active:!prev.active} });
+  }
+  addToast('Reason ' + (prev.active ? 'deactivated' : 'activated'), 'info');
+  renderPage();
+}
+
+function lostReasonMove(id, direction) {
+  var list = (typeof getLostReasons === 'function') ? getLostReasons() : [];
+  var idx = list.findIndex(function(r){ return r.id === id; });
+  if (idx < 0) return;
+  var newIdx = idx + direction;
+  if (newIdx < 0 || newIdx >= list.length) return;
+  var item = list[idx];
+  list.splice(idx, 1);
+  list.splice(newIdx, 0, item);
+  if (typeof saveLostReasons === 'function') saveLostReasons(list);
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({ entityType:'settings', action:'settings.lost_reason_edited', summary:'Reordered Lost Reasons', metadata:{ moved: id, direction: direction > 0 ? 'down' : 'up' } });
+  }
+  renderPage();
 }
 
 

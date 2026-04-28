@@ -1316,14 +1316,16 @@ function dropDeal(stageId) {
     _requestWonTransition(_draggedId, stageId, { source: 'kanban-drag' });
     return;
   }
-  // Not Proceeding is a dead-end — require confirmation so an accidental drag
-  // doesn't silently kill a live deal. The existing undrag/renderPage cleanup
-  // on cancel mirrors the won-cancel path.
+  // Brief 1: Lost transition must capture a reason. Gate through the modal
+  // BEFORE moving the deal — cancelling leaves the deal in its current stage.
+  // Cleanup of drag globals + col highlighting must happen before the modal
+  // opens, otherwise the kanban col stays highlighted and the next drag
+  // misbehaves.
   if (st && st.isLost) {
-    if (!confirm('Mark this deal as Not Proceeding? It will drop out of the active pipeline.')) {
-      dragDeal = null; dragOverStage = null; unhighlightAllCols(); renderPage();
-      return;
-    }
+    var _draggedId = dragDeal;
+    dragDeal = null; dragOverStage = null; unhighlightAllCols();
+    _requestLostTransition(_draggedId, stageId, { source: 'kanban-drag' });
+    return;
   }
   const act = {
     id: 'a' + Date.now(), type: 'stage', text: 'Moved to: ' + (st ? st.name : stageId),
@@ -1345,7 +1347,6 @@ function dropDeal(stageId) {
   dbInsert('activities', actToDb(act, 'deal', _did));
   dragDeal = null; dragOverStage = null; unhighlightAllCols();
   if (st && st.isWon) addToast('🎉 Deal Won!', 'success');
-  else if (st && st.isLost) { addToast('Deal marked as Not Proceeding', 'warning'); askLostReason(_did); }
   else addToast('Moved to ' + (st ? st.name : stageId), 'info');
   renderPage();
 }
@@ -2892,6 +2893,13 @@ function moveDealToStage(dealId, stageId, opts) {
     _requestWonTransition(dealId, stageId, { source: opts.source || 'stage-change' });
     return;
   }
+  // Brief 1: programmatic stage change to a Lost stage must route through the
+  // reason-capture modal. Skip if the deal is already lost (re-entry on drag-
+  // and-drop within the Lost lane shouldn't re-prompt).
+  if (stage && stage.isLost && !opts.skipLostGate && !deal.lost) {
+    _requestLostTransition(dealId, stageId, { source: opts.source || 'stage-change' });
+    return;
+  }
   const act = {
     id: 'a' + Date.now(), type: 'stage',
     text: 'Stage changed to: ' + (stage ? stage.name : stageId),
@@ -2914,7 +2922,6 @@ function moveDealToStage(dealId, stageId, opts) {
   dbUpdate('deals', dealId, { sid: stageId, won: !!(stage && stage.isWon), lost: !!(stage && stage.isLost), won_date: _wd });
   dbInsert('activities', actToDb(act, 'deal', dealId));
   if (stage && stage.isWon) { addToast('🎉 Deal Won!', 'success'); }
-  if (stage && stage.isLost) { addToast('Deal marked as Not Proceeding', 'warning'); askLostReason(dealId); }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2932,6 +2939,12 @@ function moveDealToStage(dealId, stageId, opts) {
 var _pendingWonDealId = null;                  // payment-method phase (existing)
 var _pendingWonQuoteSelection = null;          // {dealId, targetStageId, selectedQuoteId}
 var _pendingUnwindDealId = null;               // unwind admin modal
+// Brief 1 — Lost transition modal. Set when a deal is being marked Lost and
+// the user hasn't confirmed a reason yet. Shape:
+//   {dealId, targetStageId, source, selectedReasonId, competitorName, details}
+// The deal stays in its current stage until confirmLostTransition runs.
+// Cancelling closes the modal without changing the deal at all.
+var _pendingLostTransition = null;
 
 function _findWonStageId(deal) {
   var pl = PIPELINES.find(function (p) { return p.id === deal.pid; });
@@ -3295,50 +3308,252 @@ function renderPaymentMethodModal() {
     + '</div></div>';
 }
 
-function markDealLost(dealId) {
-  const { deals } = getState();
-  const deal = deals.find(d => d.id === dealId);
-  if (!deal) return;
-  const pl = PIPELINES.find(p => p.id === deal.pid);
-  const lostStage = pl ? pl.stages.find(s => s.isLost) : null;
-  if (lostStage) {
-    // moveDealToStage already surfaces the toast + prompt; don't duplicate.
-    moveDealToStage(dealId, lostStage.id);
-    return;
-  }
-  setState({ deals: deals.map(d => d.id === dealId ? { ...d, won: false, lost: true, wonDate: null } : d) });
-  dbUpdate('deals', dealId, { won: false, lost: true, won_date: null });
-  addToast('Deal marked as Not Proceeding', 'warning');
-  askLostReason(dealId);
+// ══════════════════════════════════════════════════════════════════════════════
+// Brief 1: LOST FLOW — gated transition with mandatory reason capture
+// ══════════════════════════════════════════════════════════════════════════════
+// All four Lost entry points (drag-to-Lost, kanban Lost button, deal-detail
+// Lost button, programmatic moveDealToStage to a Lost stage) converge on
+// _requestLostTransition. The deal stays in its current stage until the user
+// picks a reason and clicks Save in the modal. Cancelling leaves the deal
+// untouched.
+//
+// Replaces the old askLostReason() prompt-based flow which had a fall-through
+// bug (markDealLost returned early before askLostReason fired) and used
+// window.prompt() — incompatible with the rest of the modal-based UI.
+
+// localStorage-backed config so the reasons list is admin-editable (Settings
+// tab below). Each reason is {id, label, active} so deactivating preserves
+// historical references on existing deals.
+var DEFAULT_LOST_REASONS = [
+  { id: 'price',        label: 'Price',         active: true },
+  { id: 'competitor',   label: 'Competitor',    active: true },
+  { id: 'timing',       label: 'Timing',        active: true },
+  { id: 'ghosted',      label: 'Ghosted',       active: true },
+  { id: 'scope_changed', label: 'Scope changed', active: true },
+  { id: 'other',        label: 'Other',         active: true },
+];
+
+function getLostReasons() {
+  try {
+    var raw = localStorage.getItem('spartan_lost_reasons');
+    if (!raw) return DEFAULT_LOST_REASONS.slice();
+    var parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length ? parsed : DEFAULT_LOST_REASONS.slice();
+  } catch (e) { return DEFAULT_LOST_REASONS.slice(); }
 }
 
-// ── Lost-reason capture ──────────────────────────────────────────────────────
-// Kept deliberately lightweight: a browser prompt with a numbered menu. It
-// runs after a deal lands in the Lost stage (drag, button, or stage-change).
-// The reason is written to deal.lostReason in local state only — DB schema
-// change (adding `lost_reason` column) can follow later; this is safe to ship
-// without it because the Lost Deal Reasons report just bucket-sorts whatever
-// is present and groups unset deals under "Not specified".
-const LOST_REASONS = ['Price', 'Competitor', 'Timing', 'Ghosted', 'Scope changed', 'Other'];
-function askLostReason(dealId) {
-  // Defer so the toast + re-render from the stage move flushes first.
-  setTimeout(function () {
-    try {
-      const prompt_ = (typeof window !== 'undefined' && window.prompt) ? window.prompt : null;
-      if (!prompt_) return;
-      const menu = 'Why was this deal lost?\n\n' +
-        LOST_REASONS.map((r, i) => (i + 1) + '. ' + r).join('\n') +
-        '\n\nEnter 1-' + LOST_REASONS.length + ' (Cancel to skip):';
-      const ans = prompt_(menu, '1');
-      if (!ans) return;
-      const idx = parseInt(ans, 10) - 1;
-      const reason = LOST_REASONS[idx];
-      if (!reason) { addToast('Invalid choice — reason not recorded', 'error'); return; }
-      const { deals } = getState();
-      setState({ deals: deals.map(d => d.id === dealId ? { ...d, lostReason: reason } : d) });
-      addToast('Lost reason: ' + reason, 'info');
-    } catch (err) { /* swallow — don't block the stage transition if prompt fails */ }
-  }, 50);
+function saveLostReasons(arr) {
+  try { localStorage.setItem('spartan_lost_reasons', JSON.stringify(arr || [])); } catch (e) {}
+}
+
+// Public — used by the Lost Reasons report (09-reports.js) to render the
+// human label for a stored lostReasonId, with a fallback for legacy deals
+// that have only the legacy lostReason string.
+function lostReasonLabelFor(deal) {
+  if (!deal) return 'Not specified';
+  if (deal.lostReasonId) {
+    var match = getLostReasons().find(function (r) { return r.id === deal.lostReasonId; });
+    if (match) return match.label;
+  }
+  return deal.lostReason || 'Not specified';
+}
+
+// Entry point — every Lost path calls this. The deal hasn't moved yet; the
+// modal's Save handler does the actual mutation.
+function _requestLostTransition(dealId, targetStageId, opts) {
+  opts = opts || {};
+  var deal = (getState().deals || []).find(function (d) { return d.id === dealId; });
+  if (!deal) return;
+
+  // If already lost, no-op (don't re-prompt for reason on a deal that's
+  // already in a Lost stage with a recorded reason).
+  if (deal.lost) {
+    addToast('Deal is already marked as Not Proceeding', 'info');
+    return;
+  }
+
+  // If targetStageId not provided, find the pipeline's Lost stage.
+  if (!targetStageId) {
+    var pl = PIPELINES.find(function (p) { return p.id === deal.pid; });
+    var lostStage = pl ? pl.stages.find(function (s) { return s.isLost; }) : null;
+    if (!lostStage) {
+      addToast('No Lost stage configured on this pipeline', 'error');
+      return;
+    }
+    targetStageId = lostStage.id;
+  }
+
+  _pendingLostTransition = {
+    dealId: dealId,
+    targetStageId: targetStageId,
+    source: opts.source || 'unknown',
+    selectedReasonId: '',
+    competitorName: '',
+    details: '',
+  };
+  renderPage();
+}
+
+function cancelLostTransition() {
+  _pendingLostTransition = null;
+  renderPage();
+}
+
+// Internal — radio onchange in the modal updates the draft; we re-render so
+// the conditional Competitor input shows/hides without a stale-state glitch.
+function setLostReasonDraft(reasonId) {
+  if (!_pendingLostTransition) return;
+  _pendingLostTransition.selectedReasonId = reasonId;
+  renderPage();
+}
+function setLostCompetitorDraft(value) {
+  if (_pendingLostTransition) _pendingLostTransition.competitorName = value;
+}
+function setLostDetailsDraft(value) {
+  if (_pendingLostTransition) _pendingLostTransition.details = value;
+}
+
+function confirmLostTransition() {
+  var p = _pendingLostTransition;
+  if (!p) return;
+  if (!p.selectedReasonId) {
+    addToast('Pick a reason first', 'error');
+    return;
+  }
+
+  var s = getState();
+  var deal = (s.deals || []).find(function (d) { return d.id === p.dealId; });
+  if (!deal) { _pendingLostTransition = null; return; }
+
+  var reasons = getLostReasons();
+  var reason = reasons.find(function (r) { return r.id === p.selectedReasonId; }) || { id: p.selectedReasonId, label: p.selectedReasonId };
+  var competitor = p.competitorName.trim();
+  var details = p.details.trim();
+  var oldSid = deal.sid;
+  var nowDate = new Date().toISOString().slice(0, 10);
+  var nowTime = new Date().toTimeString().slice(0, 5);
+  var byUser = (getCurrentUser() || { name: 'Admin' }).name;
+
+  // Activity-timeline entry. Mirrors the dropDeal pattern.
+  var summaryParts = ['Deal lost — ' + reason.label];
+  if (competitor) summaryParts.push('(' + competitor + ')');
+  if (details) summaryParts.push(': ' + details);
+  var act = {
+    id: 'a' + Date.now(),
+    type: 'stage',
+    text: summaryParts.join(' '),
+    date: nowDate,
+    time: nowTime,
+    by: byUser,
+    done: false,
+    dueDate: '',
+  };
+
+  setState({
+    deals: s.deals.map(function (d) {
+      if (d.id !== p.dealId) return d;
+      return Object.assign({}, d, {
+        sid: p.targetStageId,
+        won: false,
+        lost: true,
+        wonDate: null,
+        lostReasonId: reason.id,
+        lostReason: reason.label, // legacy field — kept for backwards compat with old reports
+        lostCompetitor: competitor || null,
+        lostDetails: details || null,
+        activities: [act].concat(d.activities || []),
+      });
+    }),
+  });
+
+  // Persist to Supabase. Columns may not exist yet — Supabase will error on
+  // the missing columns and the rest of the local state still saves. Schema
+  // migration is a separate task per the brief.
+  dbUpdate('deals', p.dealId, {
+    sid: p.targetStageId,
+    won: false,
+    lost: true,
+    won_date: null,
+    lost_reason: reason.label,
+    lost_reason_id: reason.id,
+    lost_competitor: competitor || null,
+    lost_details: details || null,
+  });
+  dbInsert('activities', actToDb(act, 'deal', p.dealId));
+
+  // Audit (Brief 2 Phase 1 primitive)
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType: 'deal',
+      entityId: p.dealId,
+      action: 'deal.lost_marked',
+      summary: 'Deal lost: ' + reason.label + (competitor ? ' — ' + competitor : ''),
+      before: { sid: oldSid, lost: false },
+      after: {
+        sid: p.targetStageId,
+        lost: true,
+        lostReasonId: reason.id,
+        lostCompetitor: competitor || null,
+        lostDetails: details || null,
+      },
+      metadata: { source: p.source },
+      branch: deal.branch || null,
+    });
+  }
+
+  _pendingLostTransition = null;
+  addToast('Deal marked as Not Proceeding — ' + reason.label, 'warning');
+  renderPage();
+}
+
+// Modal renderer — mounted in 99-init.js:renderPage when _pendingLostTransition is set.
+function renderLostReasonModal() {
+  if (!_pendingLostTransition) return '';
+  var p = _pendingLostTransition;
+  var reasons = getLostReasons().filter(function (r) { return r.active; });
+  var showCompetitor = p.selectedReasonId === 'competitor';
+
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)cancelLostTransition()">'
+    +   '<div class="modal" style="max-width:480px">'
+    +     '<div class="modal-header">'
+    +       '<h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">Why was this deal lost?</h3>'
+    +       '<button onclick="cancelLostTransition()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">×</button>'
+    +     '</div>'
+    +     '<div class="modal-body" style="display:flex;flex-direction:column;gap:14px">'
+    +       '<div style="display:flex;flex-direction:column;gap:6px">'
+    +         reasons.map(function (r) {
+                var checked = p.selectedReasonId === r.id;
+                return '<label for="lr_reason_' + r.id + '" style="display:flex;align-items:center;gap:10px;padding:10px 14px;border:1.5px solid ' + (checked ? '#c41230' : '#e5e7eb') + ';background:' + (checked ? '#fff5f6' : '#fff') + ';border-radius:10px;cursor:pointer;font-size:13px;font-weight:' + (checked ? '600' : '400') + '">'
+                  + '<input type="radio" id="lr_reason_' + r.id + '" name="lr_reason" value="' + r.id + '" ' + (checked ? 'checked' : '') + ' onchange="setLostReasonDraft(\'' + r.id + '\')" style="accent-color:#c41230">'
+                  + '<span>' + (r.label || r.id) + '</span>'
+                  + '</label>';
+              }).join('')
+    +       '</div>'
+    +       (showCompetitor ? (''
+              + '<div>'
+              +   '<label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Competitor name</label>'
+              +   '<input id="lr_competitor" class="inp" value="' + (p.competitorName || '').replace(/"/g, '&quot;') + '" placeholder="e.g. ABC Windows" oninput="setLostCompetitorDraft(this.value)" style="font-size:13px">'
+              + '</div>'
+            ) : '')
+    +       '<div>'
+    +         '<label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Optional details</label>'
+    +         '<textarea id="lr_details" class="inp" rows="3" placeholder="Anything else worth noting…" oninput="setLostDetailsDraft(this.value)" style="font-size:13px;resize:vertical;border-radius:8px;padding:8px 10px">' + (p.details || '').replace(/</g, '&lt;') + '</textarea>'
+    +       '</div>'
+    +     '</div>'
+    +     '<div class="modal-footer">'
+    +       '<button onclick="cancelLostTransition()" class="btn-w" style="font-size:13px">Cancel</button>'
+    +       '<button onclick="confirmLostTransition()" class="btn-r" style="font-size:13px;background:#dc2626;border-color:#dc2626">Mark as Not Proceeding</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+}
+
+// markDealLost — entry point for the Deal Detail action bar's Lost button
+// and the kanban quick-edit modal's Lost button. Always gates through
+// _requestLostTransition so the modal opens.
+function markDealLost(dealId) {
+  _requestLostTransition(dealId, null, { source: 'mark-button' });
 }
 
 // ── Create Job from Won Deal (replaces old convertDealToJob stub) ────────────
