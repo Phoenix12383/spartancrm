@@ -749,18 +749,190 @@ function deleteCustomTemplate(id) {
   renderPage();
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// COMPOSER RICH-TEXT HELPERS (Brief 6 Phase 2)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// The composer body is a contenteditable div, not a textarea. These helpers
+// drive the formatting toolbar above it, the merge-field inserter, and the
+// inline image picker. State binding flows through `_ecOnInput` which writes
+// the current innerHTML back to `state.emailComposeData.body`.
+//
+// document.execCommand is technically deprecated but every browser still
+// supports it and the spec replacement (Selection / Range API) is roughly
+// 20× the code for the same outcome. When the alternative ships and is
+// well-supported, swap. TODO: track replacement progress.
+
+// Sync helper. Some execCommand variants don't fire the `input` event
+// reliably across browsers (Safari + insertImage in particular), so toolbar
+// actions call this directly rather than relying on the listener.
+function _ecOnInput() {
+  var el = document.getElementById('ec_body');
+  if (!el) return;
+  var st = getState();
+  if (!st.emailComposeData) return;
+  st.emailComposeData.body = el.innerHTML;
+}
+
+// Toolbar wrapper. Restores focus to the editor (toolbar buttons use
+// onmousedown=preventDefault to avoid stealing it in the first place, but
+// belt-and-braces) before issuing the command, then syncs state.
+function _ecExec(cmd, value) {
+  var el = document.getElementById('ec_body');
+  if (!el) return;
+  if (document.activeElement !== el) el.focus();
+  try { document.execCommand(cmd, false, value == null ? null : value); } catch (e) {}
+  _ecOnInput();
+}
+
+// <b>/<i>/<u>/lists/headings/etc. — direct execCommand mappings.
+function ecBold()       { _ecExec('bold'); }
+function ecItalic()     { _ecExec('italic'); }
+function ecUnderline()  { _ecExec('underline'); }
+function ecBulletList() { _ecExec('insertUnorderedList'); }
+function ecNumberList() { _ecExec('insertOrderedList'); }
+// Toggles between <h3> and <p> so a second click on a heading line clears it.
+function ecHeading() {
+  var el = document.getElementById('ec_body'); if (!el) return;
+  el.focus();
+  // Detect whether the current block is already a heading; if so, revert to
+  // paragraph. Otherwise apply h3 (fits inline-email size constraints
+  // better than h1/h2; h4+ is too small).
+  var sel = window.getSelection();
+  var inHeading = false;
+  if (sel && sel.rangeCount > 0) {
+    var node = sel.getRangeAt(0).startContainer;
+    while (node && node !== el) {
+      if (node.nodeType === 1 && /^H[1-6]$/.test(node.tagName)) { inHeading = true; break; }
+      node = node.parentNode;
+    }
+  }
+  _ecExec('formatBlock', inHeading ? '<p>' : '<h3>');
+}
+function ecRemoveFormat() { _ecExec('removeFormat'); }
+
+// Link insertion. Prompts for the URL — keeping the modal flow simple.
+// Requires a non-empty selection so the user has something to attach the
+// link to. If the link target doesn't have a scheme, prepend https:// so
+// the sanitiser (Phase 1) doesn't reject it later.
+function ecCreateLink() {
+  var el = document.getElementById('ec_body'); if (!el) return;
+  el.focus();
+  var sel = window.getSelection();
+  if (!sel || sel.toString().length === 0) {
+    addToast('Select some text first, then click Link', 'info');
+    return;
+  }
+  var url = window.prompt('Link URL:', 'https://');
+  if (url == null) return; // user cancelled
+  url = String(url).trim();
+  if (url === '' || url === 'https://' || url === 'http://') return;
+  // Auto-prepend https:// for bare domains so the sanitiser allow-list accepts it.
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) {
+    if (url.indexOf('@') >= 0 && url.indexOf(' ') < 0) url = 'mailto:' + url;
+    else url = 'https://' + url;
+  }
+  _ecExec('createLink', url);
+}
+
+// Inline image insertion. File picker → FileReader → data: URI → execCommand.
+// Soft-cap at 1MB raw (which becomes ~1.3MB once base64-encoded into the MIME
+// body — close to Gmail's practical per-message limit on long forwarded
+// chains). Bigger images should be hosted somewhere and referenced by URL.
+var EC_IMAGE_MAX_BYTES = 1024 * 1024; // 1 MiB
+function ecInsertImage() {
+  var el = document.getElementById('ec_body'); if (!el) return;
+  // Save the current selection so we can restore it after the file picker
+  // closes — file pickers blur the editor and discard the cursor position.
+  el.focus();
+  var sel = window.getSelection();
+  var savedRange = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0).cloneRange() : null;
+
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/png,image/jpeg,image/gif,image/webp';
+  input.style.display = 'none';
+  input.onchange = function () {
+    var f = input.files && input.files[0];
+    document.body.removeChild(input);
+    if (!f) return;
+    if (f.size > EC_IMAGE_MAX_BYTES) {
+      addToast('Image too large — max ' + Math.round(EC_IMAGE_MAX_BYTES / 1024) + 'KB. Resize or host the image and link to it instead.', 'error');
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function (ev) {
+      var dataUri = ev.target.result;
+      // Restore the saved cursor position before inserting.
+      el.focus();
+      if (savedRange) {
+        var sel2 = window.getSelection();
+        sel2.removeAllRanges();
+        sel2.addRange(savedRange);
+      }
+      _ecExec('insertImage', dataUri);
+    };
+    reader.onerror = function () { addToast('Could not read the image file', 'error'); };
+    reader.readAsDataURL(f);
+  };
+  document.body.appendChild(input);
+  input.click();
+}
+
+// Initial-load body normaliser. Drafts saved before Phase 2 are plain text
+// (newlines as \n). Drafts saved after Phase 2 are HTML. Convert the
+// first into safe HTML so it renders correctly on reopen; sanitise the
+// second through the Phase 1 allow-list either way for security.
+function _composerInitialBody(body) {
+  if (body == null) return '';
+  body = String(body);
+  if (body === '') return '';
+  if (body.indexOf('<') === -1) {
+    return _escHtml(body).replace(/\r?\n/g, '<br>');
+  }
+  return _sanitizeHtml(body);
+}
+
 // ── INSERT MERGE FIELD ────────────────────────────────────────────────────────
 var mergePickerOpen = false;
 function toggleMergePicker() { mergePickerOpen = !mergePickerOpen; renderPage(); }
+// Brief 6 Phase 2: insert a merge-field token at the caret in the
+// contenteditable composer. Falls back to legacy textarea behaviour if
+// `ec_body` happens to be a textarea (defensive — should never happen
+// after Phase 2 ships).
 function insertMergeField(key) {
   var el = document.getElementById('ec_body');
   if (!el) return;
-  var start = el.selectionStart || el.value.length;
   var tag = '{{' + key + '}}';
-  el.value = el.value.slice(0, start) + tag + el.value.slice(start);
-  getState().emailComposeData.body = el.value;
-  el.focus();
-  el.selectionStart = el.selectionEnd = start + tag.length;
+  if (el.tagName === 'TEXTAREA') {
+    var start = el.selectionStart || el.value.length;
+    el.value = el.value.slice(0, start) + tag + el.value.slice(start);
+    getState().emailComposeData.body = el.value;
+    el.focus();
+    el.selectionStart = el.selectionEnd = start + tag.length;
+  } else {
+    // Contenteditable path. document.execCommand('insertText') inserts at
+    // the caret + advances the cursor — which is exactly what we want for
+    // a merge-field token. Refocus first so the insert lands in the editor
+    // rather than in the merge picker button.
+    el.focus();
+    try { document.execCommand('insertText', false, tag); } catch (e) {
+      // Older browser without insertText support — fall back to manual
+      // range insertion.
+      var sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        var range = sel.getRangeAt(0);
+        range.deleteContents();
+        range.insertNode(document.createTextNode(tag));
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else {
+        el.innerHTML += tag;
+      }
+    }
+    _ecOnInput();
+  }
   mergePickerOpen = false;
   renderPage();
 }
@@ -1648,10 +1820,36 @@ function renderEmailComposer() {
     <!-- Merge fields picker -->
     ${renderMergeFieldBar()}
 
-    <!-- Body -->
-    <textarea id="ec_body" rows="12" oninput="getState().emailComposeData.body=this.value"
-      placeholder="Write your email here… Use {{firstName}}, {{dealTitle}} etc. to auto-fill"
-      style="flex:1;padding:16px 20px;border:none;outline:none;font-size:14px;font-family:inherit;resize:none;line-height:1.8;color:#1a1a1a;background:#fff">${_escHtml(d.body||'')}</textarea>
+    <!-- Brief 6 Phase 2: composer rich-text toolbar. onmousedown=preventDefault
+         on every button so the editor doesn't lose its selection / cursor
+         when a button is clicked. -->
+    <div style="padding:6px 14px;border-bottom:1px solid #f9fafb;display:flex;align-items:center;gap:4px;flex-wrap:wrap;background:#fafafa">
+      <button title="Bold (Ctrl+B)"        onmousedown="event.preventDefault()" onclick="ecBold()"         style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-weight:700;font-size:13px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">B</button>
+      <button title="Italic (Ctrl+I)"      onmousedown="event.preventDefault()" onclick="ecItalic()"       style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-style:italic;font-size:13px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">I</button>
+      <button title="Underline (Ctrl+U)"   onmousedown="event.preventDefault()" onclick="ecUnderline()"    style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;text-decoration:underline;font-size:13px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">U</button>
+      <span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>
+      <button title="Heading"              onmousedown="event.preventDefault()" onclick="ecHeading()"      style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-weight:700;font-size:11px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">H</button>
+      <button title="Bullet list"          onmousedown="event.preventDefault()" onclick="ecBulletList()"   style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:13px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">•</button>
+      <button title="Numbered list"        onmousedown="event.preventDefault()" onclick="ecNumberList()"   style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">1.</button>
+      <span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>
+      <button title="Insert link"          onmousedown="event.preventDefault()" onclick="ecCreateLink()"   style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">🔗 Link</button>
+      <button title="Insert image (max 1MB)" onmousedown="event.preventDefault()" onclick="ecInsertImage()" style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">🖼 Image</button>
+      <span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>
+      <button title="Clear formatting"     onmousedown="event.preventDefault()" onclick="ecRemoveFormat()" style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">Tx</button>
+    </div>
+    <!-- Placeholder CSS for the contenteditable. data-placeholder shows
+         when the editor is :empty (no children at all, including <br>).
+         Scoped to #ec_body so it doesn't leak. -->
+    <style>#ec_body:empty:before{content:attr(data-placeholder);color:#9ca3af;pointer-events:none}</style>
+
+    <!-- Body — contenteditable (Brief 6 Phase 2). Initial content is
+         normalised through _composerInitialBody so legacy plain-text
+         drafts get their newlines converted to <br>, and HTML drafts
+         get sanitised through the Phase 1 allow-list. -->
+    <div id="ec_body" contenteditable="true"
+      data-placeholder="Write your email here… Use {{firstName}}, {{dealTitle}} etc. to auto-fill"
+      oninput="_ecOnInput()"
+      style="flex:1;padding:16px 20px;border:none;outline:none;font-size:14px;font-family:inherit;line-height:1.8;color:#1a1a1a;background:#fff;min-height:240px;overflow-y:auto;word-break:break-word">${_composerInitialBody(d.body||'')}</div>
 
     <!-- Signature -->
     <div style="padding:0 20px 10px;border-top:1px solid #f9fafb">
