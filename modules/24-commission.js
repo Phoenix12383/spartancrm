@@ -8,36 +8,251 @@
 // COMMISSION SYSTEM
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Persistence helpers (localStorage)
-function getCommissionRates() { try { return JSON.parse(localStorage.getItem('spartan_commission_rates') || '{}'); } catch(e){ return {}; } }
-function saveCommissionRates(rates) { localStorage.setItem('spartan_commission_rates', JSON.stringify(rates)); }
+// ════════════════════════════════════════════════════════════════════════════
+// CONFIG DATA MODEL (Brief 4 Phase 1)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Replaces the flat `spartan_commission_rates: {[repName]: pct}` localStorage
+// key with a richer `spartan_commission_rules` object that carries:
+//   - defaults: org-wide baseline (used when no per-rep / per-branch override)
+//   - perRep:   per-rep overrides; missing keys fall through to defaults
+//   - perBranch: per-branch base-rate overrides
+//   - productMultipliers: applied per quote line item by Phase 2's calc engine
+//   - volumeBonuses: thresholds that step a rep's effective rate up
+//
+// Phase 1 ships only the data layer. Phase 2 will read these in a new
+// `calcDealCommission(deal)`. Phase 5 will surface them as editable rows
+// in Settings. The existing `calcCommission(dealVal, repName)` and the
+// rates tab in renderCommissionPage() continue to work — we delegate
+// `getRepRate` and `setRepRate` to the new helpers transparently.
+//
+// Migration: on first read, if `spartan_commission_rules` is missing but
+// the legacy `spartan_commission_rates` flat map exists, we migrate every
+// rep's rate into the new perRep shape and write a single audit entry
+// (`system.commission_state_migrated`). The legacy key is kept around
+// (read-only fallback for one release per the brief's mitigation note);
+// future cleanup will delete it once the new shape has been in production.
+// TODO(brief-4-followup): delete `spartan_commission_rates` after one
+// release of stable usage on the new key.
+
+var COMMISSION_RULES_KEY = 'spartan_commission_rules';
+var COMMISSION_RATES_LEGACY_KEY = 'spartan_commission_rates';
+
+// Frozen so accidental mutation in callers doesn't bleed into seed data.
+// Default volumeBonus + a premium-product multiplier are seeded so Phase
+// 2's calc engine has working examples out of the box; the user can edit
+// or clear them in Phase 5's Settings UI.
+var _DEFAULT_COMMISSION_RULES = Object.freeze({
+  defaults: Object.freeze({
+    baseRate: 5,           // pct on ex-GST deal value
+    ageThresholdDays: 60,  // days from QuoteBooked → Won before penalty kicks in
+    agePenaltyPct: 1,      // pct points subtracted from effective rate when over threshold
+    realisationGate: 'won' // 'won' | 'final_signed' | 'final_payment'
+  }),
+  perRep: Object.freeze({}),       // {[repName]: {baseRate?, ageThresholdDays?, agePenaltyPct?, realisationGate?}}
+  perBranch: Object.freeze({}),    // {[branchCode]: {baseRate?}}
+  productMultipliers: Object.freeze([
+    // Brief 4 Phase 1: '_default' is the implicit catch-all when a quote line
+    // item's productType doesn't match any explicit entry. The brief's example
+    // was 'premium_lift_slide' — that productType doesn't exist in the actual
+    // CAD vocabulary (see modules/22-jobs-page.js PLABELS), so we seed with a
+    // real high-end product instead. Users can add/remove rows in Phase 5.
+    Object.freeze({ productKey: '_default',   label: 'Default (any product)', multiplier: 1.0 }),
+    Object.freeze({ productKey: 'bifold_door', label: 'Bifold Door',           multiplier: 1.2 }),
+  ]),
+  volumeBonuses: Object.freeze([
+    // Empty array = no bonuses configured. We seed one example so the calc
+    // engine has something to demonstrate; clear or extend in Phase 5.
+    Object.freeze({ threshold: 100000, bonusPct: 1 }),
+  ]),
+});
+
+// Legacy persistence helpers — retained for the read-only-fallback contract.
+// New code should NOT call saveCommissionRates(); it should call
+// saveCommissionRules() instead. Kept exported so debugging / one-off
+// migration tooling can still reach the legacy data if needed.
+function getCommissionRates() { try { return JSON.parse(localStorage.getItem(COMMISSION_RATES_LEGACY_KEY) || '{}'); } catch(e){ return {}; } }
+function saveCommissionRates(rates) { localStorage.setItem(COMMISSION_RATES_LEGACY_KEY, JSON.stringify(rates)); }
+
 function getCommissionPaid() { try { return JSON.parse(localStorage.getItem('spartan_commission_paid') || '{}'); } catch(e){ return {}; } }
 function saveCommissionPaid(paid) { localStorage.setItem('spartan_commission_paid', JSON.stringify(paid)); }
 function getCommissionAudit() { try { return JSON.parse(localStorage.getItem('spartan_commission_audit') || '[]'); } catch(e){ return []; } }
 function saveCommissionAudit(log) { localStorage.setItem('spartan_commission_audit', JSON.stringify(log)); }
 
-function getRepRate(repName) {
-  var rates = getCommissionRates();
-  return rates[repName] !== undefined ? rates[repName] : 5;
+// One-time, idempotent migration from the flat rates map to the new rules
+// object. Runs lazily on first call to getCommissionRules() — same pattern
+// as the dealType backfill in 01-persistence.js. Returns true if a
+// migration was performed, false otherwise. Safe to call repeatedly: once
+// the new key exists, this short-circuits.
+function _migrateLegacyCommissionRates() {
+  try {
+    if (localStorage.getItem(COMMISSION_RULES_KEY) !== null) return false;
+    var legacy = {};
+    try { legacy = JSON.parse(localStorage.getItem(COMMISSION_RATES_LEGACY_KEY) || '{}'); } catch (e) { legacy = {}; }
+    // Build the new rules object by deep-cloning the frozen defaults and
+    // populating perRep from legacy. Use a plain (non-frozen) deep clone so
+    // callers can safely mutate the result of getCommissionRules().
+    var rules = _deepCloneCommissionRules(_DEFAULT_COMMISSION_RULES);
+    var migratedCount = 0;
+    Object.keys(legacy).forEach(function (repName) {
+      var pct = parseFloat(legacy[repName]);
+      if (!isNaN(pct)) {
+        rules.perRep[repName] = { baseRate: pct };
+        migratedCount++;
+      }
+    });
+    localStorage.setItem(COMMISSION_RULES_KEY, JSON.stringify(rules));
+    // Per the brief's mitigation note, do NOT delete the legacy key in this
+    // release. Keep it as a read-only fallback so a botched migration can
+    // be recovered. A future PR will clear it once the new shape has been
+    // in production.
+    if (typeof appendAuditEntry === 'function') {
+      try {
+        appendAuditEntry({
+          entityType: 'commission', entityId: null,
+          action: 'system.commission_state_migrated',
+          summary: 'Migrated ' + migratedCount + ' rep' + (migratedCount !== 1 ? 's' : '') + ' from legacy commission rates map to spartan_commission_rules',
+          metadata: { migration: 'rates_to_rules_v1', migratedCount: migratedCount },
+        });
+      } catch (e) {}
+    }
+    return true;
+  } catch (e) { return false; }
 }
 
-function setRepRate(repName, pct) {
-  var rates = getCommissionRates();
-  var prevPct = rates[repName];
-  var newPct = parseFloat(pct) || 0;
-  rates[repName] = newPct;
-  saveCommissionRates(rates);
-  // Audit (Brief 2 Phase 2). The commission engine refactor in Brief 4 will
-  // change the storage shape — this audit hook stays valid because it
-  // captures both pcts and the rep name regardless of where the data lives.
-  if (typeof appendAuditEntry === 'function') {
-    appendAuditEntry({
-      entityType:'commission', entityId:null, action:'commission.rules_updated',
-      summary:repName + ' commission rate: ' + (prevPct == null ? '—' : prevPct + '%') + ' → ' + newPct + '%',
-      before:{ repName:repName, ratePct:prevPct == null ? null : prevPct },
-      after:{ repName:repName, ratePct:newPct },
-    });
+// Plain-object deep clone for the rules shape. Object.freeze makes nested
+// .perRep / .productMultipliers / .volumeBonuses read-only, which would
+// throw if a caller did rules.perRep[name] = ... — so we always hand back
+// a mutable copy. Custom rather than structuredClone because we still
+// support older browsers in this codebase's deployment matrix.
+function _deepCloneCommissionRules(src) {
+  return {
+    defaults: Object.assign({}, src.defaults || {}),
+    perRep: (function () {
+      var out = {};
+      Object.keys(src.perRep || {}).forEach(function (k) {
+        out[k] = Object.assign({}, src.perRep[k] || {});
+      });
+      return out;
+    })(),
+    perBranch: (function () {
+      var out = {};
+      Object.keys(src.perBranch || {}).forEach(function (k) {
+        out[k] = Object.assign({}, src.perBranch[k] || {});
+      });
+      return out;
+    })(),
+    productMultipliers: (src.productMultipliers || []).map(function (pm) { return Object.assign({}, pm); }),
+    volumeBonuses: (src.volumeBonuses || []).map(function (vb) { return Object.assign({}, vb); }),
+  };
+}
+
+// Public — read the commission rules, running the legacy migration on
+// first call. Always returns a fully-shaped object (defaults + perRep +
+// perBranch + productMultipliers + volumeBonuses) so callers don't need
+// to defend against missing keys. If localStorage is unreadable or the
+// stored value is corrupt, falls back to seed defaults.
+function getCommissionRules() {
+  _migrateLegacyCommissionRates();
+  var raw = null;
+  try { raw = localStorage.getItem(COMMISSION_RULES_KEY); } catch (e) {}
+  if (raw === null) return _deepCloneCommissionRules(_DEFAULT_COMMISSION_RULES);
+  try {
+    var parsed = JSON.parse(raw);
+    // Merge stored shape with seed defaults so a partial / older-version
+    // stored object doesn't crash the calc engine. Stored keys win;
+    // missing keys come from seed.
+    var seed = _deepCloneCommissionRules(_DEFAULT_COMMISSION_RULES);
+    return {
+      defaults: Object.assign({}, seed.defaults, parsed.defaults || {}),
+      perRep: parsed.perRep || {},
+      perBranch: parsed.perBranch || {},
+      productMultipliers: Array.isArray(parsed.productMultipliers) ? parsed.productMultipliers : seed.productMultipliers,
+      volumeBonuses: Array.isArray(parsed.volumeBonuses) ? parsed.volumeBonuses : seed.volumeBonuses,
+    };
+  } catch (e) { return _deepCloneCommissionRules(_DEFAULT_COMMISSION_RULES); }
+}
+
+// Public — persist a rules object. Audits via the unified audit log
+// (Brief 2). Caller is expected to pass a complete (post-merge) rules
+// object — saveCommissionRules({}) would wipe the user's config. Mutating
+// helpers (setRepRate, future per-branch / per-product editors) load via
+// getCommissionRules, mutate, then save through here.
+function saveCommissionRules(rules, opts) {
+  opts = opts || {};
+  try { localStorage.setItem(COMMISSION_RULES_KEY, JSON.stringify(rules)); } catch (e) {}
+  // Audit — caller can suppress (e.g. internal migration calls) by passing
+  // {silent: true}. The default writes one entry per save with a generic
+  // summary; specific helpers like setRepRate add their own narrower
+  // summary on top so admins can tell rate-change-by-name from a bulk
+  // settings save.
+  if (!opts.silent && typeof appendAuditEntry === 'function') {
+    try {
+      appendAuditEntry({
+        entityType: 'commission', entityId: null,
+        action: 'commission.rules_updated',
+        summary: opts.summary || 'Commission rules updated',
+        before: opts.before || null,
+        after: opts.after || null,
+        metadata: opts.metadata || null,
+      });
+    } catch (e) {}
   }
+}
+
+// Public — return the merged rule for a specific rep. Lookup order:
+//   defaults → perBranch[branch] → perRep[repName]
+// Each layer's keys override the previous. Callers (Phase 2's calc
+// engine, the existing getRepRate shim) don't need to know about the
+// layering — they just read the merged record.
+function getEffectiveRuleForRep(repName, branch) {
+  var rules = getCommissionRules();
+  var merged = Object.assign({}, rules.defaults);
+  if (branch && rules.perBranch && rules.perBranch[branch]) {
+    Object.assign(merged, rules.perBranch[branch]);
+  }
+  if (repName && rules.perRep && rules.perRep[repName]) {
+    Object.assign(merged, rules.perRep[repName]);
+  }
+  return merged;
+}
+
+// Public — read just the productMultipliers list. Phase 2's calc engine
+// will look up by productKey (with '_default' as the catch-all). Phase
+// 5's Settings UI will edit this list.
+function getProductMultipliers() { return getCommissionRules().productMultipliers || []; }
+
+// Public — read just the volumeBonuses list. Phase 2 walks this in
+// descending threshold order to find the highest tripped bonus.
+function getVolumeBonuses() { return getCommissionRules().volumeBonuses || []; }
+
+// ── Per-rep rate (legacy-shaped public API, now backed by the rules object)
+// Returns the rep's effective base rate. Existing callers (rep cards,
+// rates tab, calcCommission) keep working unchanged.
+function getRepRate(repName) {
+  return getEffectiveRuleForRep(repName).baseRate;
+}
+
+// Mutates the rules object's perRep[repName].baseRate. Audits the change
+// with the same shape as the pre-Phase-1 audit hook so the existing
+// audit-page filtering by `commission.rules_updated` still cleanly
+// segments rate changes.
+function setRepRate(repName, pct) {
+  var rules = getCommissionRules();
+  var prevPct = (rules.perRep && rules.perRep[repName] && rules.perRep[repName].baseRate != null)
+    ? rules.perRep[repName].baseRate
+    : null;
+  var newPct = parseFloat(pct);
+  if (isNaN(newPct)) newPct = 0;
+  if (!rules.perRep) rules.perRep = {};
+  if (!rules.perRep[repName]) rules.perRep[repName] = {};
+  rules.perRep[repName].baseRate = newPct;
+  saveCommissionRules(rules, {
+    summary: repName + ' commission rate: ' + (prevPct == null ? '—' : prevPct + '%') + ' → ' + newPct + '%',
+    before: { repName: repName, ratePct: prevPct },
+    after:  { repName: repName, ratePct: newPct },
+    metadata: { kind: 'per_rep_base_rate', repName: repName },
+  });
   addToast(repName + ' commission set to ' + pct + '%', 'success');
   renderPage();
 }
