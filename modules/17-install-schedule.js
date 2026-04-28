@@ -195,7 +195,11 @@ function setInstallProgress(jobId, progress) {
 function getInstallProgressPct(job) {
   if (!job) return 0;
   var p = getInstallProgress(job.id);
-  var frames = Math.max(1, (job.windows||[]).length);
+  var src = (job.cadFinalData && job.cadFinalData.projectItems) ||
+            (job.cadSurveyData && job.cadSurveyData.projectItems) ||
+            (job.cadData && job.cadData.projectItems) ||
+            job.windows || [];
+  var frames = Math.max(1, src.length);
   var maxSteps = frames * 7;
   var done = 0;
   for (var i = 0; i < frames; i++) {

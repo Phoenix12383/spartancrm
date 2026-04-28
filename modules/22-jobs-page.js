@@ -838,7 +838,12 @@ function renderJobDetail() {
     // ── Install Progress Tracking (TESTING — to be replaced by mobile app) ─
     var instProgress = (typeof getInstallProgress === 'function') ? getInstallProgress(job.id) : {arrivedAt:null,frameStages:[]};
     var progressPct = (typeof getInstallProgressPct === 'function') ? getInstallProgressPct(job) : 0;
-    var frames = (job.windows||[]).length;
+    // Frames live in CAD data; prefer Final → Survey → Original → windows fallback.
+    var frameSource = (job.cadFinalData && job.cadFinalData.projectItems) ||
+                      (job.cadSurveyData && job.cadSurveyData.projectItems) ||
+                      (job.cadData && job.cadData.projectItems) ||
+                      job.windows || [];
+    var frames = frameSource.length;
     // Always render the card so testers can see the feature. Show helpful messages when prerequisites missing.
     {
       tabContent += '<div class="card" style="padding:16px;margin-bottom:14px;border:2px dashed #c4b5fd">'
@@ -863,9 +868,9 @@ function renderJobDetail() {
         +'<div style="display:flex;flex-direction:column;gap:6px;max-height:300px;overflow-y:auto">';
       var stageColours = ['#e5e7eb','#fbbf24','#f59e0b','#06b6d4','#3b82f6','#a855f7','#ec4899','#22c55e'];
       for (var fi = 0; fi < frames; fi++) {
-        var w = job.windows[fi] || {};
+        var w = frameSource[fi] || {};
         var curStage = (instProgress.frameStages && instProgress.frameStages[fi]) || 0;
-        var frameLabel = (w.position || w.name || ('Frame ' + (fi+1)));
+        var frameLabel = (w.position || w.name || w.location || w.label || ('Frame ' + (fi+1)));
         tabContent += '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#f9fafb;border-radius:6px">'
           +'<div style="font-size:11px;font-weight:600;min-width:90px;color:#374151">'+frameLabel+'</div>'
           +'<div style="display:flex;gap:2px;flex:1">';
