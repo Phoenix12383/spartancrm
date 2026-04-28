@@ -19,7 +19,7 @@ const RPT_MEASURES = {
 const RPT_GROUPBY = {
   month:'Month',week:'Week',stage:'Pipeline Stage',jobStatus:'Job Status',
   owner:'Owner',source:'Lead Source',suburb:'Suburb',actType:'Activity Type',
-  branch:'Branch',dealStatus:'Deal Status',
+  branch:'Branch',dealStatus:'Deal Status',dealType:'Deal Type',
 };
 const RPT_CHARTS = ['bar','line','pie','donut','table','number'];
 const RPT_CHART_ICONS = {bar:'▬',line:'📈',pie:'◕',donut:'◎',table:'⊞',number:'#'};
@@ -527,6 +527,19 @@ function rptGenericCompute(report, ctx) {
       const lost = r.lost || (r._parent && r._parent.lost);
       const v = won ? 'Won' : (lost ? 'Lost' : 'Open');
       return {key:v, label:v, col: won?'#15803d':(lost?'#dc2626':'#6b7280')};
+    }
+    // Brief 5 Phase 4: dealType dimension. Source records can be deals
+    // (direct r.dealType from saveNewDeal / lead conversion / Phase 3
+    // backfill) or activities/leads where the deal is the parent.
+    // 'Untyped' fallback covers any rows that pre-date Phase 3 backfill
+    // — should be empty in practice since the migration ran on first
+    // boot, but defensive against fresh-Supabase or cleared-flag edge
+    // cases.
+    if (g==='dealType') {
+      const v = pick('dealType') || 'untyped';
+      const label = v.charAt(0).toUpperCase() + v.slice(1);
+      const col = v === 'commercial' ? '#6d28d9' : (v === 'residential' ? '#1d4ed8' : '#9ca3af');
+      return {key:v, label:label, col:col};
     }
     return {key:'All', label:'All'};
   };

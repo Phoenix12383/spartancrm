@@ -11,6 +11,11 @@ let wonFilterBranch = 'all';
 let wonFilterRep = 'all';
 let wonFilterPipeline = 'all';
 let wonFilterRange = 'all';
+// Brief 5 Phase 4: dealType filter (residential/commercial/all). 'all' is
+// the same shape as the other wonFilter* defaults so we don't need a
+// migration. 'untyped' isn't a value here — Phase 3 backfill should
+// have eliminated nulls before this filter is even rendered.
+let wonFilterDealType = 'all';
 let wonSearch = '';
 let wonSortCol = 'wonDate';
 let wonSortDir = 'desc';
@@ -46,6 +51,7 @@ function renderWonPage() {
   if (wonFilterBranch !== 'all') deals = deals.filter(function(d){ return d.branch === wonFilterBranch; });
   if (wonFilterRep !== 'all') deals = deals.filter(function(d){ return d.rep === wonFilterRep; });
   if (wonFilterPipeline !== 'all') deals = deals.filter(function(d){ return d.pid === wonFilterPipeline; });
+  if (wonFilterDealType !== 'all') deals = deals.filter(function(d){ return d.dealType === wonFilterDealType; });
   if (wonSearch) {
     var q = wonSearch.toLowerCase();
     deals = deals.filter(function(d) {
@@ -126,6 +132,12 @@ function renderWonPage() {
     +'<option value="all"' + (wonFilterPipeline === 'all' ? ' selected' : '') + '>All Pipelines</option>'
     + PIPELINES.map(function(p){ return '<option value="' + p.id + '"' + (wonFilterPipeline === p.id ? ' selected' : '') + '>' + p.name + '</option>'; }).join('')
     +'</select>'
+    // Brief 5 Phase 4: deal-type filter (All / Residential / Commercial).
+    +'<select class="sel" style="width:auto;font-size:12px" onchange="wonFilterDealType=this.value;renderPage()">'
+    +'<option value="all"' + (wonFilterDealType === 'all' ? ' selected' : '') + '>All Types</option>'
+    +'<option value="residential"' + (wonFilterDealType === 'residential' ? ' selected' : '') + '>Residential</option>'
+    +'<option value="commercial"' + (wonFilterDealType === 'commercial' ? ' selected' : '') + '>Commercial</option>'
+    +'</select>'
     +'<select class="sel" style="width:auto;font-size:12px" onchange="wonFilterRange=this.value;renderPage()">'
     +'<option value="all"' + (wonFilterRange === 'all' ? ' selected' : '') + '>All Time</option>'
     +'<option value="thisMonth"' + (wonFilterRange === 'thisMonth' ? ' selected' : '') + '>This Month</option>'
@@ -146,11 +158,12 @@ function renderWonPage() {
     +'<th class="th" onclick="wonToggleSort(\'wonDate\')" style="cursor:pointer">Won Date ' + sortIcon('wonDate') + '</th>'
     +'<th class="th" onclick="wonToggleSort(\'rep\')" style="cursor:pointer">Rep ' + sortIcon('rep') + '</th>'
     +'<th class="th" onclick="wonToggleSort(\'branch\')" style="cursor:pointer">Branch ' + sortIcon('branch') + '</th>'
+    +'<th class="th">Type</th>'
     +'<th class="th">Pipeline</th>'
     +'</tr></thead>'
     +'<tbody>'
     + (deals.length === 0
-      ? '<tr><td colspan="7" style="padding:40px;text-align:center;color:#9ca3af;font-size:13px"><div style="font-size:28px;margin-bottom:8px">\ud83c\udfc6</div>No won deals' + (wonSearch || wonFilterBranch !== 'all' || wonFilterRep !== 'all' || wonFilterRange !== 'all' ? ' matching your filters' : ' yet') + '</td></tr>'
+      ? '<tr><td colspan="8" style="padding:40px;text-align:center;color:#9ca3af;font-size:13px"><div style="font-size:28px;margin-bottom:8px">\ud83c\udfc6</div>No won deals' + (wonSearch || wonFilterBranch !== 'all' || wonFilterRep !== 'all' || wonFilterRange !== 'all' || wonFilterDealType !== 'all' ? ' matching your filters' : ' yet') + '</td></tr>'
       : deals.map(function(d) {
         var c = contacts.find(function(x){ return x.id === d.cid; });
         var cName = c ? c.fn + ' ' + c.ln : '\u2014';
@@ -168,6 +181,7 @@ function renderWonPage() {
           +'<td class="td" style="font-size:12px;color:#374151">' + wonDateFmt + '</td>'
           +'<td class="td" style="font-size:12px;color:#6b7280">' + (d.rep || '\u2014') + '</td>'
           +'<td class="td"><span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#f3f4f6;color:#6b7280">' + (d.branch || '\u2014') + '</span></td>'
+          +'<td class="td">' + (typeof _dealTypeBadge === 'function' ? _dealTypeBadge(d) : '') + '</td>'
           +'<td class="td" style="font-size:12px;color:#6b7280">' + plName + '</td>'
           +'</tr>';
       }).join(''))
