@@ -239,10 +239,19 @@ function sendFinalDesignDocuSign(jobId) {
         hasVariation:  !!job.hasVariation,
       },
     },
-  }).then(function(res) {
+  }).then(async function(res) {
     if (res.error) {
-      console.error('DocuSign send error:', res.error);
-      addToast('DocuSign send failed: ' + (res.error.message || 'unknown error'), 'error');
+      // supabase.functions.invoke returns "non-2xx status" with the actual
+      // error body buried in error.context (a Response). Pull it out so the
+      // user can see why the function rejected.
+      var detail = '';
+      try {
+        if (res.error.context && typeof res.error.context.text === 'function') {
+          detail = await res.error.context.text();
+        }
+      } catch (e) { /* ignore */ }
+      console.error('DocuSign send error:', res.error, 'body:', detail);
+      addToast('DocuSign send failed: ' + (res.error.message || 'error') + (detail ? ' — ' + detail.slice(0, 200) : ''), 'error');
       return;
     }
     var data = res.data || {};
