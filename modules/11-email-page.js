@@ -689,23 +689,155 @@ function emailFillTemplate(template, context) {
   return { body: body, subject: subject };
 }
 
-// ── EMAIL SIGNATURES ──────────────────────────────────────────────────────────
-function getSignature() {
-  var cu = getCurrentUser();
-  if (!cu) return '';
-  var custom = localStorage.getItem('spartan_signature_' + cu.id);
-  if (custom !== null) return custom;
-  var s = getState();
-  var name = s.gmailUser ? s.gmailUser.name : cu.name;
-  var email = s.gmailUser ? s.gmailUser.email : cu.email || '';
-  return '--\n' + name + '\nSpartan Double Glazing · 1300 912 161\n' + email;
+// ════════════════════════════════════════════════════════════════════════════
+// EMAIL SIGNATURES (Brief 6 Phase 3)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Per-user, per-state HTML signatures. Storage layout (one entry per scope):
+//   spartan_signature_${cu.id}_default   — fallback when no state matches
+//   spartan_signature_${cu.id}_VIC       — VIC-specific
+//   spartan_signature_${cu.id}_NSW       — NSW-specific (etc.)
+//
+// Lookup order in `getSignature(state)`:
+//   1. State-specific (if state is provided and a value exists)
+//   2. Default (`spartan_signature_${cu.id}_default`)
+//   3. Hardcoded HTML fallback (built from cu.name + cu.email + Spartan
+//      boilerplate)
+//
+// Migration: pre-Phase-3 the signature lived at `spartan_signature_${cu.id}`
+// as plain text. On the first call to getSignature() after this PR ships,
+// if the legacy key exists and the new default key doesn't, we convert
+// (escape + \n→<br>, wrap in <div>) and write to the default key, then
+// delete the legacy key. Idempotent — runs at most once per browser per
+// user, and a no-op if the user never had a custom signature.
+
+function _signatureKey(userId, state) {
+  return 'spartan_signature_' + userId + '_' + (state || 'default');
 }
-function saveSignature(text) {
-  var cu = getCurrentUser();
+function _legacySignatureKey(userId) { return 'spartan_signature_' + userId; }
+
+// Migration helper. Returns true if a migration was performed (legacy key
+// was non-null and got converted), false otherwise. Safe to call repeatedly
+// — short-circuits once the legacy key is gone.
+function _migrateLegacySignature(cu) {
+  if (!cu) return false;
+  try {
+    var legacy = localStorage.getItem(_legacySignatureKey(cu.id));
+    if (legacy === null) return false;
+    var defaultKey = _signatureKey(cu.id, 'default');
+    if (localStorage.getItem(defaultKey) !== null) {
+      // New default key already populated (user already saved a Phase-3
+      // signature), but the legacy key is still hanging around. Clean
+      // it up without overwriting the new value.
+      try { localStorage.removeItem(_legacySignatureKey(cu.id)); } catch (e) {}
+      return false;
+    }
+    var html = '<div>' + _escHtml(legacy).replace(/\r?\n/g, '<br>') + '</div>';
+    localStorage.setItem(defaultKey, html);
+    try { localStorage.removeItem(_legacySignatureKey(cu.id)); } catch (e) {}
+    if (typeof appendAuditEntry === 'function') {
+      try {
+        appendAuditEntry({
+          entityType: 'settings', entityId: null,
+          action: 'settings.signature_edited',
+          summary: 'Migrated legacy plain-text signature to HTML for ' + (cu.name || cu.id),
+          metadata: { migration: true, userId: cu.id },
+        });
+      } catch (e) {}
+    }
+    return true;
+  } catch (e) { return false; }
+}
+
+// Hardcoded fallback when nothing is configured. HTML version of the old
+// plain-text default. Uses the connected Gmail account's name/email when
+// present, falling back to the CRM user record.
+function _defaultSignatureHtml(cu) {
+  var s = (typeof getState === 'function') ? getState() : {};
+  var name  = (s.gmailUser && s.gmailUser.name)  ? s.gmailUser.name  : ((cu && cu.name)  || '');
+  var email = (s.gmailUser && s.gmailUser.email) ? s.gmailUser.email : ((cu && cu.email) || '');
+  return '<div>--<br>' + _escHtml(name) + '<br>Spartan Double Glazing &middot; 1300 912 161<br>' + _escHtml(email) + '</div>';
+}
+
+// Public API: state-aware signature lookup with fallback chain. Brief 6
+// Phase 3. Pre-Phase-3 callers passed no argument and got a single
+// per-user signature; that still works (state defaults to undefined →
+// skips step 1, lands on step 2 or 3).
+function getSignature(state) {
+  var cu = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+  if (!cu) return '';
+  _migrateLegacySignature(cu);
+  if (state) {
+    try {
+      var perState = localStorage.getItem(_signatureKey(cu.id, state));
+      if (perState !== null && perState !== '') return perState;
+    } catch (e) {}
+  }
+  try {
+    var def = localStorage.getItem(_signatureKey(cu.id, 'default'));
+    if (def !== null && def !== '') return def;
+  } catch (e) {}
+  return _defaultSignatureHtml(cu);
+}
+
+// No-fallback raw read — used by the Profile editors so each shows what's
+// actually stored for THAT scope (vs the chained value getSignature returns).
+// Returns '' when nothing is stored for the scope.
+function getRawSignature(state) {
+  var cu = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+  if (!cu) return '';
+  _migrateLegacySignature(cu);
+  try {
+    var v = localStorage.getItem(_signatureKey(cu.id, state || 'default'));
+    return v === null ? '' : v;
+  } catch (e) { return ''; }
+}
+
+// Save a signature. Brief 6 Phase 3 signature is `(state, html)` where
+// state is '' / undefined / 'default' for the default scope, or a state
+// code ('VIC', 'NSW', …) for a per-state scope. Pre-Phase-3 single-arg
+// `saveSignature(text)` calls are still accepted — the single arg is
+// treated as the default-scope content.
+function saveSignature(stateOrText, html) {
+  var cu = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
   if (!cu) return;
-  localStorage.setItem('spartan_signature_' + cu.id, text);
-  addToast('Signature saved', 'success');
+  var state, content;
+  if (arguments.length === 1) {
+    // Backward-compat: legacy callers passed a single plain-text string.
+    state = 'default';
+    content = stateOrText;
+  } else {
+    state = stateOrText || 'default';
+    content = html;
+  }
+  // Sanitise on save — defence in depth alongside render-time sanitisation.
+  // The user could paste arbitrary HTML from any source into the editor;
+  // we'd rather store a clean version than rely solely on render-time
+  // protection.
+  var safe = (typeof _sanitizeHtml === 'function') ? _sanitizeHtml(content || '') : (content || '');
+  var key = _signatureKey(cu.id, state);
+  try { localStorage.setItem(key, safe); } catch (e) {}
+  if (typeof appendAuditEntry === 'function') {
+    try {
+      appendAuditEntry({
+        entityType: 'settings', entityId: null,
+        action: 'settings.signature_edited',
+        summary: 'Updated email signature' + (state === 'default' ? ' (default)' : ' for ' + state),
+        metadata: { state: state, userId: cu.id },
+      });
+    } catch (e) {}
+  }
+  addToast('Signature saved' + (state === 'default' ? '' : ' for ' + state), 'success');
   renderPage();
+}
+
+// Profile signature save — reads the live HTML out of the contenteditable
+// at sig_<state>, runs it through saveSignature.
+function profileSaveSignature(state) {
+  var key = state || 'default';
+  var el = document.getElementById('sig_' + key);
+  if (!el) { addToast('Editor not found', 'error'); return; }
+  saveSignature(key, el.innerHTML);
 }
 
 // ── CUSTOM TEMPLATES (user-created, stored in localStorage) ───────────────────
@@ -750,22 +882,30 @@ function deleteCustomTemplate(id) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// COMPOSER RICH-TEXT HELPERS (Brief 6 Phase 2)
+// RICH-TEXT EDITOR HELPERS (Brief 6 Phase 2 + Phase 3)
 // ════════════════════════════════════════════════════════════════════════════
 //
-// The composer body is a contenteditable div, not a textarea. These helpers
-// drive the formatting toolbar above it, the merge-field inserter, and the
-// inline image picker. State binding flows through `_ecOnInput` which writes
-// the current innerHTML back to `state.emailComposeData.body`.
+// Generic helpers for any contenteditable element with a formatting toolbar.
+// Used by the email composer body (`#ec_body`) and the per-state signature
+// editors in Profile (`#sig_default`, `#sig_VIC`, `#sig_NSW`, …). Each helper
+// takes an editorId so a single toolbar pattern works across N editors on
+// the same page.
+//
+// State binding: each editor wires its own `oninput=` handler to whatever
+// it needs to track (composer pushes innerHTML to state.emailComposeData.body;
+// signature editors save on button click, no per-keystroke binding). The
+// helpers dispatch a synthetic `input` event after every execCommand so
+// the editor's oninput fires reliably even on browsers where execCommand
+// silently doesn't (Safari + insertImage).
 //
 // document.execCommand is technically deprecated but every browser still
 // supports it and the spec replacement (Selection / Range API) is roughly
 // 20× the code for the same outcome. When the alternative ships and is
 // well-supported, swap. TODO: track replacement progress.
 
-// Sync helper. Some execCommand variants don't fire the `input` event
-// reliably across browsers (Safari + insertImage in particular), so toolbar
-// actions call this directly rather than relying on the listener.
+// Composer-specific input sync. Wired to the composer's `oninput=` so
+// keystrokes flush to state.emailComposeData.body. Signature editors don't
+// use this — they save explicitly via their save button.
 function _ecOnInput() {
   var el = document.getElementById('ec_body');
   if (!el) return;
@@ -774,30 +914,30 @@ function _ecOnInput() {
   st.emailComposeData.body = el.innerHTML;
 }
 
-// Toolbar wrapper. Restores focus to the editor (toolbar buttons use
-// onmousedown=preventDefault to avoid stealing it in the first place, but
-// belt-and-braces) before issuing the command, then syncs state.
-function _ecExec(cmd, value) {
-  var el = document.getElementById('ec_body');
+// Generic toolbar action. Restores focus, runs execCommand, dispatches a
+// synthetic `input` event so the editor's oninput handler fires.
+function _rteExec(editorId, cmd, value) {
+  var el = document.getElementById(editorId);
   if (!el) return;
   if (document.activeElement !== el) el.focus();
   try { document.execCommand(cmd, false, value == null ? null : value); } catch (e) {}
-  _ecOnInput();
+  try { el.dispatchEvent(new InputEvent('input', { bubbles: true })); }
+  catch (e) { try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e2) {} }
 }
 
-// <b>/<i>/<u>/lists/headings/etc. — direct execCommand mappings.
-function ecBold()       { _ecExec('bold'); }
-function ecItalic()     { _ecExec('italic'); }
-function ecUnderline()  { _ecExec('underline'); }
-function ecBulletList() { _ecExec('insertUnorderedList'); }
-function ecNumberList() { _ecExec('insertOrderedList'); }
+// Direct execCommand mappings — first arg is the editor id.
+function rteBold(id)       { _rteExec(id, 'bold'); }
+function rteItalic(id)     { _rteExec(id, 'italic'); }
+function rteUnderline(id)  { _rteExec(id, 'underline'); }
+function rteBulletList(id) { _rteExec(id, 'insertUnorderedList'); }
+function rteNumberList(id) { _rteExec(id, 'insertOrderedList'); }
+function rteRemoveFormat(id) { _rteExec(id, 'removeFormat'); }
+
 // Toggles between <h3> and <p> so a second click on a heading line clears it.
-function ecHeading() {
-  var el = document.getElementById('ec_body'); if (!el) return;
+// h3 fits inline-email size constraints better than h1/h2.
+function rteHeading(id) {
+  var el = document.getElementById(id); if (!el) return;
   el.focus();
-  // Detect whether the current block is already a heading; if so, revert to
-  // paragraph. Otherwise apply h3 (fits inline-email size constraints
-  // better than h1/h2; h4+ is too small).
   var sel = window.getSelection();
   var inHeading = false;
   if (sel && sel.rangeCount > 0) {
@@ -807,16 +947,15 @@ function ecHeading() {
       node = node.parentNode;
     }
   }
-  _ecExec('formatBlock', inHeading ? '<p>' : '<h3>');
+  _rteExec(id, 'formatBlock', inHeading ? '<p>' : '<h3>');
 }
-function ecRemoveFormat() { _ecExec('removeFormat'); }
 
-// Link insertion. Prompts for the URL — keeping the modal flow simple.
-// Requires a non-empty selection so the user has something to attach the
-// link to. If the link target doesn't have a scheme, prepend https:// so
-// the sanitiser (Phase 1) doesn't reject it later.
-function ecCreateLink() {
-  var el = document.getElementById('ec_body'); if (!el) return;
+// Link insertion. Requires a non-empty selection so there's something to
+// attach the link to. Auto-prepends https:// for bare domains and mailto:
+// for email-shaped strings so the Phase 1 sanitiser allow-list accepts the
+// result.
+function rteCreateLink(id) {
+  var el = document.getElementById(id); if (!el) return;
   el.focus();
   var sel = window.getSelection();
   if (!sel || sel.toString().length === 0) {
@@ -824,26 +963,23 @@ function ecCreateLink() {
     return;
   }
   var url = window.prompt('Link URL:', 'https://');
-  if (url == null) return; // user cancelled
+  if (url == null) return;
   url = String(url).trim();
   if (url === '' || url === 'https://' || url === 'http://') return;
-  // Auto-prepend https:// for bare domains so the sanitiser allow-list accepts it.
   if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) {
     if (url.indexOf('@') >= 0 && url.indexOf(' ') < 0) url = 'mailto:' + url;
     else url = 'https://' + url;
   }
-  _ecExec('createLink', url);
+  _rteExec(id, 'createLink', url);
 }
 
 // Inline image insertion. File picker → FileReader → data: URI → execCommand.
-// Soft-cap at 1MB raw (which becomes ~1.3MB once base64-encoded into the MIME
-// body — close to Gmail's practical per-message limit on long forwarded
-// chains). Bigger images should be hosted somewhere and referenced by URL.
-var EC_IMAGE_MAX_BYTES = 1024 * 1024; // 1 MiB
-function ecInsertImage() {
-  var el = document.getElementById('ec_body'); if (!el) return;
-  // Save the current selection so we can restore it after the file picker
-  // closes — file pickers blur the editor and discard the cursor position.
+// 1MB raw cap (becomes ~1.3MB base64 in MIME — close to Gmail's per-message
+// limit on long forwarded chains). Saves+restores the cursor position
+// across the file-picker blur.
+var RTE_IMAGE_MAX_BYTES = 1024 * 1024; // 1 MiB
+function rteInsertImage(id) {
+  var el = document.getElementById(id); if (!el) return;
   el.focus();
   var sel = window.getSelection();
   var savedRange = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0).cloneRange() : null;
@@ -856,27 +992,49 @@ function ecInsertImage() {
     var f = input.files && input.files[0];
     document.body.removeChild(input);
     if (!f) return;
-    if (f.size > EC_IMAGE_MAX_BYTES) {
-      addToast('Image too large — max ' + Math.round(EC_IMAGE_MAX_BYTES / 1024) + 'KB. Resize or host the image and link to it instead.', 'error');
+    if (f.size > RTE_IMAGE_MAX_BYTES) {
+      addToast('Image too large — max ' + Math.round(RTE_IMAGE_MAX_BYTES / 1024) + 'KB. Resize or host the image and link to it instead.', 'error');
       return;
     }
     var reader = new FileReader();
     reader.onload = function (ev) {
       var dataUri = ev.target.result;
-      // Restore the saved cursor position before inserting.
       el.focus();
       if (savedRange) {
         var sel2 = window.getSelection();
         sel2.removeAllRanges();
         sel2.addRange(savedRange);
       }
-      _ecExec('insertImage', dataUri);
+      _rteExec(id, 'insertImage', dataUri);
     };
     reader.onerror = function () { addToast('Could not read the image file', 'error'); };
     reader.readAsDataURL(f);
   };
   document.body.appendChild(input);
   input.click();
+}
+
+// Renders the formatting toolbar HTML for a given editor id. Centralised so
+// the composer and per-state signature editors share the same buttons +
+// behaviour. Each button uses onmousedown=preventDefault so the editor
+// doesn't blur and lose its selection on click.
+function RteToolbar(editorId) {
+  var safeId = String(editorId).replace(/'/g, "\\'");
+  return ''
+    +'<div style="padding:6px 14px;border-bottom:1px solid #f9fafb;display:flex;align-items:center;gap:4px;flex-wrap:wrap;background:#fafafa">'
+    +  '<button title="Bold (Ctrl+B)"        onmousedown="event.preventDefault()" onclick="rteBold(\''+safeId+'\')"         style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-weight:700;font-size:13px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">B</button>'
+    +  '<button title="Italic (Ctrl+I)"      onmousedown="event.preventDefault()" onclick="rteItalic(\''+safeId+'\')"       style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-style:italic;font-size:13px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">I</button>'
+    +  '<button title="Underline (Ctrl+U)"   onmousedown="event.preventDefault()" onclick="rteUnderline(\''+safeId+'\')"    style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;text-decoration:underline;font-size:13px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">U</button>'
+    +  '<span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>'
+    +  '<button title="Heading"              onmousedown="event.preventDefault()" onclick="rteHeading(\''+safeId+'\')"      style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-weight:700;font-size:11px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">H</button>'
+    +  '<button title="Bullet list"          onmousedown="event.preventDefault()" onclick="rteBulletList(\''+safeId+'\')"   style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:13px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">•</button>'
+    +  '<button title="Numbered list"        onmousedown="event.preventDefault()" onclick="rteNumberList(\''+safeId+'\')"   style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">1.</button>'
+    +  '<span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>'
+    +  '<button title="Insert link"          onmousedown="event.preventDefault()" onclick="rteCreateLink(\''+safeId+'\')"   style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">🔗 Link</button>'
+    +  '<button title="Insert image (max 1MB)" onmousedown="event.preventDefault()" onclick="rteInsertImage(\''+safeId+'\')" style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">🖼 Image</button>'
+    +  '<span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>'
+    +  '<button title="Clear formatting"     onmousedown="event.preventDefault()" onclick="rteRemoveFormat(\''+safeId+'\')" style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">Tx</button>'
+    +'</div>';
 }
 
 // Initial-load body normaliser. Drafts saved before Phase 2 are plain text
@@ -1782,6 +1940,13 @@ function renderEmailComposer() {
   const d = s.emailComposeData;
   const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(d.to)}`;
 
+  // Brief 6 Phase 3: derive the AU state from the linked deal (if any) so
+  // getSignature(state) picks the right per-state signature. When the
+  // composer is opened standalone or for a contact/lead without a deal,
+  // sigState is '' and the lookup falls back to default.
+  const _dealForSig = d.dealId ? (s.deals || []).find(function(x){ return x.id === d.dealId; }) : null;
+  const sigState = _dealForSig ? (_dealForSig.state || '') : '';
+
   return `
   <div style="display:flex;flex-direction:column;height:100%">
     <!-- Composer header -->
@@ -1820,45 +1985,37 @@ function renderEmailComposer() {
     <!-- Merge fields picker -->
     ${renderMergeFieldBar()}
 
-    <!-- Brief 6 Phase 2: composer rich-text toolbar. onmousedown=preventDefault
-         on every button so the editor doesn't lose its selection / cursor
-         when a button is clicked. -->
-    <div style="padding:6px 14px;border-bottom:1px solid #f9fafb;display:flex;align-items:center;gap:4px;flex-wrap:wrap;background:#fafafa">
-      <button title="Bold (Ctrl+B)"        onmousedown="event.preventDefault()" onclick="ecBold()"         style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-weight:700;font-size:13px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">B</button>
-      <button title="Italic (Ctrl+I)"      onmousedown="event.preventDefault()" onclick="ecItalic()"       style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-style:italic;font-size:13px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">I</button>
-      <button title="Underline (Ctrl+U)"   onmousedown="event.preventDefault()" onclick="ecUnderline()"    style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;text-decoration:underline;font-size:13px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">U</button>
-      <span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>
-      <button title="Heading"              onmousedown="event.preventDefault()" onclick="ecHeading()"      style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-weight:700;font-size:11px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">H</button>
-      <button title="Bullet list"          onmousedown="event.preventDefault()" onclick="ecBulletList()"   style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:13px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">•</button>
-      <button title="Numbered list"        onmousedown="event.preventDefault()" onclick="ecNumberList()"   style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">1.</button>
-      <span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>
-      <button title="Insert link"          onmousedown="event.preventDefault()" onclick="ecCreateLink()"   style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">🔗 Link</button>
-      <button title="Insert image (max 1MB)" onmousedown="event.preventDefault()" onclick="ecInsertImage()" style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">🖼 Image</button>
-      <span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>
-      <button title="Clear formatting"     onmousedown="event.preventDefault()" onclick="ecRemoveFormat()" style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">Tx</button>
-    </div>
-    <!-- Placeholder CSS for the contenteditable. data-placeholder shows
-         when the editor is :empty (no children at all, including <br>).
-         Scoped to #ec_body so it doesn't leak. -->
-    <style>#ec_body:empty:before{content:attr(data-placeholder);color:#9ca3af;pointer-events:none}</style>
+    <!-- Brief 6 Phase 2: composer rich-text toolbar. Shared markup with
+         signature editors (Phase 3) — see RteToolbar() definition. -->
+    ${RteToolbar('ec_body')}
+    <!-- Placeholder CSS for any contenteditable carrying data-placeholder.
+         Class-based so the same rule covers the composer + every signature
+         editor without per-instance scoping. -->
+    <style>.rte-editable:empty:before{content:attr(data-placeholder);color:#9ca3af;pointer-events:none}</style>
 
     <!-- Body — contenteditable (Brief 6 Phase 2). Initial content is
          normalised through _composerInitialBody so legacy plain-text
          drafts get their newlines converted to <br>, and HTML drafts
          get sanitised through the Phase 1 allow-list. -->
-    <div id="ec_body" contenteditable="true"
+    <div id="ec_body" class="rte-editable" contenteditable="true"
       data-placeholder="Write your email here… Use {{firstName}}, {{dealTitle}} etc. to auto-fill"
       oninput="_ecOnInput()"
       style="flex:1;padding:16px 20px;border:none;outline:none;font-size:14px;font-family:inherit;line-height:1.8;color:#1a1a1a;background:#fff;min-height:240px;overflow-y:auto;word-break:break-word">${_composerInitialBody(d.body||'')}</div>
 
-    <!-- Signature -->
-    <div style="padding:0 20px 10px;border-top:1px solid #f9fafb">
-      <pre style="font-size:12px;color:#9ca3af;line-height:1.6;padding-top:8px;border-top:1px solid #e5e7eb;margin:4px 0 0;font-family:inherit;white-space:pre-wrap">${_escHtml(getSignature())}</pre>
-      <button onclick="var el=document.getElementById('sig_edit');if(el)el.style.display=el.style.display==='none'?'block':'none'" style="font-size:10px;color:#3b82f6;background:none;border:none;cursor:pointer;font-family:inherit;padding:4px 0">Edit signature</button>
-      <div id="sig_edit" style="display:none;margin-top:6px">
-        <textarea id="sig_text" rows="4" style="width:100%;font-size:12px;font-family:inherit;padding:8px;border:1px solid #e5e7eb;border-radius:6px;resize:vertical;line-height:1.6">${_escHtml(getSignature())}</textarea>
-        <div style="display:flex;gap:6px;margin-top:4px"><button onclick="saveSignature(document.getElementById('sig_text').value)" class="btn-r" style="font-size:11px;padding:3px 10px">Save Signature</button><button onclick="document.getElementById('sig_edit').style.display='none'" class="btn-w" style="font-size:11px;padding:3px 10px">Cancel</button></div>
+    <!-- Signature — Brief 6 Phase 3. Pulls the right signature for the
+         deal's state via state-aware getSignature(state). When the
+         composer is opened standalone (no entity), state is undefined
+         and the fallback chain lands on default. Renders sanitised HTML
+         so logos / formatting / inline images appear correctly. The
+         "Edit signature" button deep-links to Profile rather than
+         offering an inline editor — Profile owns the per-state
+         configuration, and the composer's space is already tight. -->
+    <div style="padding:8px 20px 10px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280;line-height:1.6">
+      <div style="font-size:11px;color:#9ca3af;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center">
+        <span>Signature${sigState ? ' · ' + sigState : ' · default'}</span>
+        <button onclick="setState({page:'profile'})" style="font-size:10px;color:#3b82f6;background:none;border:none;cursor:pointer;font-family:inherit;padding:0">Edit in Profile →</button>
       </div>
+      <div>${_sanitizeHtml(getSignature(sigState))}</div>
     </div>
 
     <!-- Footer actions -->
