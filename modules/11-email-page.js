@@ -1135,10 +1135,23 @@ function emailSendOrLog(skipGmail) {
   if (!d.to) { addToast('Enter a recipient','error'); return; }
   if (!d.subject && !d.body) { addToast('Add a subject or body','error'); return; }
 
+  // Brief 6 Phase 4: append the per-state signature to the body that's
+  // actually sent + logged. The composer's signature preview was visual-
+  // only pre-Phase-4 — without this append, recipients never saw the
+  // signature even though Phase 3 let users configure it. Resolve the
+  // state from the linked deal so users get their per-state signature
+  // (e.g. a Sydney rep emailing a NSW deal gets the NSW signature).
+  const _dealForSig = d.dealId ? (s.deals || []).find(function(x){ return x.id === d.dealId; }) : null;
+  const _sigState = _dealForSig ? (_dealForSig.state || '') : '';
+  const _signatureHtml = (typeof getSignature === 'function') ? getSignature(_sigState) : '';
+  // Wrap signature in a separator div so it's visually distinct from the
+  // body. Two <br>s match the typical "blank line + signature" rhythm.
+  const fullBody = (d.body || '') + (_signatureHtml ? '<br><br>' + _signatureHtml : '');
+
   const newMsg = {
     id: 'es'+Date.now(),
     to: d.to, toName: d.toName || d.to,
-    subject: d.subject, body: d.body,
+    subject: d.subject, body: fullBody,
     date: new Date().toISOString().slice(0,10),
     time: new Date().toTimeString().slice(0,5),
     opened: false, openedAt: null, clicked: false, opens: 0,
@@ -1154,14 +1167,16 @@ function emailSendOrLog(skipGmail) {
     emailSelectedId: newMsg.id,
   });
 
-  // Also log to entity activity
+  // Also log to entity activity. Stores fullBody (body + signature) so
+  // the activity timeline reflects what was actually sent, not just what
+  // the user typed in the composer.
   if (d.dealId || d.contactId || d.leadId) {
     const entityId   = d.dealId || d.contactId || d.leadId;
     const entityType = d.dealId ? 'deal' : d.contactId ? 'contact' : 'lead';
     saveActivityToEntity(entityId, entityType, {
       id: 'a'+Date.now(), type:'email',
-      subject: d.subject, text: d.body,
-      preview: d.body.slice(0,100),
+      subject: d.subject, text: fullBody,
+      preview: fullBody.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100),
       opens: 0, opened: false, openedAt: null,
       date: newMsg.date, time: newMsg.time,
       by: s.gmailUser ? s.gmailUser.name : (getCurrentUser()||{name:'Admin'}).name,
@@ -1171,7 +1186,7 @@ function emailSendOrLog(skipGmail) {
 
   // Try Gmail send if connected
   if (!skipGmail && s.gmailConnected && s.gmailToken) {
-    gmailSend(d.to, d.subject, d.body, d.cc, d.dealId||d.contactId||d.leadId||'', d.dealId?'deal':d.contactId?'contact':'lead');
+    gmailSend(d.to, d.subject, fullBody, d.cc, d.dealId||d.contactId||d.leadId||'', d.dealId?'deal':d.contactId?'contact':'lead');
     return;
   }
   addToast('Email logged ✓', 'success');
