@@ -43,6 +43,12 @@ let stConfirmDeleteId = null;
 
 function renderSettings(){
   const {dealFields,dealStatuses,leadStatuses,contactStatuses,leadFields,contactFields} = getState();
+  // Brief 4 Phase 5: gate Commission Rules to admin + sales_manager. Other
+  // tabs aren't role-filtered today (the page assumes any logged-in user
+  // who reaches Settings has access). Filtering at the TABS-array level
+  // hides the tab from non-privileged users entirely.
+  const _settCu = (typeof getCurrentUser === 'function') ? getCurrentUser() || {} : {};
+  const _canSeeCommissionRules = _settCu.role === 'admin' || _settCu.role === 'sales_manager';
   const TABS=[
     ['email','Email & Gmail'],
     ['pipelines','Pipeline Manager'],
@@ -52,6 +58,7 @@ function renderSettings(){
     ['tags','Tags'],
     ['smstemplates','SMS Templates'],
     ['phoneivr','Phone & IVR'],
+    ...(_canSeeCommissionRules ? [['commission_rules','Commission Rules']] : []),
     ['installers','Installers'],
     ['users','Users & Roles'],
   ];
@@ -539,7 +546,140 @@ function renderSettings(){
       <button class="btn-r" style="width:fit-content" onclick="addToast('Invoice settings saved','success')">Save Settings</button>
     </div>`;
 
-  // ── USERS ─────────────────────────────────────────────────────────────────────
+  // ── COMMISSION RULES (Brief 4 Phase 5) ────────────────────────────────────────
+  } else if(settTab==='commission_rules'){
+    var _ccu = getCurrentUser() || {};
+    var _commCanEdit = _ccu.role === 'admin' || _ccu.role === 'sales_manager';
+    if (!_commCanEdit || typeof getCommissionRules !== 'function') {
+      content = '<div style="padding:30px;text-align:center;color:#9ca3af;font-size:13px">Only admins and sales managers can manage commission rules.</div>';
+    } else {
+      var _commRules  = getCommissionRules();
+      var _commReps   = (typeof getUsers === 'function') ? getUsers().filter(function(u){return u.active && (u.role==='sales_rep' || u.role==='sales_manager' || u.role==='admin');}) : [];
+      var _commBranches = ['VIC','ACT','SA','NSW','QLD','WA','TAS','NT'];
+      var _commGateOptions = [['won','Won'],['final_signed','Final Sign-Off'],['final_payment','Final Payment']];
+      var _commEsc = function(v){ return (v==null?'':String(v)).replace(/"/g,'&quot;'); };
+
+      // Defaults section — base rate, age threshold/penalty, realisation gate radio
+      var defaultsHtml = ''
+        + '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:18px">'
+        +   '<div style="font-size:13px;font-weight:700;margin-bottom:12px">Defaults</div>'
+        +   '<p style="font-size:12px;color:#6b7280;margin:0 0 14px;line-height:1.5">Apply to every rep / branch unless overridden below.</p>'
+        +   '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px">'
+        +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Base rate (%)</label>'
+        +       '<input type="number" step="0.5" min="0" max="100" value="' + _commEsc(_commRules.defaults.baseRate) + '" onchange="setCommissionDefault(\'baseRate\',this.value)" style="width:100%;padding:6px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;font-family:Syne,sans-serif;font-weight:700"></div>'
+        +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Age threshold (days)</label>'
+        +       '<input type="number" step="1" min="0" value="' + _commEsc(_commRules.defaults.ageThresholdDays) + '" onchange="setCommissionDefault(\'ageThresholdDays\',this.value)" style="width:100%;padding:6px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px"></div>'
+        +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Age penalty (%)</label>'
+        +       '<input type="number" step="0.5" min="0" max="100" value="' + _commEsc(_commRules.defaults.agePenaltyPct) + '" onchange="setCommissionDefault(\'agePenaltyPct\',this.value)" style="width:100%;padding:6px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px"></div>'
+        +   '</div>'
+        +   '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:6px">Realisation gate</label>'
+        +     '<div style="display:flex;gap:14px;flex-wrap:wrap">'
+        +       _commGateOptions.map(function(opt){
+                  var checked = _commRules.defaults.realisationGate === opt[0];
+                  return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">'
+                       +   '<input type="radio" name="comm_default_gate" value="' + opt[0] + '"' + (checked?' checked':'') + ' onchange="setCommissionDefault(\'realisationGate\',\'' + opt[0] + '\')">'
+                       +   '<span>' + opt[1] + '</span>'
+                       + '</label>';
+                }).join('')
+        +     '</div>'
+        +   '</div>'
+        + '</div>';
+
+      // Per-rep section — table with rate / age threshold / penalty / gate
+      var perRepHtml = ''
+        + '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:18px">'
+        +   '<div style="font-size:13px;font-weight:700;margin-bottom:8px">Per Rep Overrides</div>'
+        +   '<p style="font-size:12px;color:#6b7280;margin:0 0 12px;line-height:1.5">Empty cells use the default. Changes save automatically and audit-log.</p>'
+        +   '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+        +     '<thead><tr style="background:#f9fafb">'
+        +       '<th style="text-align:left;padding:8px;font-weight:600;color:#6b7280">Rep</th>'
+        +       '<th style="text-align:center;padding:8px;font-weight:600;color:#6b7280">Rate (%)</th>'
+        +       '<th style="text-align:center;padding:8px;font-weight:600;color:#6b7280">Age threshold (d)</th>'
+        +       '<th style="text-align:center;padding:8px;font-weight:600;color:#6b7280">Age penalty (%)</th>'
+        +       '<th style="text-align:left;padding:8px;font-weight:600;color:#6b7280">Realisation gate</th>'
+        +     '</tr></thead><tbody>';
+      _commReps.forEach(function(u){
+        var rec = (_commRules.perRep || {})[u.name] || {};
+        perRepHtml += '<tr style="border-top:1px solid #f0f0f0">'
+          + '<td style="padding:8px"><div style="display:flex;align-items:center;gap:8px"><div style="width:24px;height:24px;background:#c41230;border-radius:50%;color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">' + u.initials + '</div>' + u.name + '</div></td>'
+          + '<td style="padding:8px;text-align:center"><input type="number" step="0.5" min="0" max="100" placeholder="default" value="' + (rec.baseRate != null ? _commEsc(rec.baseRate) : '') + '" onchange="setCommissionPerRep(\'' + u.name.replace(/'/g,"\\'") + '\',\'baseRate\',this.value)" style="width:80px;padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;text-align:center"></td>'
+          + '<td style="padding:8px;text-align:center"><input type="number" step="1" min="0" placeholder="default" value="' + (rec.ageThresholdDays != null ? _commEsc(rec.ageThresholdDays) : '') + '" onchange="setCommissionPerRep(\'' + u.name.replace(/'/g,"\\'") + '\',\'ageThresholdDays\',this.value)" style="width:80px;padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;text-align:center"></td>'
+          + '<td style="padding:8px;text-align:center"><input type="number" step="0.5" min="0" max="100" placeholder="default" value="' + (rec.agePenaltyPct != null ? _commEsc(rec.agePenaltyPct) : '') + '" onchange="setCommissionPerRep(\'' + u.name.replace(/'/g,"\\'") + '\',\'agePenaltyPct\',this.value)" style="width:80px;padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;text-align:center"></td>'
+          + '<td style="padding:8px"><select onchange="setCommissionPerRep(\'' + u.name.replace(/'/g,"\\'") + '\',\'realisationGate\',this.value)" style="padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px">'
+          +   '<option value=""' + (rec.realisationGate == null ? ' selected' : '') + '>(use default)</option>'
+          +   _commGateOptions.map(function(opt){
+              return '<option value="' + opt[0] + '"' + (rec.realisationGate === opt[0] ? ' selected' : '') + '>' + opt[1] + '</option>';
+            }).join('')
+          + '</select></td>'
+          + '</tr>';
+      });
+      perRepHtml += '</tbody></table></div>';
+      perRepHtml += '</div>';
+
+      // Per-branch section — table with one column (baseRate)
+      var perBranchHtml = ''
+        + '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:18px">'
+        +   '<div style="font-size:13px;font-weight:700;margin-bottom:8px">Per Branch Overrides</div>'
+        +   '<p style="font-size:12px;color:#6b7280;margin:0 0 12px;line-height:1.5">Branch baseRate overrides the default for any rep in that branch (per-rep still wins). Empty = use default.</p>'
+        +   '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">';
+      _commBranches.forEach(function(b){
+        var br = (_commRules.perBranch || {})[b] || {};
+        perBranchHtml += '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">' + b + ' base rate (%)</label>'
+          + '<input type="number" step="0.5" min="0" max="100" placeholder="default" value="' + (br.baseRate != null ? _commEsc(br.baseRate) : '') + '" onchange="setCommissionPerBranch(\'' + b + '\',this.value)" style="width:100%;padding:6px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;text-align:center"></div>';
+      });
+      perBranchHtml += '</div></div>';
+
+      // Product multipliers list
+      var multHtml = ''
+        + '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:18px">'
+        +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-size:13px;font-weight:700">Product Multipliers</div>'
+        +     '<button class="btn-r" style="font-size:11px;padding:4px 12px" onclick="addCommissionMultiplier()">+ Add</button>'
+        +   '</div>'
+        +   '<p style="font-size:12px;color:#6b7280;margin:0 0 12px;line-height:1.5">Per-product commission uplift. <code>_default</code> is the catch-all for products without a specific entry. Multiplier 1.0 = no uplift.</p>';
+      _commRules.productMultipliers.forEach(function(pm, i){
+        var isDefault = pm.productKey === '_default';
+        multHtml += '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:' + (isDefault?'#f9fafb':'#fff') + ';border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px">'
+          + '<input placeholder="productKey" value="' + _commEsc(pm.productKey) + '" onchange="setCommissionMultiplier(' + i + ',\'productKey\',this.value)" style="flex:1;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;font-family:monospace"' + (isDefault?' disabled title="Cannot rename _default"':'') + '>'
+          + '<input placeholder="Label" value="' + _commEsc(pm.label) + '" onchange="setCommissionMultiplier(' + i + ',\'label\',this.value)" style="flex:1;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px">'
+          + '<input type="number" step="0.05" min="0" placeholder="1.0" value="' + _commEsc(pm.multiplier) + '" onchange="setCommissionMultiplier(' + i + ',\'multiplier\',this.value)" style="width:80px;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;text-align:center;font-weight:700;font-family:Syne,sans-serif">'
+          + (isDefault ? '<span style="width:32px;text-align:center;color:#9ca3af;font-size:11px" title="Cannot remove _default">—</span>' : '<button onclick="removeCommissionMultiplier(' + i + ')" style="width:32px;height:30px;background:none;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;color:#dc2626;font-size:14px" title="Remove">×</button>')
+          + '</div>';
+      });
+      if (_commRules.productMultipliers.length === 0) {
+        multHtml += '<div style="padding:14px;text-align:center;color:#9ca3af;font-size:12px">No multipliers configured. Click + Add to start.</div>';
+      }
+      multHtml += '</div>';
+
+      // Volume bonuses list
+      var bonusHtml = ''
+        + '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px">'
+        +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-size:13px;font-weight:700">Volume Bonuses</div>'
+        +     '<button class="btn-r" style="font-size:11px;padding:4px 12px" onclick="addCommissionBonus()">+ Add</button>'
+        +   '</div>'
+        +   '<p style="font-size:12px;color:#6b7280;margin:0 0 12px;line-height:1.5">When a rep\'s monthly Won total (ex-GST) crosses a threshold, subsequent deals in that month get the bonus added to their effective rate. Highest tripped threshold wins. Trigger deal does not benefit from itself (subsequent-only).</p>';
+      _commRules.volumeBonuses.forEach(function(vb, i){
+        bonusHtml += '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#fff;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px">'
+          + '<div style="font-size:11px;color:#6b7280;width:90px">When monthly</div>'
+          + '<div style="font-size:12px">≥ $</div>'
+          + '<input type="number" step="1000" min="0" placeholder="100000" value="' + _commEsc(vb.threshold) + '" onchange="setCommissionBonus(' + i + ',\'threshold\',this.value)" style="flex:1;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;font-family:Syne,sans-serif;font-weight:700">'
+          + '<div style="font-size:12px">→ +</div>'
+          + '<input type="number" step="0.5" min="0" max="100" placeholder="1" value="' + _commEsc(vb.bonusPct) + '" onchange="setCommissionBonus(' + i + ',\'bonusPct\',this.value)" style="width:70px;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;text-align:center;font-family:Syne,sans-serif;font-weight:700">'
+          + '<div style="font-size:12px">%</div>'
+          + '<button onclick="removeCommissionBonus(' + i + ')" style="width:32px;height:30px;background:none;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;color:#dc2626;font-size:14px" title="Remove">×</button>'
+          + '</div>';
+      });
+      if (_commRules.volumeBonuses.length === 0) {
+        bonusHtml += '<div style="padding:14px;text-align:center;color:#9ca3af;font-size:12px">No bonuses configured. Click + Add to start.</div>';
+      }
+      bonusHtml += '</div>';
+
+      content = defaultsHtml + perRepHtml + perBranchHtml + multHtml + bonusHtml
+        + '<div style="margin-top:18px;padding:14px 18px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;font-size:12px;color:#475569;line-height:1.7">'
+        +   '<strong style="color:#0369a1">How rates resolve:</strong> defaults → per-branch → per-rep (last write wins). The calc engine applies <strong>baseRate + volumeBonus − agePenalty</strong> capped at 0, then multiplies by <strong>productMultiplier</strong> on the won quote\'s line items. Every change to these rules writes an audit entry visible in <em>Settings → Audit</em>.'
+        + '</div>';
+    }
+
+  // ── INSTALLERS ────────────────────────────────────────────────────────────────
   } else if(settTab==='installers'){
     var instList = getInstallers();
     var instColours = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#ec4899','#f97316','#6366f1','#14b8a6'];
