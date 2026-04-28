@@ -388,7 +388,7 @@ function isToday(d) { return isoDate(d) === isoDate(new Date()); }
 function scheduleJobToDate(jobId, dateStr) {
   var jobs = getState().jobs || [];
   setState({jobs: jobs.map(function(j){ return j.id===jobId ? Object.assign({},j,{installDate:dateStr}) : j; })});
-  dbUpdate('jobs', jobId, {install_date:dateStr, updated:new Date().toISOString()});
+  dbUpdate('jobs', jobId, {install_date:dateStr});
   logJobAudit(jobId, 'Install Scheduled', 'Install date set to ' + dateStr);
   // Auto-generate 45% pre-install invoice if not already done
   checkPreInstallInvoice(jobId);
@@ -397,23 +397,23 @@ function scheduleJobToDate(jobId, dateStr) {
 function unscheduleJob(jobId) {
   var jobs = getState().jobs || [];
   setState({jobs: jobs.map(function(j){ return j.id===jobId ? Object.assign({},j,{installDate:null}) : j; })});
-  dbUpdate('jobs', jobId, {install_date:null, updated:new Date().toISOString()});
+  dbUpdate('jobs', jobId, {install_date:null});
   addToast('Job unscheduled', 'info');
 }
 function assignCrewToJob(jobId, crewIds) {
   var jobs = getState().jobs || [];
   setState({jobs: jobs.map(function(j){ return j.id===jobId ? Object.assign({},j,{installCrew:crewIds}) : j; })});
-  dbUpdate('jobs', jobId, {install_crew:JSON.stringify(crewIds), updated:new Date().toISOString()});
+  dbUpdate('jobs', jobId, {install_crew:crewIds});
 }
 function setJobDuration(jobId, hours) {
   var jobs = getState().jobs || [];
   setState({jobs: jobs.map(function(j){ return j.id===jobId ? Object.assign({},j,{installDurationHours:hours}) : j; })});
-  dbUpdate('jobs', jobId, {install_duration_hours:hours, updated:new Date().toISOString()});
+  dbUpdate('jobs', jobId, {install_duration_hours:hours});
 }
 function setJobTime(jobId, time) {
   var jobs = getState().jobs || [];
   setState({jobs: jobs.map(function(j){ return j.id===jobId ? Object.assign({},j,{installTime:time}) : j; })});
-  dbUpdate('jobs', jobId, {install_time:time, updated:new Date().toISOString()});
+  dbUpdate('jobs', jobId, {install_time:time});
 }
 function calcEndTime(startTime, durationHours) {
   if (!startTime || !durationHours) return '';
