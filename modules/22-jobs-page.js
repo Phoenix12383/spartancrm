@@ -304,21 +304,37 @@ function renderJobDetail() {
       nextHint = reason ? '⏳ ' + reason : '⏳ Awaiting next event';
     }
   }
-  var statusCard = '<div class="card" style="padding:14px 16px;margin-bottom:16px;border-left:4px solid '+currentStatus.col+';display:flex;align-items:center;gap:20px;flex-wrap:wrap">'
-    // Current status (left)
+  // Action: if exactly one next status is available, show a single primary button.
+  // If multiple, show a compact pill-styled dropdown. Either is right-aligned.
+  var actionHtml = '';
+  if (availableNext.length === 1) {
+    actionHtml = '<button onclick="transitionJobStatus(\''+job.id+'\',\''+availableNext[0].key+'\',\'\')" class="btn-r" style="font-size:12px;padding:8px 16px;font-weight:600;white-space:nowrap;gap:4px">Advance → '+availableNext[0].label+'</button>';
+  } else if (availableNext.length > 1) {
+    actionHtml = '<select onchange="if(this.value){transitionJobStatus(\''+job.id+'\',this.value,\'\')}" class="sel" style="font-size:12px;padding:7px 14px;background:#c41230;color:#fff;border-color:#c41230;font-weight:600;cursor:pointer"><option value="" style="color:#374151">Advance status…</option>'+availableNext.map(function(s){return '<option value="'+s.key+'" style="color:#374151">'+s.label+'</option>';}).join('')+'</select>';
+  }
+
+  var statusCard = '<div class="card" style="padding:14px 18px;margin-bottom:16px;border-left:4px solid '+currentStatus.col+';display:flex;align-items:center;gap:24px;flex-wrap:wrap">'
+    // Current status
     +'<div style="display:flex;flex-direction:column;gap:3px;min-width:180px">'
     +'<div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">Current Status</div>'
     +'<div style="display:flex;align-items:center;gap:8px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+currentStatus.col+';flex-shrink:0"></span><span style="font-size:16px;font-weight:700;color:'+currentStatus.col+';font-family:Syne,sans-serif">'+currentStatus.label+'</span></div>'
     +'</div>'
-    // Days at status (middle)
+    // Vertical divider
+    +'<div style="width:1px;height:36px;background:#e5e7eb"></div>'
+    // Time at status
     +'<div style="display:flex;flex-direction:column;gap:3px">'
     +'<div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">Time at status</div>'
     +'<div style="display:flex;align-items:center;gap:8px"><span style="font-size:18px;font-weight:800;color:'+stalenessCol+';font-family:Syne,sans-serif">'+daysAtStatus+'d</span><span style="font-size:9px;font-weight:700;color:'+stalenessCol+';background:'+stalenessCol+'20;padding:2px 7px;border-radius:4px;letter-spacing:.04em">'+stalenessLabel+'</span></div>'
     +'</div>'
-    // Next step hint
-    + (nextHint ? '<div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:200px"><div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">Next step</div><div style="font-size:13px;font-weight:600;color:#374151">'+nextHint+'</div></div>' : '<div style="flex:1"></div>')
-    // Admin: advance dropdown
-    + (availableNext.length > 0 ? '<select onchange="if(this.value){transitionJobStatus(\''+job.id+'\',this.value,\'\')}" class="sel" style="font-size:12px;padding:6px 12px"><option value="">Advance to…</option>'+availableNext.map(function(s){return '<option value="'+s.key+'">'+s.label+'</option>';}).join('')+'</select>' : '')
+    // Vertical divider
+    +'<div style="width:1px;height:36px;background:#e5e7eb"></div>'
+    // Next step hint (flexes to fill remaining space)
+    +'<div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:160px">'
+    +'<div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">Next step</div>'
+    +'<div style="font-size:13px;font-weight:600;color:#374151">'+(nextHint || '— end of workflow —')+'</div>'
+    +'</div>'
+    // Action (right-aligned)
+    + actionHtml
     +'</div>';
 
   // Tabs
