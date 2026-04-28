@@ -273,7 +273,7 @@ function markJobComplete(jobId) {
   }
   // Update job
   setState({jobs: getState().jobs.map(function(j){return j.id===jobId?Object.assign({},j,{installCompletedAt:new Date().toISOString(),status:'h_completed_standard'}):j;})});
-  dbUpdate('jobs', jobId, {install_completed_at:new Date().toISOString(), status:'h_completed_standard', updated:new Date().toISOString()});
+  dbUpdate('jobs', jobId, {install_completed_at:new Date().toISOString(), status:'h_completed_standard'});
   logJobAudit(jobId, 'Job Completed', 'Job marked as complete. Final 5% invoice generated.');
   addToast('Job completed! Final invoice sent.', 'success');
 }

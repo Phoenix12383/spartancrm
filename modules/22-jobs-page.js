@@ -735,6 +735,118 @@ function renderJobDetail() {
     if(cmFiles.length===0){tabContent+='<div style="margin-top:12px;padding:10px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e">\u26a0\ufe0f <strong>Check Measure PDF required.</strong> Upload before advancing to production.</div>';}
     tabContent+='</div>';
 
+  } else if (tab === 'installation') {
+    // INSTALLATION — Phase 1: status, scheduling, site conditions, completion
+    var installers = getInstallers().filter(function(i){return i.active;});
+    var installerById = {}; installers.forEach(function(i){ installerById[i.id]=i; });
+    var crewIds = job.installCrew || [];
+    var installDone = !!job.installCompletedAt;
+    var installInProgress = !installDone && job.status === 'f_installing';
+    var hasInstallDate = !!job.installDate;
+
+    // Days until install (for Pre-Install banner)
+    var daysUntil = null;
+    if (hasInstallDate && !installDone) {
+      var diff = (new Date(job.installDate + 'T12:00') - new Date()) / 86400000;
+      daysUntil = Math.ceil(diff);
+    }
+
+    // Pre-install invoice status
+    var preClaim = (getJobClaims(job.id) || []).find(function(c){return c.id==='cl_preinstall';});
+    var preInvoiced = preClaim && (preClaim.status==='invoiced' || preClaim.status==='paid');
+
+    // Status banner
+    tabContent = '<div class="card" style="padding:20px;margin-bottom:14px">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center">'
+      +'<div><h4 style="font-size:16px;font-weight:700;margin:0">🛠️ Installation</h4>'
+      +'<p style="color:#6b7280;font-size:12px;margin:4px 0 0">Schedule the install crew, capture site conditions, and complete the job</p></div></div></div>';
+
+    // Three-cell status row
+    var stateCell, stateCol, stateBg, stateBorder;
+    if (installDone) { stateCell='✅ Installed'; stateCol='#15803d'; stateBg='#f0fdf4'; stateBorder='#86efac'; }
+    else if (installInProgress) { stateCell='🔨 In Progress'; stateCol='#1d4ed8'; stateBg='#eff6ff'; stateBorder='#93c5fd'; }
+    else if (hasInstallDate) { stateCell='📅 Scheduled'; stateCol='#92400e'; stateBg='#fef3c7'; stateBorder='#fde68a'; }
+    else { stateCell='⏳ Not Scheduled'; stateCol='#92400e'; stateBg='#fef3c7'; stateBorder='#fde68a'; }
+
+    tabContent += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:14px">'
+      +'<div style="padding:14px;border-radius:10px;text-align:center;background:'+stateBg+';border:1px solid '+stateBorder+'">'
+      +'<div style="font-size:11px;font-weight:700;color:'+stateCol+'">'+stateCell+'</div>'
+      +(installDone?'<div style="font-size:11px;color:#6b7280;margin-top:2px">'+new Date(job.installCompletedAt).toLocaleDateString('en-AU')+'</div>':'')
+      +(daysUntil!==null && !installDone ? '<div style="font-size:11px;color:#6b7280;margin-top:2px">'+(daysUntil>0?'In '+daysUntil+' day'+(daysUntil!==1?'s':''):daysUntil===0?'Today':Math.abs(daysUntil)+' day'+(Math.abs(daysUntil)!==1?'s':'')+' overdue')+'</div>':'')
+      +'</div>'
+      +'<div style="padding:14px;border-radius:10px;text-align:center;'+(preInvoiced?'background:#f0fdf4;border:1px solid #86efac':'background:#f9fafb;border:1px solid #e5e7eb')+'">'
+      +'<div style="font-size:11px;font-weight:700;color:'+(preInvoiced?'#15803d':'#6b7280')+'">'+(preInvoiced?'✅ 45% Pre-Install Invoice':'⏳ Pre-Install Invoice Pending')+'</div>'
+      +(preInvoiced && preClaim.invoiceNumber?'<div style="font-size:11px;color:#9ca3af;margin-top:2px">'+preClaim.invoiceNumber+'</div>':'')
+      +'</div>'
+      +'<div style="padding:14px;border-radius:10px;text-align:center;background:#f9fafb;border:1px solid #e5e7eb">'
+      +'<div style="font-size:11px;font-weight:700;color:#6b7280">Booked: '+(job.installDate||'—')+'</div>'
+      +(job.installTime?'<div style="font-size:11px;color:#9ca3af">'+formatTime12(job.installTime)+'</div>':'')
+      +'</div></div>';
+
+    // Scheduling card
+    tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
+      +'<h5 style="font-size:13px;font-weight:700;margin:0 0 10px">Scheduling</h5>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
+      +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Install Date</label>'
+      +'<input type="date" class="inp" value="'+(job.installDate||'')+'" onchange="updateJobField(\''+job.id+'\',\'installDate\',this.value);if(typeof checkPreInstallInvoice===\'function\')checkPreInstallInvoice(\''+job.id+'\')"></div>'
+      +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Arrival Time</label>'
+      +'<select class="sel" onchange="updateJobField(\''+job.id+'\',\'installTime\',this.value)">'
+      +'<option value="">Select…</option>'
+      +['07:00','07:30','08:00','08:30','09:00','09:30','10:00','10:30','11:00','12:00','13:00','14:00'].map(function(t){return '<option value="'+t+'"'+(job.installTime===t?' selected':'')+'>'+formatTime12(t)+'</option>';}).join('')
+      +'</select></div></div>'
+      // Crew chips + add dropdown
+      +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Install Crew (Lead + Installers)</label>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;min-height:28px">'
+      +(crewIds.length===0?'<span style="font-size:11px;color:#9ca3af;font-style:italic">No crew assigned yet</span>':crewIds.map(function(cid,idx){var inst=installerById[cid]||{name:'Unknown',colour:'#9ca3af'};return '<span style="display:inline-flex;align-items:center;gap:6px;background:'+inst.colour+'18;border:1px solid '+inst.colour+'66;color:'+inst.colour+';padding:3px 8px;border-radius:14px;font-size:11px;font-weight:600">'+(idx===0?'👑 ':'')+inst.name+'<button onclick="updateJobField(\''+job.id+'\',\'installCrew\',(getState().jobs.find(function(x){return x.id===\''+job.id+'\'}).installCrew||[]).filter(function(c){return c!==\''+cid+'\'}));renderPage()" style="background:none;border:none;color:'+inst.colour+';cursor:pointer;padding:0;font-size:13px;line-height:1">×</button></span>';}).join(''))
+      +'</div>'
+      +'<select class="sel" onchange="if(this.value){var cur=(getState().jobs.find(function(x){return x.id===\''+job.id+'\'}).installCrew||[]);if(cur.indexOf(this.value)<0){updateJobField(\''+job.id+'\',\'installCrew\',cur.concat([this.value]));renderPage();}this.value=\'\';}" style="font-size:12px;padding:6px 10px;max-width:260px">'
+      +'<option value="">+ Add crew member…</option>'
+      +installers.filter(function(i){return crewIds.indexOf(i.id)<0;}).map(function(i){return '<option value="'+i.id+'">'+i.name+'</option>';}).join('')
+      +'</select>'
+      +(crewIds.length>0?'<div style="font-size:10px;color:#9ca3af;margin-top:6px">👑 First crew member is the lead. Drag-reorder coming soon.</div>':'')
+      +'</div></div>';
+
+    // Site Conditions
+    tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
+      +'<h5 style="font-size:13px;font-weight:700;margin:0 0 10px">Site Conditions</h5>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
+      +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Access Notes</label>'
+      +'<textarea class="inp" rows="2" style="font-size:12px;resize:vertical" onblur="updateJobField(\''+job.id+'\',\'accessNotes\',this.value)" placeholder="Tight passage, gate code, etc.">'+(job.accessNotes||'')+'</textarea></div>'
+      +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Parking Notes</label>'
+      +'<textarea class="inp" rows="2" style="font-size:12px;resize:vertical" onblur="updateJobField(\''+job.id+'\',\'parkingNotes\',this.value)" placeholder="Where the truck can park, permits needed, etc.">'+(job.parkingNotes||'')+'</textarea></div>'
+      +'</div>'
+      +'<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px">'
+      +'<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" '+(job.renderWarning?'checked':'')+' onchange="updateJobField(\''+job.id+'\',\'renderWarning\',this.checked)"> ⚠️ Render Warning</label>'
+      +'<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" '+(job.tightAccess?'checked':'')+' onchange="updateJobField(\''+job.id+'\',\'tightAccess\',this.checked)"> Tight Access</label>'
+      +'<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" '+(job.twoStory?'checked':'')+' onchange="updateJobField(\''+job.id+'\',\'twoStory\',this.checked)"> Two Story</label>'
+      +'<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" '+(job.petOnPremises?'checked':'')+' onchange="updateJobField(\''+job.id+'\',\'petOnPremises\',this.checked)"> Pet on Premises</label>'
+      +'</div></div>';
+
+    // Completion card
+    var canComplete = !!job.completionSignedAt && !installDone;
+    tabContent += '<div class="card" style="padding:16px">'
+      +'<h5 style="font-size:13px;font-weight:700;margin:0 0 10px">Completion</h5>';
+    if (installDone) {
+      tabContent += '<div style="padding:14px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;font-size:13px;color:#15803d">'
+        +'✅ <strong>Installation completed</strong> on '+new Date(job.installCompletedAt).toLocaleDateString('en-AU')+'. Final 5% invoice has been issued.'
+        +'</div>';
+    } else {
+      tabContent += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
+        +'<div style="padding:12px;border-radius:8px;'+(job.completionSignedAt?'background:#f0fdf4;border:1px solid #86efac':'background:#f9fafb;border:1px solid #e5e7eb')+'">'
+        +'<div style="font-size:11px;font-weight:700;color:'+(job.completionSignedAt?'#15803d':'#6b7280')+'">'+(job.completionSignedAt?'✅ Customer Signed':'⏳ Awaiting Customer Signature')+'</div>'
+        +(job.completionSignedAt?'<div style="font-size:11px;color:#9ca3af;margin-top:2px">'+new Date(job.completionSignedAt).toLocaleDateString('en-AU')+'</div>':'<div style="font-size:11px;color:#9ca3af;margin-top:2px">Captured on installer\'s tablet at end of install day</div>')
+        +'</div>'
+        +'<div style="padding:12px;border-radius:8px;background:#f9fafb;border:1px solid #e5e7eb">'
+        +'<div style="font-size:11px;font-weight:700;color:#6b7280">Final 5% Invoice</div>'
+        +'<div style="font-size:11px;color:#9ca3af;margin-top:2px">Auto-issued when job is marked complete</div>'
+        +'</div></div>'
+        +'<div style="display:flex;gap:8px;align-items:center">'
+        +'<button onclick="markJobComplete(\''+job.id+'\')" '+(canComplete?'':'disabled')+' class="btn-r" style="font-size:13px;padding:8px 20px;'+(canComplete?'':'opacity:.5;cursor:not-allowed')+'">✅ Mark Installation Complete</button>'
+        +(!job.completionSignedAt?'<span style="font-size:11px;color:#9ca3af">Customer must sign the completion certificate first</span>':'')
+        +'</div>';
+    }
+    tabContent += '</div>';
+
   } else if (tab === 'audit_log') {
     var auditLog = getJobAuditLog(job.id);
     var activities = (job.activity||[]).map(function(a){return {action:'Activity',detail:a.text||a.note||'',user:a.by||'System',timestamp:a.at||a.date||'',oldValue:'',newValue:''};});
