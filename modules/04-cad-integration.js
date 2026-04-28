@@ -707,22 +707,50 @@ window.addEventListener('message', function(event) {
     // etc.). Until those integrations ship, dev mode advances the status
     // here so the visible workflow keeps up with what the user just did in
     // CAD. No-op when dev mode is off.
+    //
+    // We bypass transitionJobStatus / canTransition entirely. The standard
+    // a\u2192c gate requires cmCompletedAt + cmDocUrl, which aren't set when
+    // CAD doesn't return a PDF (e.g. dev test path). Direct setState +
+    // dbUpdate keeps it simple \u2014 audit log still fires via logJobAudit.
     if (typeof isDevMode === 'function' && isDevMode()) {
       var jobAfter = (getState().jobs || []).find(function(j) { return j.id === _cadModal.entityId; });
       var curStatus = jobAfter ? jobAfter.status : null;
+      var devTarget = null, devNote = '';
       if (_cadModal.mode === 'survey') {
-        // Save in survey mode = surveyor finished the CM. Advance to
-        // c_awaiting_2nd_payment unless we're already past that point.
-        var surveyAdvanceFrom = ['a_check_measure', 'c4_date_change_hold'];
-        if (surveyAdvanceFrom.indexOf(curStatus) >= 0 && typeof transitionJobStatus === 'function') {
-          transitionJobStatus(_cadModal.entityId, 'c_awaiting_2nd_payment', 'CM saved (Dev auto-advance)');
+        if (['a_check_measure', 'c4_date_change_hold'].indexOf(curStatus) >= 0) {
+          devTarget = 'c_awaiting_2nd_payment';
+          devNote   = 'CM saved (Dev auto-advance)';
         }
       } else if (_cadModal.mode === 'final') {
-        // Save in final mode = Sales Manager prepared the Final Design.
-        // Advance to c1_final_sign_off unless we're already at or past it.
-        var finalAdvanceFrom = ['a_check_measure', 'c_awaiting_2nd_payment', 'c4_date_change_hold'];
-        if (finalAdvanceFrom.indexOf(curStatus) >= 0 && typeof transitionJobStatus === 'function') {
-          transitionJobStatus(_cadModal.entityId, 'c1_final_sign_off', 'Final Design saved (Dev auto-advance)');
+        if (['a_check_measure', 'c_awaiting_2nd_payment', 'c4_date_change_hold'].indexOf(curStatus) >= 0) {
+          devTarget = 'c1_final_sign_off';
+          devNote   = 'Final Design saved (Dev auto-advance)';
+        }
+      }
+      if (devTarget && jobAfter) {
+        var devNow = new Date().toISOString();
+        var devCu  = (typeof getCurrentUser === 'function' && getCurrentUser()) || {id:'dev', name:'Dev'};
+        var devHist = (jobAfter.statusHistory || []).concat([{
+          status: devTarget, at: devNow, by: devCu.id, note: devNote,
+        }]);
+        var devChanges = { status: devTarget, statusHistory: devHist };
+        // Stamp cmCompletedAt for survey advance so the rest of the UI (Final
+        // Design tab pipeline, "CM Complete" indicator) lines up with the
+        // auto-advanced status.
+        if (_cadModal.mode === 'survey' && !jobAfter.cmCompletedAt) {
+          devChanges.cmCompletedAt = devNow;
+        }
+        setState({ jobs: (getState().jobs || []).map(function(j) {
+          return j.id === _cadModal.entityId ? Object.assign({}, j, devChanges) : j;
+        })});
+        try {
+          var devDb = { status: devTarget };
+          if (devChanges.cmCompletedAt) devDb.cm_completed_at = devChanges.cmCompletedAt;
+          dbUpdate('jobs', _cadModal.entityId, devDb);
+        } catch (e) { console.warn('[Dev advance] dbUpdate failed:', e); }
+        if (typeof logJobAudit === 'function') {
+          logJobAudit(_cadModal.entityId, 'Status Advanced (Dev)',
+            'CAD ' + _cadModal.mode + ' save \u2192 ' + devTarget);
         }
       }
     }

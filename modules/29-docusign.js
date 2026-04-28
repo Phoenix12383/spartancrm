@@ -325,10 +325,30 @@ function sendFinalDesignDocuSign(jobId) {
   // visible workflow lines up with what's about to happen (envelope sent →
   // customer signs → webhook flips c1 → c2). In production, this only runs
   // when the UI gate already permits the click, which happens at c1.
+  // Bypasses canTransition (which has gates we want to skip in dev) by
+  // writing the status directly. The webhook will still flip c1 → c2 when
+  // the customer signs.
   if ((typeof isDevMode === 'function') && isDevMode()) {
     var advanceFrom = ['a_check_measure', 'c_awaiting_2nd_payment', 'c4_date_change_hold'];
-    if (advanceFrom.indexOf(job.status) >= 0 && typeof transitionJobStatus === 'function') {
-      transitionJobStatus(jobId, 'c1_final_sign_off', 'Final Design DocuSign sent (Dev auto-advance)');
+    if (advanceFrom.indexOf(job.status) >= 0) {
+      var devNow  = new Date().toISOString();
+      var devCu   = (typeof getCurrentUser === 'function' && getCurrentUser()) || {id:'dev', name:'Dev'};
+      var devHist = (job.statusHistory || []).concat([{
+        status: 'c1_final_sign_off', at: devNow, by: devCu.id,
+        note: 'Final Design DocuSign sent (Dev auto-advance)',
+      }]);
+      setState({ jobs: (getState().jobs || []).map(function(j) {
+        return j.id === jobId
+          ? Object.assign({}, j, { status: 'c1_final_sign_off', statusHistory: devHist })
+          : j;
+      })});
+      try { dbUpdate('jobs', jobId, { status: 'c1_final_sign_off' }); }
+      catch (e) { console.warn('[Dev advance] dbUpdate failed:', e); }
+      if (typeof logJobAudit === 'function') {
+        logJobAudit(jobId, 'Status Advanced (Dev)', 'Send DocuSign → c1_final_sign_off');
+      }
+      // Re-read job so the rest of the function sees the new status
+      job = (getState().jobs || []).find(function(j){ return j.id === jobId; }) || job;
     }
   }
 
