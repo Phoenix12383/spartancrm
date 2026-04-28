@@ -719,7 +719,7 @@ function renderCalendarCreateModal() {
     +'<h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">Schedule Meeting</h3>'
     +'<button onclick="_calCreateOpen=false;renderPage()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button>'
     +'</div>'
-    +'<div style="padding:20px;display:flex;flex-direction:column;gap:14px">'
+    +'<div class="modal-body" style="display:flex;flex-direction:column;gap:14px">'
     +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Title *</label>'
     +'<input class="inp" id="cal_title" value="'+d.title+'" placeholder="e.g. Measure appointment — Richmond"></div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">'
