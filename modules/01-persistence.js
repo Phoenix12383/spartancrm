@@ -91,6 +91,9 @@ function dealToDb(d) {
     quotes:d.quotes||[], active_quote_id:d.activeQuoteId||null, won_quote_id:d.wonQuoteId||null,
     // Step 4 §5: previous stage id captured before won-transition, so unwind can restore it.
     pre_won_stage_id:d.preWonStageId||null,
+    // Brief 5: deal-level type, independent of contact.type. Null is permitted on legacy rows;
+    // backfill (Brief 5 Phase 3) will fill them. New deals must carry one of 'residential' | 'commercial'.
+    deal_type:d.dealType||null,
     tags:d.tags||[], activities:d.activities||[]};
 }
 function dbToDeal(r) {
@@ -103,6 +106,9 @@ function dbToDeal(r) {
     // Multi-quote fields (spec §3.1) — default to empty/null so legacy rows behave as if they have no quotes yet
     quotes:Array.isArray(r.quotes)?r.quotes:[], activeQuoteId:r.active_quote_id||null, wonQuoteId:r.won_quote_id||null,
     preWonStageId:r.pre_won_stage_id||null,
+    // Brief 5: deal-level type. Read as null when missing — backfill on boot will fill from contact.type
+    // (Phase 3). Don't default to 'residential' here; that would short-circuit the backfill detection.
+    dealType:r.deal_type||null,
     tags:r.tags||[], activities:r.activities||[]};
 }
 function leadToDb(l) {
