@@ -2279,7 +2279,7 @@ function renderTabForm(entityId, entityType, tab, contact) {
           <div style="font-size:12px;color:#6b7280;margin-top:1px">${phone || 'No phone on file'}</div>
         </div>
         <div style="display:flex;gap:6px">
-          ${phone ? `<a href="tel:${phone}" style="background:#22c55e;color:#fff;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;text-decoration:none;display:flex;align-items:center;gap:5px">📞 Call</a>` : ''}
+          ${phone ? `<a href="javascript:void(0)" onclick="twilioCall('${phone}','${entityId}','${entityType}')" style="background:#22c55e;color:#fff;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;text-decoration:none;display:flex;align-items:center;gap:5px;cursor:pointer">📞 Call</a>` : ''}
           ${phone ? `<a href="https://wa.me/${phone.replace(/\s/g, '')}" target="_blank" style="background:#25d366;color:#fff;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;text-decoration:none;display:flex;align-items:center;gap:5px">💬 WhatsApp</a>` : ''}
         </div>
       </div>
@@ -3481,7 +3481,7 @@ function renderDealDetail() {
       <div style="display:flex;flex-direction:column;gap:7px">
         <a href="mailto:${contact.email}" style="font-size:12px;color:#3b82f6;text-decoration:none;display:flex;align-items:center;gap:7px">${Icon({ n: 'mail2', size: 13 })} ${contact.email || '—'}</a>
         ${contact.email ? `<button onclick="detailTab='email';renderPage()" class="btn-r" style="font-size:11px;padding:4px 10px;margin-top:4px;width:100%;justify-content:center;gap:5px">${Icon({ n: 'send', size: 12 })} Send Email</button>` : ''}
-        <a href="tel:${contact.phone}" style="font-size:12px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:7px">${Icon({ n: 'phone2', size: 13 })} ${contact.phone || '—'}</a>
+        ${contact.phone ? `<a href="javascript:void(0)" onclick="twilioCall('${contact.phone}','${contact.id}','contact')" style="font-size:12px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:7px;cursor:pointer">${Icon({ n: 'phone2', size: 13 })} ${contact.phone}</a>` : `<div style="font-size:12px;color:#9ca3af;display:flex;align-items:center;gap:7px">${Icon({ n: 'phone2', size: 13 })} —</div>`}
         <div style="font-size:12px;color:#6b7280;display:flex;align-items:center;gap:7px">${Icon({ n: 'pin', size: 13 })} ${[contact.street, contact.suburb, contact.state, contact.postcode].filter(Boolean).join(', ') || 'No address'}</div>
       </div>`: `<div style="font-size:13px;color:#9ca3af">No contact linked</div>`}
     </div>
@@ -3619,7 +3619,7 @@ function renderLeadDetail() {
       </div>
       <div style="display:flex;flex-direction:column;gap:7px">
         ${lead.email ? `<a href="mailto:${lead.email}" style="font-size:12px;color:#3b82f6;text-decoration:none;display:flex;align-items:center;gap:7px">${Icon({ n: 'mail2', size: 13 })} ${lead.email}</a>` : ''}
-        ${lead.phone ? `<a href="tel:${lead.phone}" style="font-size:12px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:7px">${Icon({ n: 'phone2', size: 13 })} ${lead.phone}</a>` : ''}
+        ${lead.phone ? `<a href="javascript:void(0)" onclick="twilioCall('${lead.phone}','${lead.id}','lead')" style="font-size:12px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:7px;cursor:pointer">${Icon({ n: 'phone2', size: 13 })} ${lead.phone}</a>` : ''}
       ${lead.email ? `<a href="mailto:${lead.email}" style="font-size:12px;color:#3b82f6;text-decoration:none;display:flex;align-items:center;gap:8px">${Icon({ n: 'mail2', size: 13 })} ${lead.email}</a>` : ''}
       <button onclick="detailTab='email';renderPage()" class="btn-r" style="font-size:12px;padding:5px 10px;margin-top:6px;width:100%;justify-content:center;gap:5px">${Icon({ n: 'send', size: 12 })} Send Email</button>
         ${lead.suburb ? `<div style="font-size:12px;color:#6b7280;display:flex;align-items:center;gap:7px">${Icon({ n: 'pin', size: 13 })} ${[lead.street, lead.suburb, lead.state, lead.postcode].filter(Boolean).join(', ')}</div>` : ''}
@@ -3696,7 +3696,7 @@ function renderContactDetail() {
       </div>
       <div style="display:flex;flex-direction:column;gap:8px">
         <a href="mailto:${c.email}" style="font-size:13px;color:#3b82f6;text-decoration:none;display:flex;align-items:center;gap:8px">${Icon({ n: 'mail2', size: 14 })} <span>${c.email || '—'}</span></a>
-        <a href="tel:${c.phone}" style="font-size:13px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:8px">${Icon({ n: 'phone2', size: 14 })} <span>${c.phone || '—'}</span></a>
+        ${c.phone ? `<a href="javascript:void(0)" onclick="twilioCall('${c.phone}','${c.id}','contact')" style="font-size:13px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:8px;cursor:pointer">${Icon({ n: 'phone2', size: 14 })} <span>${c.phone}</span></a>` : `<div style="font-size:13px;color:#9ca3af;display:flex;align-items:center;gap:8px">${Icon({ n: 'phone2', size: 14 })} <span>—</span></div>`}
         <div style="font-size:13px;color:#6b7280;display:flex;align-items:center;gap:8px">${Icon({ n: 'pin', size: 14 })} ${[c.street, c.suburb, c.state, c.postcode].filter(Boolean).join(', ') || 'No address'}</div>
       </div>
     </div>

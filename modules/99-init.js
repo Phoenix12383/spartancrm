@@ -74,6 +74,7 @@ function renderPage(){
   const fn=pageRenderers[effectivePage]||renderDashboard;
 
   document.getElementById('app').innerHTML=`
+    ${typeof renderActiveCallPanel === 'function' ? renderActiveCallPanel() : ''}
     ${renderModuleBar()}
     ${renderSidebar()}
     ${renderTopBar()}
@@ -121,6 +122,14 @@ document.addEventListener('click', e=>{
   if(!e.target.closest('[id^=colorPicker_]')&&!e.target.closest('[onclick*=stOpenColorPicker]')){
     document.querySelectorAll('[id^=colorPicker_]').forEach(el=>el.style.display='none');
   }
+});
+
+// Hang up any in-flight Twilio call when the rep closes the tab. Without
+// this, an active call can stay alive on Twilio's side until their idle
+// timeout, which leaves a "hanging" billed call and a stale call_logs row.
+window.addEventListener('beforeunload', function() {
+  if (typeof twilioHangup === 'function') { try { twilioHangup(); } catch(e){} }
+  if (typeof twilioDestroy === 'function') { try { twilioDestroy(); } catch(e){} }
 });
 
 // subscribe to state changes and re-render
