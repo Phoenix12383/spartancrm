@@ -33,7 +33,22 @@ function _dsSaveEnvelopes(map) {
 }
 
 function getDocuSignEnvelopeForJob(jobId) {
-  return _dsLoadEnvelopes()[jobId] || null;
+  var local = _dsLoadEnvelopes()[jobId] || null;
+  // Merge in fields that the webhook stamps directly on the job. The webhook
+  // doesn't know about localStorage — it writes to docusign_status, etc., on
+  // the jobs row. Pulling those in here means the UI shows the latest signed
+  // state even if the local rec was never updated.
+  var jobs = (typeof getState === 'function' ? getState().jobs : []) || [];
+  var job = jobs.find(function(j) { return j.id === jobId; });
+  if (!job) return local;
+  if (!local && !job.docusignEnvelopeId) return null;
+  return Object.assign({}, local || {}, {
+    envelopeId: (local && local.envelopeId) || job.docusignEnvelopeId,
+    status:     job.docusignStatus     || (local && local.status)     || null,
+    sentAt:     (local && local.sentAt) || null,
+    signedAt:   job.docusignCompletedAt || (local && local.signedAt) || null,
+    declinedAt: job.docusignDeclinedAt  || null,
+  });
 }
 
 function _setDocuSignEnvelopeForJob(jobId, rec) {
@@ -243,6 +258,25 @@ function sendFinalDesignDocuSign(jobId) {
       sentBy: ((getCurrentUser() || {}).name) || '',
     };
     _setDocuSignEnvelopeForJob(jobId, rec);
+    // Persist the envelope ID on the job so the docusign-webhook can find
+    // the matching job when DocuSign Connect fires a status change.
+    var stateJobs = getState().jobs || [];
+    setState({ jobs: stateJobs.map(function(j) {
+      return j.id === jobId
+        ? Object.assign({}, j, {
+            docusignEnvelopeId: rec.envelopeId,
+            docusignStatus: rec.status,
+          })
+        : j;
+    })});
+    if (typeof dbUpdate === 'function') {
+      try {
+        dbUpdate('jobs', jobId, {
+          docusign_envelope_id: rec.envelopeId,
+          docusign_status: rec.status,
+        });
+      } catch (e) { console.warn('dbUpdate docusign fields failed', e); }
+    }
     if (typeof logJobAudit === 'function') {
       logJobAudit(jobId, 'DocuSign Sent', 'Final Design envelope ' + rec.envelopeId + ' sent to ' + customerEmail);
     }

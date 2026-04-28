@@ -50,7 +50,12 @@ function jobToDb(j) {
     install_crew:j.installCrew||[], install_completed_at:j.installCompletedAt||null,
     production_status:j.productionStatus||null, factory_order_id:j.factoryOrderId||null,
     claims:j.claims||null, held:!!j.held, hold_reason:j.holdReason||null,
-    order_suffix:j.orderSuffix||'O', legal_entity:j.legalEntity||null, notes:j.notes||null};
+    order_suffix:j.orderSuffix||'O', legal_entity:j.legalEntity||null, notes:j.notes||null,
+    // DocuSign envelope tracking (set by docusign-send / updated by docusign-webhook)
+    docusign_envelope_id:j.docusignEnvelopeId||null,
+    docusign_status:j.docusignStatus||null,
+    docusign_completed_at:j.docusignCompletedAt||null,
+    docusign_declined_at:j.docusignDeclinedAt||null};
 }
 function dbToJob(r) {
   return {id:r.id, jobNumber:r.job_number, dealId:r.deal_id, contactId:r.contact_id,
@@ -76,6 +81,10 @@ function dbToJob(r) {
     productionStatus:r.production_status, factoryOrderId:r.factory_order_id,
     claims:r.claims, held:!!r.held, holdReason:r.hold_reason,
     orderSuffix:r.order_suffix||'O', legalEntity:r.legal_entity, notes:r.notes,
+    docusignEnvelopeId:r.docusign_envelope_id||null,
+    docusignStatus:r.docusign_status||null,
+    docusignCompletedAt:r.docusign_completed_at||null,
+    docusignDeclinedAt:r.docusign_declined_at||null,
     created:r.created_at};
 }
 
