@@ -7,7 +7,14 @@ project_id = "sedpmsgiscowohpqdjza"
 [functions.docusign-send]
 # Customer-facing data (PDF, customer email) is forwarded to DocuSign.
 # The function authenticates with DocuSign via JWT (RSA private key in secrets).
-verify_jwt = true
+#
+# verify_jwt is set to false because Spartan CRM doesn't use Supabase Auth
+# (it has its own auth in 05-state-auth-rbac.js, so users don't have
+# Supabase-issued JWTs). The function is protected by the secrecy of its
+# URL + the DocuSign secrets being scoped to this project. For production
+# hardening, add a shared-secret check inside the function (see TODO in
+# index.ts) or migrate Spartan to Supabase Auth for first-class JWT auth.
+verify_jwt = false
 
 [functions.docusign-webhook]
 # DocuSign Connect calls this — incoming requests don't carry a Supabase JWT,

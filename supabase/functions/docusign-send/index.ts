@@ -86,6 +86,21 @@ Deno.serve(async (req) => {
     });
   }
 
+  // TODO (production hardening): require a shared secret in a custom header
+  // so the function isn't callable by anyone who guesses the URL. Set
+  // SPARTAN_SHARED_SECRET in Supabase secrets and pass it from the CRM via
+  // _sb.functions.invoke('docusign-send', { headers: { 'x-spartan-secret': ... } }).
+  // For sandbox/development this is unnecessary (function URL isn't public).
+  const sharedSecret = Deno.env.get('SPARTAN_SHARED_SECRET');
+  if (sharedSecret) {
+    const got = req.headers.get('x-spartan-secret');
+    if (got !== sharedSecret) {
+      return new Response(JSON.stringify({ ok: false, error: 'Unauthorized' }), {
+        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+  }
+
   let body: SendRequest;
   try {
     body = await req.json();
