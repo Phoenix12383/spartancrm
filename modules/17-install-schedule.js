@@ -171,6 +171,60 @@ function setJobTools(jobId, toolIds) {
   } catch(e) {}
 }
 window.getJobTools = getJobTools; window.setJobTools = setJobTools;
+
+// ── Install Progress Tracking (TESTING — pre-mobile app stand-in) ───────────
+// Per the manual §7.5: each frame moves through 7 stages on install day:
+//   0=Not Started · 1=Demo'd · 2=Fitted · 3=Foamed · 4=Trimmed
+//   5=Glazed · 6=Hardware Tested · 7=Cleaned (complete)
+// Until the installer mobile app ships, admin/install manager taps stages
+// manually on the Installation tab. Mobile app will write to the same store.
+var INSTALL_STAGES = ['Not Started','Demo\'d','Fitted','Foamed','Trimmed','Glazed','Hardware','Cleaned'];
+window.INSTALL_STAGES = INSTALL_STAGES;
+
+function getInstallProgress(jobId) {
+  try { var m = JSON.parse(localStorage.getItem('spartan_install_progress') || '{}'); return m[jobId] || {arrivedAt:null, frameStages:[]}; }
+  catch(e) { return {arrivedAt:null, frameStages:[]}; }
+}
+function setInstallProgress(jobId, progress) {
+  try {
+    var m = JSON.parse(localStorage.getItem('spartan_install_progress') || '{}');
+    m[jobId] = progress;
+    localStorage.setItem('spartan_install_progress', JSON.stringify(m));
+  } catch(e) {}
+}
+function getInstallProgressPct(job) {
+  if (!job) return 0;
+  var p = getInstallProgress(job.id);
+  var frames = Math.max(1, (job.windows||[]).length);
+  var maxSteps = frames * 7;
+  var done = 0;
+  for (var i = 0; i < frames; i++) {
+    done += Math.min(7, Math.max(0, (p.frameStages && p.frameStages[i]) || 0));
+  }
+  return Math.round(done / maxSteps * 100);
+}
+function setFrameStage(jobId, frameIdx, stageIdx) {
+  var p = getInstallProgress(jobId);
+  if (!p.frameStages) p.frameStages = [];
+  p.frameStages[frameIdx] = stageIdx;
+  if (!p.arrivedAt && stageIdx > 0) p.arrivedAt = new Date().toISOString();
+  setInstallProgress(jobId, p);
+}
+function markCrewArrived(jobId) {
+  var p = getInstallProgress(jobId);
+  p.arrivedAt = new Date().toISOString();
+  setInstallProgress(jobId, p);
+  if (typeof transitionJobStatus === 'function') {
+    transitionJobStatus(jobId, 'f_installing', 'Crew arrived on site (testing — will be auto-fired by mobile app)');
+  }
+  addToast('Crew marked as arrived', 'success');
+  renderPage();
+}
+window.getInstallProgress = getInstallProgress;
+window.setInstallProgress = setInstallProgress;
+window.getInstallProgressPct = getInstallProgressPct;
+window.setFrameStage = setFrameStage;
+window.markCrewArrived = markCrewArrived;
 function addInstaller(name, phone, branch, colour) {
   var list = getInstallers();
   var parts = (name||'').trim().split(' ');
@@ -669,11 +723,16 @@ function renderInstallSchedule() {
         // Ensure bars don't overflow the day
         if (left + width > DAY_W) width = DAY_W - left;
 
-        g += '<div draggable="true" ondragstart="event.dataTransfer.setData(\'text/plain\',\''+j.id+'\');event.dataTransfer.effectAllowed=\'move\';this.style.opacity=\'.5\';" ondragend="this.style.opacity=\'\';" style="position:absolute;left:'+left+'px;top:'+(4 + idx * 0)+'px;width:'+width+'px;height:'+(ROW_H - 8)+'px;z-index:2;cursor:grab" onclick="setState({crmMode:\'jobs\',page:\'jobs\',jobDetailId:\''+j.id+'\'})" title="Drag to reschedule, click to open">';
-        g += '<div style="height:100%;border-radius:6px;padding:3px 6px;overflow:hidden;display:flex;flex-direction:column;justify-content:center;'
+        var progPct = getInstallProgressPct(j);
+        g += '<div draggable="true" ondragstart="event.dataTransfer.setData(\'text/plain\',\''+j.id+'\');event.dataTransfer.effectAllowed=\'move\';this.style.opacity=\'.5\';" ondragend="this.style.opacity=\'\';" style="position:absolute;left:'+left+'px;top:'+(4 + idx * 0)+'px;width:'+width+'px;height:'+(ROW_H - 8)+'px;z-index:2;cursor:grab" onclick="setState({crmMode:\'jobs\',page:\'jobs\',jobDetailId:\''+j.id+'\'})" title="Drag to reschedule, click to open' + (progPct>0?' · '+progPct+'% installed':'') + '">';
+        g += '<div style="height:100%;border-radius:6px;padding:3px 6px;overflow:hidden;display:flex;flex-direction:column;justify-content:center;position:relative;'
           +'background:'+barCol+'18;border:1.5px solid '+barCol+'50;'
           +(noTime?'border-style:dashed;':'')
           +'">';
+        // Progress fill overlay (TESTING — driven by install_progress side store)
+        if (progPct > 0) {
+          g += '<div style="position:absolute;left:0;top:0;bottom:0;width:'+progPct+'%;background:'+barCol+'30;border-right:2px solid '+barCol+';pointer-events:none;z-index:0"></div>';
+        }
         // Bar content
         g += '<div style="display:flex;align-items:center;gap:4px;overflow:hidden">'
           +'<span style="font-size:10px;font-weight:800;color:'+barCol+';white-space:nowrap">'+(j.jobNumber||'')+'</span>'
@@ -686,6 +745,7 @@ function renderInstallSchedule() {
           +'<span style="font-size:8px;color:#6b7280">'+dur+'h</span>'
           +'<span style="font-size:8px;color:#15803d;font-weight:600">$'+Math.round((j.val||0)/1000)+'k</span>'
           +(j.paymentMethod==='zip'?'<span style="font-size:7px;font-weight:800;color:#7c3aed;background:#f5f3ff;padding:0 3px;border-radius:3px">ZIP</span>':'')
+          +(progPct>0?'<span style="font-size:8px;font-weight:800;color:#15803d;background:#dcfce7;padding:0 4px;border-radius:3px;margin-left:auto">'+progPct+'%</span>':'')
           +'</div>';
         g += '</div></div>';
       });
@@ -904,6 +964,24 @@ function renderInstallSchedule() {
       recs.push({type:'overload',priority:1,icon:'\ud83d\udee0\ufe0f',
         title:'Crew missing tool'+(missing.length>1?'s':'')+' for '+(j.jobNumber||'')+(j.suburb?' \u00b7 '+j.suburb:''),
         detail:'Required: '+missing.join(', ')+'. Reassign a crew member who has the tool, or share/reassign the tool in Settings \u2192 Tools.'
+      });
+    }
+  });
+
+  // 8. Time-overrun alert (TESTING \u2014 uses install progress side store)
+  // Manual \u00a77.10: alert when a crew is running >20% over forecast time.
+  weekJobs.forEach(function(j){
+    var p = (typeof getInstallProgress === 'function') ? getInstallProgress(j.id) : null;
+    if (!p || !p.arrivedAt) return;
+    var pct = (typeof getInstallProgressPct === 'function') ? getInstallProgressPct(j) : 0;
+    if (pct >= 100) return; // already done
+    var actualH = (new Date() - new Date(p.arrivedAt)) / 3600000;
+    var forecastH = getCrewEffectiveHours(j, j.installCrew, 4);
+    if (forecastH > 0 && actualH > forecastH * 1.2) {
+      var overPct = Math.round((actualH/forecastH - 1) * 100);
+      recs.push({type:'overload',priority:0,icon:'\u23f1\ufe0f',
+        title:(j.jobNumber||'') + ' running ' + overPct + '% over forecast',
+        detail:'On site for ' + actualH.toFixed(1) + 'h vs forecast ' + forecastH + 'h. Currently ' + pct + '% installed. Check in with the crew lead.'
       });
     }
   });

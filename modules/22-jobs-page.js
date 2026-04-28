@@ -835,6 +835,49 @@ function renderJobDetail() {
         +'</div>';
     }
 
+    // ── Install Progress Tracking (TESTING — to be replaced by mobile app) ─
+    var instProgress = (typeof getInstallProgress === 'function') ? getInstallProgress(job.id) : {arrivedAt:null,frameStages:[]};
+    var progressPct = (typeof getInstallProgressPct === 'function') ? getInstallProgressPct(job) : 0;
+    var frames = (job.windows||[]).length;
+    if (frames > 0 && hasInstallDate) {
+      tabContent += '<div class="card" style="padding:16px;margin-bottom:14px;border:2px dashed #c4b5fd">'
+        +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">'
+        +'<div><h5 style="font-size:13px;font-weight:700;margin:0">🔨 Install Progress</h5>'
+        +'<div style="font-size:10px;color:#7c3aed;font-weight:600;margin-top:2px">🧪 TESTING — these stages will be tapped by the install crew on the mobile app once that ships. For now, admin can update manually here.</div></div>'
+        +(instProgress.arrivedAt?'<span style="font-size:10px;color:#15803d;background:#dcfce7;padding:3px 8px;border-radius:4px;font-weight:600">✅ Arrived '+new Date(instProgress.arrivedAt).toLocaleString('en-AU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</span>':'<button onclick="markCrewArrived(\''+job.id+'\')" class="btn-r" style="font-size:11px;padding:4px 10px">📍 Tap Arrived</button>')
+        +'</div>'
+        // Overall progress bar
+        +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
+        +'<div style="flex:1;height:10px;background:#f3f4f6;border-radius:5px;overflow:hidden"><div style="height:100%;background:linear-gradient(90deg,#22c55e,#16a34a);width:'+progressPct+'%;border-radius:5px;transition:width .3s"></div></div>'
+        +'<span style="font-size:12px;font-weight:700;color:#15803d;min-width:40px;text-align:right">'+progressPct+'%</span>'
+        +'</div>'
+        // Per-frame stepper
+        +'<div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:6px">Per-frame stages — click to advance</div>'
+        +'<div style="display:flex;flex-direction:column;gap:6px;max-height:300px;overflow-y:auto">';
+      var stageColours = ['#e5e7eb','#fbbf24','#f59e0b','#06b6d4','#3b82f6','#a855f7','#ec4899','#22c55e'];
+      for (var fi = 0; fi < frames; fi++) {
+        var w = job.windows[fi] || {};
+        var curStage = (instProgress.frameStages && instProgress.frameStages[fi]) || 0;
+        var frameLabel = (w.position || w.name || ('Frame ' + (fi+1)));
+        tabContent += '<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:#f9fafb;border-radius:6px">'
+          +'<div style="font-size:11px;font-weight:600;min-width:90px;color:#374151">'+frameLabel+'</div>'
+          +'<div style="display:flex;gap:2px;flex:1">';
+        for (var si = 1; si <= 7; si++) {
+          var done = curStage >= si;
+          tabContent += '<button onclick="setFrameStage(\''+job.id+'\','+fi+','+(curStage===si?si-1:si)+');renderPage()" title="'+INSTALL_STAGES[si]+' — click to '+(done?'unset':'mark complete')+'" style="flex:1;padding:4px 0;font-size:9px;font-weight:600;background:'+(done?stageColours[si]:'#fff')+';color:'+(done?'#fff':'#9ca3af')+';border:1px solid '+(done?stageColours[si]:'#e5e7eb')+';border-radius:4px;cursor:pointer">'+INSTALL_STAGES[si].charAt(0)+'</button>';
+        }
+        tabContent += '</div>'
+          +'<div style="font-size:10px;color:#6b7280;min-width:70px;text-align:right">'+(curStage===0?'Not started':INSTALL_STAGES[curStage])+'</div>'
+          +'</div>';
+      }
+      tabContent += '</div>'
+        // Stage legend
+        +'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;font-size:10px;color:#6b7280">'
+        +'<span><b>D</b>=Demo\'d</span><span><b>F</b>=Fitted</span><span><b>F</b>=Foamed</span><span><b>T</b>=Trimmed</span><span><b>G</b>=Glazed</span><span><b>H</b>=Hardware</span><span><b>C</b>=Cleaned</span>'
+        +'</div>'
+        +'</div>';
+    }
+
     // Completion card
     var canComplete = !!job.completionSignedAt && !installDone;
     tabContent += '<div class="card" style="padding:16px">'
