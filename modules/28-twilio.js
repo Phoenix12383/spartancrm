@@ -223,27 +223,35 @@ function twilioCall(phone, entityId, entityType) {
   });
 }
 
-// End the active call. Robust against any call lifecycle state — works
-// whether the call is connecting, ringing, or in-progress. We clear UI state
-// immediately so the End button feels responsive, then asynchronously tell
-// Twilio to disconnect. The SDK's later 'disconnect' event becomes a no-op
-// since _twilioActiveCall is already null.
+// End the active call. Order is critical here:
+//
+//   1. Tell Twilio to disconnect FIRST. The SDK propagates the hangup signal
+//      to the gateway, the gateway hangs up the customer leg, and only then
+//      does the SDK fire the local 'disconnect' event. That event triggers
+//      _twilioOnDisconnect() which clears UI state and writes the activity row.
+//
+//   2. Don't call other lifecycle methods after .disconnect() — calling
+//      .reject() on an outbound call (or any method after .disconnect()) puts
+//      the v2 Voice SDK in a state where it ignores the original disconnect.
+//      That was the stage-6 bug: UI cleared instantly but Twilio kept the call
+//      alive until the gateway timed out ~30s later.
+//
+//   3. Safety net: if the SDK doesn't fire its 'disconnect' event within 2s
+//      (rare — happens for calls that never fully connected, or when Twilio's
+//      gateway is sluggish), force-clear local state so the banner doesn't
+//      stay stuck on screen.
 function twilioHangup() {
-  if (!_twilioActiveCall) return;
-  var call = _twilioActiveCall.callObject;
-  // Clear UI + state right now so the banner disappears the instant the rep
-  // clicks End — no waiting for Twilio's gateway round-trip.
-  _twilioOnDisconnect();
-  // Then fire the actual disconnect at Twilio. Try every applicable method
-  // since the available ones depend on the call's lifecycle stage:
-  //   - .disconnect() works once the call is live
-  //   - .reject()/.ignore() for incoming calls that haven't been accepted
-  //   - .cancel() if the SDK supports it for outbound-still-ringing
-  if (call) {
-    try { call.disconnect(); } catch(e) {}
-    try { if (typeof call.reject === 'function') call.reject(); } catch(e) {}
-    try { if (typeof call.cancel === 'function') call.cancel(); } catch(e) {}
+  if (!_twilioActiveCall || !_twilioActiveCall.callObject) return;
+  try { _twilioActiveCall.callObject.disconnect(); } catch(e) {
+    console.warn('[Spartan] call.disconnect() threw:', e);
   }
+  // Safety net for edge cases where the SDK doesn't fire 'disconnect'.
+  setTimeout(function() {
+    if (_twilioActiveCall) {
+      console.log('[Spartan] Force-clearing active call state after hangup timeout');
+      _twilioOnDisconnect();
+    }
+  }, 2000);
 }
 
 function twilioMute(on) {
