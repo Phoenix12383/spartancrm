@@ -54,12 +54,12 @@ function suggestCmSlot(job, allBooked, installers) {
 function smartBookCm(jobId) {
   var s = cmSuggestions[jobId];
   if (!s) { addToast('No suggestion available', 'error'); return; }
-  updateJobField(jobId, 'cmBookedDate', s.date);
-  updateJobField(jobId, 'cmBookedTime', s.time);
-  updateJobField(jobId, 'cmAssignedTo', s.installerId);
+  var jobs = getState().jobs || [];
+  var upd = { cmBookedDate: s.date, cmBookedTime: s.time, cmAssignedTo: s.installerId };
+  setState({ jobs: jobs.map(function(j){ return j.id === jobId ? Object.assign({}, j, upd) : j; }) });
+  dbUpdate('jobs', jobId, { cm_booked_date: s.date, cm_booked_time: s.time, cm_assigned_to: s.installerId, updated: new Date().toISOString() });
   delete cmSuggestions[jobId];
   addToast('CM booked — ' + s.installerName + ' on ' + s.date, 'success');
-  renderPage();
 }
 
 // (Previous OSM-iframe mount helper removed — this page now uses real Google
