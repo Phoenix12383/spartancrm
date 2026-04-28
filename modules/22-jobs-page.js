@@ -281,25 +281,45 @@ function renderJobDetail() {
   var st = getJobStatusObj(job.status);
   var tab = getState().jobDetailTab || 'overview';
 
-  // Status stepper — single horizontal scrollable row
-  var _stepperGroupKeys = ['onboarding','finance','order','material','production','dispatch','install'];
+  // Compact Status card — replaces the long 25-pill stepper.
+  // Shows: current status + days at status (colour-coded by staleness, manual §4.1)
+  // + next-step hint + an admin "Advance to…" dropdown for testing.
   var _curIdx = JOB_STATUSES.findIndex(function(x){ return x.key === job.status; });
-  var stepperHtml = JOB_STATUSES.filter(function(s){ return _stepperGroupKeys.indexOf(s.group) >= 0; }).map(function(s, i, arr){
-    var active = s.key === job.status;
-    var thisIdx = JOB_STATUSES.findIndex(function(x){ return x.key === s.key; });
-    var passed = thisIdx < _curIdx;
-    var check = canTransition(job, s.key);
-    var locked = !check.ok && !active && !passed;
-    var bg = active ? s.col : passed ? s.col + '22' : '#f3f4f6';
-    var col = active ? '#fff' : passed ? s.col : locked ? '#d1d5db' : '#6b7280';
-    var border = active ? s.col : passed ? s.col + '80' : 'transparent';
-    var cursor = (active || locked) ? 'default' : 'pointer';
-    var onclick = active ? '' : locked ? '' : 'transitionJobStatus(\'' + job.id + '\',\'' + s.key + '\',\'\')';
-    var tip = locked ? (check.reason||'') : s.label;
-    var icon = active ? '● ' : passed ? '✓ ' : locked ? '🔒 ' : '';
-    var arrow = i < arr.length - 1 ? '<span style="color:#d1d5db;flex-shrink:0;font-size:12px;align-self:center">›</span>' : '';
-    return '<div onclick="'+onclick+'" title="'+tip.replace(/"/g,'&quot;')+'" style="display:inline-flex;align-items:center;gap:4px;padding:6px 14px;border-radius:20px;font-size:11px;font-weight:'+(active?600:400)+';background:'+bg+';color:'+col+';border:1.5px solid '+border+';cursor:'+cursor+';white-space:nowrap;flex-shrink:0">'+icon+s.label+'</div>' + arrow;
-  }).join('');
+  var currentStatus = (typeof getJobStatusObj === 'function') ? getJobStatusObj(job.status) : {label:job.status, col:'#9ca3af'};
+  var hist = job.statusHistory || [];
+  var enteredAt = hist.length > 0 ? hist[hist.length - 1].at : (job.created || null);
+  var daysAtStatus = enteredAt ? Math.floor((new Date() - new Date(enteredAt)) / 86400000) : 0;
+  var STALE = {a_check_measure:7, c_awaiting_2nd_payment:14, c1_final_sign_off:5, b_check_status:2};
+  var threshold = STALE[job.status] || 14;
+  var stalenessCol = daysAtStatus > threshold ? '#ef4444' : daysAtStatus > threshold*0.75 ? '#f59e0b' : '#22c55e';
+  var stalenessLabel = daysAtStatus > threshold ? 'STUCK' : daysAtStatus > threshold*0.75 ? 'CHECK' : 'ON-TRACK';
+  var availableNext = JOB_STATUSES.slice(_curIdx + 1).filter(function(s){ return canTransition(job, s.key).ok; });
+  var nextHint = '';
+  if (availableNext.length > 0) {
+    nextHint = '→ ' + availableNext[0].label;
+  } else {
+    var firstBlocked = JOB_STATUSES.slice(_curIdx + 1).find(function(s){ return !canTransition(job, s.key).ok; });
+    if (firstBlocked) {
+      var reason = (canTransition(job, firstBlocked.key).reason || '').slice(0, 80);
+      nextHint = reason ? '⏳ ' + reason : '⏳ Awaiting next event';
+    }
+  }
+  var statusCard = '<div class="card" style="padding:14px 16px;margin-bottom:16px;border-left:4px solid '+currentStatus.col+';display:flex;align-items:center;gap:20px;flex-wrap:wrap">'
+    // Current status (left)
+    +'<div style="display:flex;flex-direction:column;gap:3px;min-width:180px">'
+    +'<div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">Current Status</div>'
+    +'<div style="display:flex;align-items:center;gap:8px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+currentStatus.col+';flex-shrink:0"></span><span style="font-size:16px;font-weight:700;color:'+currentStatus.col+';font-family:Syne,sans-serif">'+currentStatus.label+'</span></div>'
+    +'</div>'
+    // Days at status (middle)
+    +'<div style="display:flex;flex-direction:column;gap:3px">'
+    +'<div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">Time at status</div>'
+    +'<div style="display:flex;align-items:center;gap:8px"><span style="font-size:18px;font-weight:800;color:'+stalenessCol+';font-family:Syne,sans-serif">'+daysAtStatus+'d</span><span style="font-size:9px;font-weight:700;color:'+stalenessCol+';background:'+stalenessCol+'20;padding:2px 7px;border-radius:4px;letter-spacing:.04em">'+stalenessLabel+'</span></div>'
+    +'</div>'
+    // Next step hint
+    + (nextHint ? '<div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:200px"><div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">Next step</div><div style="font-size:13px;font-weight:600;color:#374151">'+nextHint+'</div></div>' : '<div style="flex:1"></div>')
+    // Admin: advance dropdown
+    + (availableNext.length > 0 ? '<select onchange="if(this.value){transitionJobStatus(\''+job.id+'\',this.value,\'\')}" class="sel" style="font-size:12px;padding:6px 12px"><option value="">Advance to…</option>'+availableNext.map(function(s){return '<option value="'+s.key+'">'+s.label+'</option>';}).join('')+'</select>' : '')
+    +'</div>';
 
   // Tabs
   var tabs = [
@@ -1011,8 +1031,7 @@ function renderJobDetail() {
     + '</div>'
     + '</div>'
     + holdBanner
-    // Status stepper
-    + '<div style="display:flex;align-items:center;gap:6px;overflow-x:auto;padding:10px 0 16px;margin-bottom:4px;scrollbar-width:none">' + stepperHtml + '</div>'
+    + statusCard
     // Tabs
     + '<div style="border-bottom:1px solid #e5e7eb;margin-bottom:20px;display:flex;gap:0;overflow-x:auto">' + tabsHtml + '</div>'
     // 2-column layout: left custom fields + right tab content
