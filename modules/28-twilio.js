@@ -562,6 +562,150 @@ function renderIncomingCallBanner() {
     + '<style>@keyframes spartanIncomingPulse{from{box-shadow:0 2px 12px rgba(30,64,175,.5)}to{box-shadow:0 2px 24px rgba(30,64,175,.9)}}@keyframes spartanAnswerPulse{0%{box-shadow:0 0 0 0 rgba(22,163,74,.6)}70%{box-shadow:0 0 0 14px rgba(22,163,74,0)}100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}}</style>';
 }
 
+// ───────────────────── Stage 4: SMS ─────────────────────────────────────────
+
+// Send an SMS to a customer. Validates input, posts to /api/twilio/sms,
+// optimistically inserts the outbound row into state.smsLogs so the thread
+// updates instantly (the realtime sub will reconcile with the canonical
+// backend-written row a moment later — same id since we use the Twilio
+// message SID once it's returned).
+//
+// Returns a promise that resolves on success / rejects on failure.
+async function twilioSendSms(to, body, entityId, entityType) {
+  if (typeof hasPermission === 'function' && !hasPermission('phone.sms')) {
+    if (typeof addToast === 'function') addToast('You do not have permission to send SMS', 'error');
+    return;
+  }
+  if (!to || !String(to).trim()) {
+    if (typeof addToast === 'function') addToast('No phone number on file', 'warning');
+    return;
+  }
+  if (!body || !String(body).trim()) {
+    if (typeof addToast === 'function') addToast('Message body is empty', 'warning');
+    return;
+  }
+
+  var googleToken = (typeof getState === 'function') ? getState().gmailToken : null;
+  if (!googleToken) {
+    if (typeof addToast === 'function') addToast('Connect Gmail first to send SMS', 'warning');
+    return;
+  }
+
+  var resp;
+  try {
+    resp = await fetch('/api/twilio/sms', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + googleToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        to: to,
+        body: body,
+        entityId: entityId || null,
+        entityType: entityType || null,
+      })
+    });
+  } catch (e) {
+    console.error('[Spartan] /api/twilio/sms request failed:', e);
+    if (typeof addToast === 'function') addToast('SMS send failed: network error', 'error');
+    return;
+  }
+
+  if (!resp.ok) {
+    var errBody = {};
+    try { errBody = await resp.json(); } catch(e) {}
+    if (typeof addToast === 'function') addToast('SMS failed: ' + (errBody.error || resp.status), 'error');
+    return;
+  }
+
+  var data = await resp.json();
+  var sid = data.sid;
+
+  // Optimistic local insert so the thread updates without waiting for the
+  // realtime echo (~1s round-trip).
+  if (typeof getState === 'function' && typeof setState === 'function') {
+    var existingLogs = getState().smsLogs || [];
+    setState({
+      smsLogs: [{
+        id: 'tmp_' + sid,
+        twilio_sid: sid,
+        direction: 'outbound',
+        from_number: null,
+        to_number: to,
+        user_id: (getCurrentUser() || {}).id || null,
+        entity_type: entityType || null,
+        entity_id: entityId || null,
+        body: body,
+        status: data.status || 'queued',
+        sent_at: new Date().toISOString(),
+      }].concat(existingLogs)
+    });
+  }
+
+  // Local activity write so the timeline shows the SMS instantly. Backend
+  // will write the canonical row; same activity id (act_sms_<sid>) means
+  // the realtime echo dedupes naturally.
+  if (entityId && entityType && typeof saveActivityToEntity === 'function') {
+    var byUser = (typeof getCurrentUser === 'function' && getCurrentUser()) ? getCurrentUser().name : '';
+    var now = new Date();
+    saveActivityToEntity(entityId, entityType, {
+      id: 'act_sms_' + sid,
+      type: 'sms',
+      subject: 'SMS → ' + (body.length > 60 ? body.slice(0, 59) + '…' : body),
+      text: body,
+      by: byUser,
+      date: now.toISOString().slice(0, 10),
+      time: now.toISOString().slice(11, 16),
+      done: true,
+    });
+  }
+
+  if (typeof addToast === 'function') addToast('SMS sent', 'success');
+  return data;
+}
+
+// Apply mergefield substitutions to a template body. Same pattern as the
+// email-template merge fields ({{firstName}}, {{repName}}, etc).
+function smsApplyMergeFields(template, ctx) {
+  if (!template) return '';
+  var s = String(template);
+  ctx = ctx || {};
+  return s.replace(/\{\{(\w+)\}\}/g, function(m, key) {
+    return (ctx[key] != null) ? String(ctx[key]) : m;
+  });
+}
+
+// Build a merge context for an entity (contact / lead / deal). Used when a
+// rep clicks an SMS template — substitutes {{firstName}}, {{repName}} etc.
+// against the live record so the textarea pre-fills with resolved text.
+function smsBuildMergeContext(entity, entityType) {
+  var rep = (typeof getCurrentUser === 'function' && getCurrentUser()) || {};
+  if (!entity) return { repName: rep.name || '' };
+  if (entityType === 'contact' || entityType === 'lead') {
+    return {
+      firstName: entity.fn || '',
+      lastName:  entity.ln || '',
+      fullName:  ((entity.fn || '') + ' ' + (entity.ln || '')).trim(),
+      repName:   rep.name || '',
+      suburb:    entity.suburb || '',
+    };
+  }
+  if (entityType === 'deal') {
+    var s = (typeof getState === 'function') ? getState() : {};
+    var contact = (s.contacts || []).find(function(c){ return c.id === entity.cid; });
+    return {
+      firstName: contact ? (contact.fn || '') : '',
+      lastName:  contact ? (contact.ln || '') : '',
+      fullName:  contact ? (((contact.fn || '') + ' ' + (contact.ln || '')).trim()) : '',
+      dealTitle: entity.title || '',
+      repName:   rep.name || '',
+      suburb:    entity.suburb || '',
+    };
+  }
+  return { repName: rep.name || '' };
+}
+
 // Tear down the Twilio Device — called on logout to release the JWT slot
 // and disconnect any active WebRTC peer connection.
 function twilioDestroy() {

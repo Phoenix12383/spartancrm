@@ -329,6 +329,8 @@ async function dbLoadAll() {
       _sb.from('activities').select('*'),
       _sb.from('job_files').select('*'),
       _sb.from('call_logs').select('*').order('started_at', { ascending: false }).limit(500),
+      _sb.from('sms_logs').select('*').order('sent_at', { ascending: false }).limit(1000),
+      _sb.from('sms_templates').select('*').order('name', { ascending: true }),
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -503,8 +505,22 @@ async function dbLoadAll() {
       }
     }
 
+    // ── SMS logs + templates (Twilio SMS, stage 4) ──────────────────────────
+    var smsLogs = (results[15] && results[15].data) || [];
+    if (smsLogs.length > 0 || (getState().smsLogs || []).length > 0) {
+      if (!_recordsEqual(smsLogs, getState().smsLogs || [])) {
+        setState({ smsLogs: smsLogs }, { skipSync: true });
+      }
+    }
+    var smsTemplates = (results[16] && results[16].data) || [];
+    if (smsTemplates.length > 0 || (getState().smsTemplates || []).length > 0) {
+      if (!_recordsEqual(smsTemplates, getState().smsTemplates || [])) {
+        setState({ smsTemplates: smsTemplates }, { skipSync: true });
+      }
+    }
+
     _dbReady = true;
-    console.log('[Spartan] Loaded from Supabase:', contacts.length, 'contacts,', leads.length, 'leads,', deals.length, 'deals,', jobs.length, 'jobs,', callLogs.length, 'call logs');
+    console.log('[Spartan] Loaded from Supabase:', contacts.length, 'contacts,', leads.length, 'leads,', deals.length, 'deals,', jobs.length, 'jobs,', callLogs.length, 'call logs,', smsLogs.length, 'SMS,', smsTemplates.length, 'SMS templates');
     return true;
   } catch(e) {
     console.error('[Spartan] DB load failed, using localStorage cache:', e);
@@ -597,6 +613,8 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'factory_orders'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'users'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'call_logs'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'sms_logs'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'sms_templates'}, function(){ dbLoadAll(); })
     .subscribe(function(status){ console.log('[Spartan] Realtime:', status); });
 }
 

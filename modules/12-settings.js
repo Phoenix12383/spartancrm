@@ -49,6 +49,7 @@ function renderSettings(){
     ['customfields','Custom Fields'],
     ['statuses','Statuses'],
     ['tags','Tags'],
+    ['smstemplates','SMS Templates'],
     ['installers','Installers'],
     ['users','Users & Roles'],
   ];
@@ -318,7 +319,58 @@ function renderSettings(){
         <button class="btn-r" onclick="const v=document.getElementById('newTag').value;if(v){tags=[...tags,v];addToast('Tag added','success');document.getElementById('newTag').value='';renderPage()}">Add</button>
       </div>`;
 
-  // ── SMS ──────────────────────────────────────────────────────────────────────
+  // ── SMS TEMPLATES (stage 4) ─────────────────────────────────────────────────
+  } else if(settTab==='smstemplates'){
+    var _tpls = getState().smsTemplates || [];
+    var _editingId = (typeof smsTemplateEditId !== 'undefined') ? smsTemplateEditId : null;
+    var _draft = (typeof smsTemplateDraft !== 'undefined' && smsTemplateDraft) ? smsTemplateDraft : { id:'', name:'', body:'' };
+    var _editing = _editingId ? _tpls.find(function(t){return t.id===_editingId;}) : (_editingId === 'new' ? _draft : null);
+
+    content=`
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="font-size:13px;color:#6b7280">${_tpls.length} template${_tpls.length!==1?'s':''} · 160-char single segment recommended</div>
+        ${_editingId ? '' : '<button class="btn-r" onclick="smsTemplateNew()" style="font-size:12px">+ New Template</button>'}
+      </div>
+
+      ${_editing ? (function(){
+        var bodyChars = (_editing.body || '').length;
+        var charColor = bodyChars > 160 ? '#dc2626' : bodyChars > 140 ? '#f59e0b' : '#6b7280';
+        return `<div style="padding:14px;background:#fff5f6;border:1.5px solid #fca5a5;border-radius:12px;margin-bottom:14px">
+          <div style="font-size:13px;font-weight:700;margin-bottom:10px">${_editingId==='new'?'New Template':'Edit Template'}</div>
+          <label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">Name</label>
+          <input id="smstplName" class="inp" value="${(_editing.name||'').replace(/"/g,'&quot;')}" placeholder="e.g. On My Way" style="font-size:13px;margin-bottom:10px" oninput="smsTemplateDraft={...smsTemplateDraft,name:this.value}">
+
+          <label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">Body (use {{firstName}}, {{repName}}, {{dealTitle}}, {{suburb}})</label>
+          <textarea id="smstplBody" class="inp" rows="3" placeholder="Type the SMS body…" style="font-size:13px;resize:none;border-radius:8px;padding:8px 10px;margin-bottom:6px" oninput="smsTemplateDraft={...smsTemplateDraft,body:this.value};document.getElementById('smstplCount').textContent=this.value.length+'/160';document.getElementById('smstplCount').style.color=this.value.length>160?'#dc2626':this.value.length>140?'#f59e0b':'#6b7280'">${(_editing.body||'').replace(/</g,'&lt;')}</textarea>
+          <div id="smstplCount" style="font-size:11px;color:${charColor};margin-bottom:12px">${bodyChars}/160</div>
+
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button class="btn-w" onclick="smsTemplateCancel()" style="font-size:12px">Cancel</button>
+            <button class="btn-r" onclick="smsTemplateSave()" style="font-size:12px">Save</button>
+          </div>
+        </div>`;
+      })() : ''}
+
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${_tpls.length === 0 ? '<div style="padding:30px;text-align:center;color:#9ca3af;font-size:13px">No SMS templates yet. Click + New Template to create one.</div>' : ''}
+        ${_tpls.map(function(t){
+          return '<div style="padding:12px 14px;background:#f9fafb;border-radius:10px">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+              + '<div style="font-size:13px;font-weight:600">' + t.name + '</div>'
+              + '<div style="display:flex;gap:6px">'
+                + '<button onclick="smsTemplateEdit(\''+t.id+'\')" class="btn-g" style="font-size:11px;padding:3px 10px">Edit</button>'
+                + '<button onclick="smsTemplateDelete(\''+t.id+'\')" class="btn-g" style="font-size:11px;padding:3px 10px;color:#b91c1c">Delete</button>'
+              + '</div>'
+            + '</div>'
+            + '<div style="font-size:12px;color:#374151;background:#fff;padding:8px 10px;border-radius:6px;border:1px solid #e5e7eb;line-height:1.5">' + (t.body || '') + '</div>'
+          + '</div>';
+        }).join('')}
+      </div>
+
+      ${_tpls.length === 0 ? '<div style="margin-top:16px"><button class="btn-w" onclick="smsTemplateSeedDefaults()" style="font-size:12px">📥 Seed 5 default templates</button></div>' : ''}
+    `;
+
+  // ── SMS (legacy stub kept for now) ──────────────────────────────────────────
   } else if(settTab==='_disabled_sms'){
     content=[
       ['Measure Confirmation','Hi {firstName}, your measure appointment is confirmed for {date} at {time}. Our team will be in touch if anything changes. – Spartan DG'],
@@ -550,6 +602,96 @@ function stAddStatus(entity) {
   const newSt = {id:'st'+Date.now(),label:'New Status',col:'#9ca3af',isDefault:false,...(entity==='deals'?{isWon:false,isLost:false}:{})};
   setState({[key]:[...list,newSt]});
   stEditingId = newSt.id;
+}
+
+// ── SMS Template management (stage 4) ──────────────────────────────────────
+// Backed by Supabase public.sms_templates table. Realtime sub picks up
+// changes from other browsers within ~1s.
+var smsTemplateEditId = null;
+var smsTemplateDraft = { id:'', name:'', body:'' };
+
+function smsTemplateNew() {
+  smsTemplateEditId = 'new';
+  smsTemplateDraft = { id: 'tpl_' + Date.now(), name: '', body: '' };
+  renderPage();
+}
+function smsTemplateEdit(id) {
+  var t = (getState().smsTemplates || []).find(function(x){ return x.id === id; });
+  if (!t) return;
+  smsTemplateEditId = id;
+  smsTemplateDraft = { id: t.id, name: t.name || '', body: t.body || '' };
+  renderPage();
+}
+function smsTemplateCancel() {
+  smsTemplateEditId = null;
+  smsTemplateDraft = { id:'', name:'', body:'' };
+  renderPage();
+}
+function smsTemplateSave() {
+  var d = smsTemplateDraft;
+  var name = (document.getElementById('smstplName') || {}).value || d.name || '';
+  var body = (document.getElementById('smstplBody') || {}).value || d.body || '';
+  name = name.trim(); body = body.trim();
+  if (!name || !body) { addToast('Name and body are required', 'error'); return; }
+
+  var cu = getCurrentUser() || {};
+  var row = {
+    id: d.id || ('tpl_' + Date.now()),
+    name: name,
+    body: body,
+    placeholders: extractPlaceholders(body),
+    created_by: cu.id || null,
+  };
+
+  if (typeof dbUpsert === 'function') dbUpsert('sms_templates', row);
+
+  // Optimistic local insert/update so the UI reflects the change without
+  // waiting for the realtime echo.
+  var existing = getState().smsTemplates || [];
+  var found = false;
+  var next = existing.map(function(t){ if (t.id === row.id) { found = true; return row; } return t; });
+  if (!found) next = next.concat([row]);
+  next.sort(function(a, b){ return (a.name || '').localeCompare(b.name || ''); });
+  setState({ smsTemplates: next });
+
+  smsTemplateEditId = null;
+  smsTemplateDraft = { id:'', name:'', body:'' };
+  addToast('Template saved', 'success');
+  renderPage();
+}
+function smsTemplateDelete(id) {
+  if (!confirm('Delete this template?')) return;
+  if (typeof dbDelete === 'function') dbDelete('sms_templates', id);
+  var next = (getState().smsTemplates || []).filter(function(t){ return t.id !== id; });
+  setState({ smsTemplates: next });
+  addToast('Template deleted', 'warning');
+  renderPage();
+}
+function smsTemplateSeedDefaults() {
+  var defaults = [
+    { id:'tpl_seed_book',     name:'Booking Confirmation', body:'Hi {{firstName}}, your measure is confirmed for {{date}} at {{time}}. — Spartan DG' },
+    { id:'tpl_seed_omw',      name:'On My Way',            body:'Hi {{firstName}}, on my way — should be there in about 15 mins. — {{repName}}' },
+    { id:'tpl_seed_followup', name:'Follow Up',            body:'Hi {{firstName}}, following up on the quote we sent. Any questions? — Spartan DG' },
+    { id:'tpl_seed_quote',    name:'Quote Sent',           body:'Hi {{firstName}}, your quote is ready: {{link}} — Spartan DG' },
+    { id:'tpl_seed_install',  name:'Install Reminder',     body:'Hi {{firstName}}, install scheduled for {{date}}. Please ensure access from 7am. — Spartan DG' },
+  ];
+  var cu = getCurrentUser() || {};
+  defaults.forEach(function(t) {
+    t.placeholders = extractPlaceholders(t.body);
+    t.created_by = cu.id || null;
+    if (typeof dbUpsert === 'function') dbUpsert('sms_templates', t);
+  });
+  setState({ smsTemplates: defaults });
+  addToast('5 default templates seeded', 'success');
+  renderPage();
+}
+function extractPlaceholders(body) {
+  var matches = String(body || '').match(/\{\{(\w+)\}\}/g) || [];
+  var keys = matches.map(function(m){ return m.slice(2, -2); });
+  // Dedupe
+  var seen = {}; var out = [];
+  keys.forEach(function(k){ if (!seen[k]) { seen[k] = 1; out.push(k); } });
+  return out;
 }
 
 

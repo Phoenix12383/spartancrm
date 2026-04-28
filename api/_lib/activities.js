@@ -58,6 +58,69 @@ function formatDuration(seconds) {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
+// Build an SMS activity row. `direction` is 'inbound' or 'outbound'. The
+// body becomes both the subject (truncated) and the text.
+export function buildSmsActivity({ entityType, entityId, byUser, direction, body, sid }) {
+  const id = 'act_sms_' + (sid || Date.now());
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const time = now.toISOString().slice(11, 16);
+
+  const arrow = direction === 'outbound' ? '→' : '←';
+  const subject = `SMS ${arrow} ${truncate(body, 60)}`;
+
+  return {
+    id,
+    entity_type: entityType,
+    entity_id: entityId,
+    type: 'sms',
+    subject,
+    text: body || '',
+    by_user: byUser || '',
+    date,
+    time,
+    done: true,
+    due_date: '',
+    duration: null,
+    scheduled: false,
+    opens: 0,
+    opened: false,
+    opened_at: null,
+    clicked: false,
+    gmail_msg_id: null,
+    to_addr: '',
+    cc: '',
+    cal_link: null,
+  };
+}
+
+function truncate(s, n) {
+  if (!s) return '';
+  s = String(s);
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+// Insert SMS activity + mirror to the deal's contact (matches the call helper).
+export async function appendSmsActivity(supabase, params) {
+  const row = buildSmsActivity(params);
+  const { error } = await supabase.from('activities').insert(row);
+  if (error) {
+    console.warn('[Spartan] appendSmsActivity insert failed:', error.message);
+    return false;
+  }
+  if (params.entityType === 'deal') {
+    const { data: deal } = await supabase
+      .from('deals').select('cid').eq('id', params.entityId).maybeSingle();
+    if (deal && deal.cid) {
+      const mirror = { ...row, id: row.id + '_mirror', entity_type: 'contact', entity_id: deal.cid };
+      await supabase.from('activities').insert(mirror).then(r => {
+        if (r.error) console.warn('[Spartan] sms activity mirror failed:', r.error.message);
+      });
+    }
+  }
+  return true;
+}
+
 // Insert the activity row + handle the contact-mirroring that browser-side
 // saveActivityToEntity does for deal activities.
 export async function appendCallActivity(supabase, params) {
