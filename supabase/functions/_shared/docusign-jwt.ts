@@ -40,16 +40,58 @@ function _strToBytes(s: string): Uint8Array {
   return new TextEncoder().encode(s);
 }
 
+// Wrap a PKCS#1 RSA private key in a PKCS#8 envelope so Web Crypto can import
+// it. DocuSign hands out PKCS#1 keys (BEGIN RSA PRIVATE KEY) but Web Crypto's
+// importKey only accepts PKCS#8 (BEGIN PRIVATE KEY) for RSA. We wrap by hand
+// rather than depending on a library so the function stays small.
+function _pkcs1ToPkcs8(pkcs1Der: Uint8Array): Uint8Array {
+  // AlgorithmIdentifier { OID rsaEncryption (1.2.840.113549.1.1.1), NULL }
+  const algoIdent = new Uint8Array([
+    0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+    0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00,
+  ]);
+
+  function encLen(len: number): Uint8Array {
+    if (len < 0x80) return new Uint8Array([len]);
+    if (len < 0x100) return new Uint8Array([0x81, len]);
+    if (len < 0x10000) return new Uint8Array([0x82, (len >> 8) & 0xff, len & 0xff]);
+    return new Uint8Array([0x83, (len >> 16) & 0xff, (len >> 8) & 0xff, len & 0xff]);
+  }
+
+  // OCTET STRING wrapping the PKCS#1 DER bytes
+  const octetLen = encLen(pkcs1Der.length);
+  const octet = new Uint8Array(1 + octetLen.length + pkcs1Der.length);
+  octet[0] = 0x04;
+  octet.set(octetLen, 1);
+  octet.set(pkcs1Der, 1 + octetLen.length);
+
+  // Outer SEQUENCE { INTEGER 0, AlgorithmIdentifier, OCTET STRING }
+  const version = new Uint8Array([0x02, 0x01, 0x00]);
+  const innerLen = version.length + algoIdent.length + octet.length;
+  const seqLen = encLen(innerLen);
+  const out = new Uint8Array(1 + seqLen.length + innerLen);
+  out[0] = 0x30;
+  out.set(seqLen, 1);
+  let off = 1 + seqLen.length;
+  out.set(version, off); off += version.length;
+  out.set(algoIdent, off); off += algoIdent.length;
+  out.set(octet, off);
+  return out;
+}
+
 // Convert a PEM-formatted RSA private key into a CryptoKey usable by Web Crypto.
+// Accepts both PKCS#1 (BEGIN RSA PRIVATE KEY) and PKCS#8 (BEGIN PRIVATE KEY).
 async function _importRsaPrivateKey(pem: string): Promise<CryptoKey> {
+  const isPkcs1 = /-----BEGIN RSA PRIVATE KEY-----/.test(pem);
   const cleanPem = pem
     .replace(/-----BEGIN [A-Z ]+-----/g, '')
     .replace(/-----END [A-Z ]+-----/g, '')
     .replace(/\s+/g, '');
-  const binaryDer = Uint8Array.from(atob(cleanPem), (c) => c.charCodeAt(0));
+  let der = Uint8Array.from(atob(cleanPem), (c) => c.charCodeAt(0));
+  if (isPkcs1) der = _pkcs1ToPkcs8(der);
   return await crypto.subtle.importKey(
     'pkcs8',
-    binaryDer.buffer,
+    der.buffer,
     { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
     false,
     ['sign'],
