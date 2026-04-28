@@ -19,8 +19,11 @@
     <script src="https://unpkg.com/react-dom@17.0.2/umd/react-dom.production.min.js" defer></script>
     <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js" defer></script>
     <script src="https://cdn.jsdelivr.net/npm/recharts@2.12.7/umd/Recharts.min.js" defer></script>
-    <!-- Twilio Voice SDK — exposes window.Twilio.Device for the phone module. -->
-    <script src="https://sdk.twilio.com/js/client/releases/2.11.0/twilio.min.js"></script>
+    <!-- Twilio Voice SDK v2 — exposes window.Twilio.Device for the phone module.
+         Twilio's own sdk.twilio.com CDN only hosts v1 of this library; v2 lives
+         on npm as @twilio/voice-sdk and is mirrored on jsDelivr (which we already
+         use for Supabase). -->
+    <script src="https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.11.0/dist/twilio.min.js"></script>
 </head>
 <body>
     <div id="app"></div>
