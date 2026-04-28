@@ -1346,7 +1346,7 @@ function renderMapPage(){
   </div>`;
 }
 
-function renderPhonePage(){
-return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px"><div><h1 style="font-size:24px;font-weight:800;margin:0;font-family:Syne,sans-serif">\u{1F4DE} Phone System</h1><p style="font-size:13px;color:#6b7280;margin:2px 0 0">Calls, recordings, AI operator &amp; IVR</p></div></div><div class="card" style="padding:40px;text-align:center"><div style="font-size:48px;margin-bottom:12px">\u{1F4DE}</div><h2 style="font-size:18px;font-weight:800;margin:0 0 8px;font-family:Syne,sans-serif">Phone System \u2014 Phase 2</h2><p style="font-size:13px;color:#6b7280;line-height:1.6;max-width:500px;margin:0 auto">The phone system (VoIP, recording, IVR, AI operator) will be connected in the next phase via Twilio.</p><div style="display:flex;gap:8px;justify-content:center;margin-top:20px"><div style="padding:12px 16px;background:#f9fafb;border-radius:10px;text-align:center"><div style="font-size:11px;color:#6b7280">Status</div><div style="font-size:13px;font-weight:600;color:#f59e0b">Pending</div></div><div style="padding:12px 16px;background:#f9fafb;border-radius:10px;text-align:center"><div style="font-size:11px;color:#6b7280">Provider</div><div style="font-size:13px;font-weight:600">Twilio</div></div></div></div>';
-}
+// renderPhonePage moved to modules/28-twilio.js as part of stage 5.
+// The route in 99-init.js's pageRenderers map still points at `renderPhonePage`,
+// which is now defined globally by 28-twilio.js (loaded later in the order).
 

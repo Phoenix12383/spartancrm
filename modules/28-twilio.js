@@ -724,3 +724,334 @@ function twilioDestroy() {
   }
   window._twilioReady = false;
 }
+
+// ───────────────────── Stage 5: Phone page UI ───────────────────────────────
+
+// Page-level state for the Phone tab. Tab filter + the dialpad's current
+// number string. Survives renderPage rebuilds without going into _state.
+var _phonePageState = {
+  tab: 'all',          // all | inbound | outbound | missed
+  dialNumber: '',
+};
+
+// Cache of fetched recording blobs so re-renders don't re-download. Keyed by
+// Twilio CallSid. URL.createObjectURL() returns a blob URL that's valid for
+// the page lifetime.
+var _phoneAudioBlobs = {};   // { callSid: blobUrl }
+var _phoneAudioLoading = {}; // { callSid: true } while fetch is in flight
+
+function setPhonePageTab(tab) {
+  _phonePageState.tab = tab;
+  if (typeof renderPage === 'function') renderPage();
+}
+function setPhonePageDialDigit(digit) {
+  _phonePageState.dialNumber = (_phonePageState.dialNumber || '') + String(digit);
+  var el = document.getElementById('phoneDialInput');
+  if (el) el.value = _phonePageState.dialNumber;
+}
+function setPhonePageDialFromInput(value) {
+  _phonePageState.dialNumber = String(value || '');
+}
+function clearPhonePageDial() {
+  _phonePageState.dialNumber = '';
+  var el = document.getElementById('phoneDialInput');
+  if (el) el.value = '';
+}
+function backspacePhonePageDial() {
+  _phonePageState.dialNumber = (_phonePageState.dialNumber || '').slice(0, -1);
+  var el = document.getElementById('phoneDialInput');
+  if (el) el.value = _phonePageState.dialNumber;
+}
+function dialFromPhonePage() {
+  var num = (_phonePageState.dialNumber || '').trim();
+  if (!num) {
+    if (typeof addToast === 'function') addToast('Enter a number first', 'warning');
+    return;
+  }
+  twilioCall(num, null, null);
+}
+function dialRecentNumber(num) {
+  _phonePageState.dialNumber = num;
+  twilioCall(num, null, null);
+}
+
+// Click "Play recording" → fetch with auth, swap the button for an <audio> tag.
+async function loadAndPlayRecording(callSid, slotId) {
+  if (_phoneAudioLoading[callSid]) return;
+  var slot = document.getElementById(slotId);
+  if (!slot) return;
+
+  // Already loaded — just toggle play
+  if (_phoneAudioBlobs[callSid]) {
+    var existing = slot.querySelector('audio');
+    if (existing) { try { existing.play(); } catch(e) {} return; }
+  }
+
+  _phoneAudioLoading[callSid] = true;
+  slot.innerHTML = '<span style="font-size:11px;color:#6b7280">⏳ Loading…</span>';
+
+  var token = (typeof getState === 'function') ? getState().gmailToken : null;
+  if (!token) {
+    slot.innerHTML = '<span style="font-size:11px;color:#b91c1c">⚠️ Connect Gmail to play</span>';
+    delete _phoneAudioLoading[callSid];
+    return;
+  }
+
+  try {
+    var resp = await fetch('/api/twilio/recording-stream?sid=' + encodeURIComponent(callSid), {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!resp.ok) {
+      var msg = '⚠️ Failed (' + resp.status + ')';
+      try {
+        var errJson = await resp.json();
+        if (errJson && errJson.error) msg = '⚠️ ' + errJson.error;
+      } catch(e) {}
+      slot.innerHTML = '<span style="font-size:11px;color:#b91c1c">' + msg + '</span>';
+      delete _phoneAudioLoading[callSid];
+      return;
+    }
+    var blob = await resp.blob();
+    var blobUrl = URL.createObjectURL(blob);
+    _phoneAudioBlobs[callSid] = blobUrl;
+    slot.innerHTML = '<audio controls autoplay src="' + blobUrl + '" style="height:30px;vertical-align:middle"></audio>';
+  } catch (e) {
+    console.error('[Spartan] Recording fetch failed:', e);
+    slot.innerHTML = '<span style="font-size:11px;color:#b91c1c">⚠️ Network error</span>';
+  }
+  delete _phoneAudioLoading[callSid];
+}
+
+// Render the dialpad column.
+function renderDialpad() {
+  var keys = ['1','2','3','4','5','6','7','8','9','*','0','#'];
+  var s = (typeof getState === 'function') ? getState() : {};
+  var cu = (typeof getCurrentUser === 'function') ? getCurrentUser() || {} : {};
+  // Recent numbers from state.callLogs — outbound calls by this rep, dedupe
+  var recent = ((s.callLogs || [])
+    .filter(function(l){ return l.direction === 'outbound' && l.user_id === cu.id && l.to_number; })
+    .map(function(l){ return l.to_number; }));
+  var seen = {}; var recentUnique = [];
+  for (var i = 0; i < recent.length && recentUnique.length < 5; i++) {
+    if (!seen[recent[i]]) { seen[recent[i]] = 1; recentUnique.push(recent[i]); }
+  }
+
+  return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:18px">'
+    + '<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#6b7280;letter-spacing:.06em;margin-bottom:10px">Dialpad</div>'
+
+    + '<div style="display:flex;gap:6px;align-items:center;margin-bottom:14px">'
+    +   '<input id="phoneDialInput" value="' + (_phonePageState.dialNumber || '').replace(/"/g, '&quot;') + '" placeholder="+61 4xx xxx xxx" oninput="setPhonePageDialFromInput(this.value)" style="flex:1;font-family:monospace;font-size:18px;font-weight:600;letter-spacing:1px;padding:10px 12px;border:2px solid #e5e7eb;border-radius:10px;outline:none">'
+    +   '<button onclick="backspacePhonePageDial()" title="Backspace" style="padding:10px 14px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:10px;cursor:pointer;font-size:16px">⌫</button>'
+    + '</div>'
+
+    + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">'
+    +   keys.map(function(k){
+          return '<button onclick="setPhonePageDialDigit(\'' + k + '\')" class="dialpad-key" style="font-size:22px;font-weight:600;padding:18px 0;background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;cursor:pointer;font-family:inherit;min-height:60px" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#f9fafb\'">' + k + '</button>';
+        }).join('')
+    + '</div>'
+
+    + '<button onclick="dialFromPhonePage()" style="width:100%;padding:14px;background:#22c55e;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;min-height:50px">📞 Call</button>'
+
+    + (recentUnique.length > 0 ? (
+        '<div style="margin-top:16px;padding-top:14px;border-top:1px solid #f0f0f0">'
+        +   '<div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#9ca3af;letter-spacing:.05em;margin-bottom:8px">Recent</div>'
+        +   '<div style="display:flex;flex-wrap:wrap;gap:6px">'
+        +     recentUnique.map(function(n){
+                return '<button onclick="dialRecentNumber(\'' + n + '\')" style="font-size:12px;font-family:monospace;padding:5px 10px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:18px;cursor:pointer">' + n + '</button>';
+              }).join('')
+        +   '</div>'
+        + '</div>'
+      ) : '')
+
+    + '</div>';
+}
+
+// Render a single row in the call-history list. `compactMode` flag is for
+// the voicemail section (drops the "Call back" button — voicemail isn't a
+// missed call to return).
+function renderCallHistoryRow(call, opts) {
+  opts = opts || {};
+  var s = (typeof getState === 'function') ? getState() : {};
+  // Resolve matched-entity name for display
+  var entityName = '';
+  if (call.entity_id && call.entity_type) {
+    if (call.entity_type === 'contact') {
+      var c = (s.contacts || []).find(function(x){ return x.id === call.entity_id; });
+      if (c) entityName = ((c.fn || '') + ' ' + (c.ln || '')).trim();
+    } else if (call.entity_type === 'lead') {
+      var l = (s.leads || []).find(function(x){ return x.id === call.entity_id; });
+      if (l) entityName = ((l.fn || '') + ' ' + (l.ln || '')).trim();
+    } else if (call.entity_type === 'deal') {
+      var d = (s.deals || []).find(function(x){ return x.id === call.entity_id; });
+      if (d) entityName = d.title || '';
+    }
+  }
+  var displayName = entityName || (call.from_number || call.to_number || 'Unknown');
+  var phoneShown = call.direction === 'outbound' ? (call.to_number || '') : (call.from_number || '');
+
+  // Direction icon
+  var icon = '📞';
+  var statusLabel = call.status || '';
+  var rowBg = '#fff';
+  if (opts.voicemail) { icon = '📨'; rowBg = '#fef9c3'; }
+  else if (call.direction === 'inbound') {
+    if (statusLabel === 'no-answer' || statusLabel === 'busy' || statusLabel === 'canceled' || statusLabel === 'failed') {
+      icon = '❌'; rowBg = '#fef2f2';
+    } else { icon = '📥'; }
+  } else {
+    icon = '📤';
+  }
+
+  // Timestamp — relative if recent, otherwise short date
+  var startedAt = call.started_at || call.created_at;
+  var when = formatRelativeTime(startedAt);
+
+  // Duration formatted
+  var durSec = call.duration_seconds || 0;
+  var durLabel = durSec > 0 ? _twilioFmtDuration(durSec) : '';
+
+  // Recording slot — clickable button or already-loaded audio
+  var slotId = 'rec_slot_' + (call.twilio_sid || call.id);
+  var recordingHtml = '';
+  if (call.recording_url) {
+    if (_phoneAudioBlobs[call.twilio_sid]) {
+      recordingHtml = '<div id="' + slotId + '"><audio controls src="' + _phoneAudioBlobs[call.twilio_sid] + '" style="height:30px;vertical-align:middle"></audio></div>';
+    } else {
+      recordingHtml = '<div id="' + slotId + '"><button onclick="loadAndPlayRecording(\'' + call.twilio_sid + '\',\'' + slotId + '\')" style="font-size:11px;padding:4px 12px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;font-family:inherit">▶ Play recording</button></div>';
+    }
+  }
+
+  // Action buttons
+  var actions = '';
+  if (call.direction === 'outbound' && phoneShown) {
+    actions += '<button onclick="twilioCall(\'' + phoneShown + '\',\'' + (call.entity_id||'') + '\',\'' + (call.entity_type||'') + '\')" style="font-size:11px;padding:4px 10px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;font-family:inherit;margin-left:6px">📞 Call back</button>';
+  }
+  if (call.entity_id && call.entity_type) {
+    var nav = '';
+    if (call.entity_type === 'contact') nav = "setState({contactDetailId:'" + call.entity_id + "',page:'contacts'})";
+    else if (call.entity_type === 'lead') nav = "setState({leadDetailId:'" + call.entity_id + "',page:'leads'})";
+    else if (call.entity_type === 'deal') nav = "setState({dealDetailId:'" + call.entity_id + "',page:'deals'})";
+    if (nav) {
+      actions += '<button onclick="' + nav + '" style="font-size:11px;padding:4px 10px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;font-family:inherit;margin-left:6px">View record</button>';
+    }
+  }
+
+  return '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:' + rowBg + ';border:1px solid #e5e7eb;border-radius:10px;margin-bottom:6px">'
+    + '<div style="font-size:18px;flex-shrink:0">' + icon + '</div>'
+    + '<div style="flex:1;min-width:0">'
+    +   '<div style="font-size:13px;font-weight:600;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + displayName + '</div>'
+    +   '<div style="font-size:11px;color:#6b7280;margin-top:1px">' + (phoneShown || '') + (durLabel ? ' · ' + durLabel : '') + ' · ' + when + (statusLabel && !opts.voicemail ? ' · ' + statusLabel : '') + '</div>'
+    + '</div>'
+    + (recordingHtml ? '<div style="flex-shrink:0">' + recordingHtml + '</div>' : '')
+    + (actions ? '<div style="flex-shrink:0;display:flex;align-items:center">' + actions + '</div>' : '')
+    + '</div>';
+}
+
+function formatRelativeTime(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  var now = Date.now();
+  var diffMs = now - d.getTime();
+  var diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'Just now';
+  if (diffMin < 60) return diffMin + ' min ago';
+  var diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return diffHr + 'h ago';
+  var diffDay = Math.floor(diffHr / 24);
+  if (diffDay === 1) return 'Yesterday';
+  if (diffDay < 7) return diffDay + ' days ago';
+  return d.toISOString().slice(0, 10);
+}
+
+// Filter call_logs based on the active tab. Voicemails are always excluded
+// from the main list (they get their own section).
+function _filterCallsByTab(calls, tab) {
+  var nonVm = (calls || []).filter(function(c){ return c.status !== 'voicemail'; });
+  if (tab === 'inbound') return nonVm.filter(function(c){ return c.direction === 'inbound' && c.status !== 'no-answer' && c.status !== 'busy' && c.status !== 'canceled' && c.status !== 'failed'; });
+  if (tab === 'outbound') return nonVm.filter(function(c){ return c.direction === 'outbound'; });
+  if (tab === 'missed') return nonVm.filter(function(c){ return c.direction === 'inbound' && (c.status === 'no-answer' || c.status === 'busy' || c.status === 'canceled' || c.status === 'failed'); });
+  return nonVm;
+}
+
+// Main Phone page — replaces the stage-1 stub at modules/13-leads-maps.js.
+function renderPhonePage() {
+  if (typeof hasPermission === 'function' && !hasPermission('phone.access')) {
+    return '<div style="max-width:540px;margin:80px auto;text-align:center"><div style="font-size:42px;margin-bottom:8px">🔒</div><h2 style="font-size:18px;font-weight:700;margin:0 0 8px">No phone access</h2><p style="font-size:13px;color:#6b7280;margin:0">Ask an admin to grant the <code>phone.access</code> permission to your role.</p></div>';
+  }
+
+  var s = (typeof getState === 'function') ? getState() : {};
+  var cu = (typeof getCurrentUser === 'function') ? getCurrentUser() || {} : {};
+  var allLogs = s.callLogs || [];
+
+  // Permission gate per row: admin sees all, others see only own. Inbound
+  // unbound (no rep answered) is visible to anyone with phone.access for v1.
+  var visibleLogs = (cu.role === 'admin')
+    ? allLogs
+    : allLogs.filter(function(l){
+        return l.user_id === cu.id || (l.direction === 'inbound' && !l.user_id);
+      });
+
+  var tabFilteredCalls = _filterCallsByTab(visibleLogs, _phonePageState.tab).slice(0, 50);
+  var voicemails = visibleLogs.filter(function(l){ return l.status === 'voicemail'; }).slice(0, 50);
+
+  var totalCount = visibleLogs.filter(function(c){return c.status !== 'voicemail';}).length;
+  var inboundCount = visibleLogs.filter(function(c){ return c.direction === 'inbound' && c.status !== 'voicemail' && c.status !== 'no-answer' && c.status !== 'busy' && c.status !== 'canceled' && c.status !== 'failed'; }).length;
+  var outboundCount = visibleLogs.filter(function(c){ return c.direction === 'outbound'; }).length;
+  var missedCount = visibleLogs.filter(function(c){ return c.direction === 'inbound' && (c.status === 'no-answer' || c.status === 'busy' || c.status === 'canceled' || c.status === 'failed'); }).length;
+
+  var phoneReady = !!window._twilioReady;
+  var statusBanner = phoneReady
+    ? '<div style="padding:8px 14px;background:#dcfce7;border:1px solid #86efac;border-radius:10px;font-size:12px;color:#15803d;display:flex;align-items:center;gap:6px">✓ Phone connected</div>'
+    : '<div style="padding:8px 14px;background:#fef9c3;border:1px solid #fde68a;border-radius:10px;font-size:12px;color:#92400e;display:flex;align-items:center;gap:6px">⚠ Phone not connected — connect Gmail in Settings</div>';
+
+  function tabBtn(id, label, count) {
+    var on = _phonePageState.tab === id;
+    return '<button onclick="setPhonePageTab(\'' + id + '\')" style="padding:8px 14px;background:' + (on ? '#1a1a1a' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';border:1px solid ' + (on ? '#1a1a1a' : '#e5e7eb') + ';border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">' + label + ' <span style="opacity:.7;font-weight:400">' + count + '</span></button>';
+  }
+
+  return ''
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px">'
+    +   '<div>'
+    +     '<h1 style="font-size:24px;font-weight:800;margin:0;font-family:Syne,sans-serif">📞 Phone</h1>'
+    +     '<p style="font-size:13px;color:#6b7280;margin:2px 0 0">Click-to-call, history, voicemails, recordings</p>'
+    +   '</div>'
+    +   statusBanner
+    + '</div>'
+
+    + '<style>@media (max-width: 800px) { .phone-grid { grid-template-columns: 1fr !important; } }</style>'
+    + '<div class="phone-grid" style="display:grid;grid-template-columns:340px 1fr;gap:18px;align-items:start">'
+
+    // Left column — dialpad
+    +   '<div>' + renderDialpad() + '</div>'
+
+    // Right column — tabs + call history + voicemails
+    +   '<div>'
+    +     '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">'
+    +       tabBtn('all', 'All', totalCount)
+    +       tabBtn('inbound', 'Inbound', inboundCount)
+    +       tabBtn('outbound', 'Outbound', outboundCount)
+    +       tabBtn('missed', 'Missed', missedCount)
+    +     '</div>'
+
+    +     '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:14px;margin-bottom:18px">'
+    +       '<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#6b7280;letter-spacing:.06em;margin-bottom:10px">Recent Calls</div>'
+    +       (tabFilteredCalls.length === 0
+            ? '<div style="padding:32px 16px;text-align:center;color:#9ca3af;font-size:13px">No calls yet. Use the dialpad on the left to make your first call.</div>'
+            : tabFilteredCalls.map(function(c){ return renderCallHistoryRow(c, {}); }).join(''))
+    +     '</div>'
+
+    +     '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:14px">'
+    +       '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">'
+    +         '<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#6b7280;letter-spacing:.06em">📨 Voicemails</div>'
+    +         '<div style="font-size:11px;color:#9ca3af">' + voicemails.length + ' total</div>'
+    +       '</div>'
+    +       (voicemails.length === 0
+            ? '<div style="padding:18px 16px;text-align:center;color:#9ca3af;font-size:12px">No voicemails.</div>'
+            : voicemails.map(function(c){ return renderCallHistoryRow(c, { voicemail: true }); }).join(''))
+    +     '</div>'
+
+    +   '</div>'
+    + '</div>';
+}
+
