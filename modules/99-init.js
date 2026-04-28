@@ -90,6 +90,7 @@ function renderPage(){
     ${_pendingWonQuoteSelection ? renderWonQuoteSelectionModal() : ''}
     ${_pendingUnwindDealId ? renderUnwindDealModal() : ''}
     ${typeof _pendingLostTransition !== 'undefined' && _pendingLostTransition ? renderLostReasonModal() : ''}
+    ${typeof _pendingDealTypePicker !== 'undefined' && _pendingDealTypePicker ? renderDealTypePickerModal() : ''}
   `;
   _restoreFocus(_focusSnap);
   renderToasts();

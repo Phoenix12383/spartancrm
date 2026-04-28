@@ -1304,7 +1304,7 @@ function renderDeals() {
               ondragstart="dragDeal='${d.id}';event.dataTransfer.effectAllowed='move';event.currentTarget.style.opacity='0.45';event.currentTarget.style.cursor='grabbing'"
               ondragend="event.currentTarget.style.opacity='1';if(!dragDeal){return;}dragDeal=null;dragOverStage=null;unhighlightAllCols();renderPage()"
               onclick="setState({dealDetailId:'${d.id}'})"
-              style="background:#fff;border-radius:10px;padding:12px;border:1px solid #e5e7eb;cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,.06);transition:box-shadow .15s,transform .1s;opacity:${activeFilters > 0 && !passes ? .3 : (isNP ? .7 : 1)};position:relative;user-select:none"
+              style="background:#fff;border-radius:10px;padding:12px;border:1px solid #e5e7eb;border-left:3px solid ${_dealTypeStripeColor(d)};cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,.06);transition:box-shadow .15s,transform .1s;opacity:${activeFilters > 0 && !passes ? .3 : (isNP ? .7 : 1)};position:relative;user-select:none"
               onmouseover="if(!dragDeal){this.style.boxShadow='0 4px 14px rgba(0,0,0,.12)';this.style.transform='translateY(-1px)';}"
               onmouseout="this.style.boxShadow='0 1px 3px rgba(0,0,0,.06)';this.style.transform=''">
 
@@ -3023,6 +3023,151 @@ var _pendingUnwindDealId = null;               // unwind admin modal
 // Cancelling closes the modal without changing the deal at all.
 var _pendingLostTransition = null;
 
+// ── Brief 5 Phase 4: deal-type inline picker ────────────────────────────────
+// When set to a deal id, the picker modal renders with two cards. Clicking a
+// card calls setDealType which applies the change, writes an 'edit' activity,
+// audits via appendAuditEntry, and clears the picker. Cancelling closes
+// without writing anything. Mirrors the _pendingLostTransition pattern.
+var _pendingDealTypePicker = null;
+
+// Shared helpers for rendering the type as a badge across surfaces
+// (Deal Detail summary, kanban card stripe, contact panel deal list,
+// Won table, etc.). Brief 5 standardises blue=residential, purple=
+// commercial — the same vocabulary contacts already use, so the
+// experience is consistent across the app.
+function _dealTypeBadge(d) {
+  if (!d) return '';
+  var t = d.dealType;
+  if (t !== 'residential' && t !== 'commercial') return Badge('Untyped', 'gray');
+  var label = t === 'commercial' ? 'Commercial' : 'Residential';
+  return Badge(label, t === 'commercial' ? 'purple' : 'blue');
+}
+
+// Brief 5 Phase 4: kanban card left-stripe colour. Saturated enough to read
+// against the white card; intentionally darker than the badge palette since
+// a 3px stripe needs more visual weight to register as type-coding rather
+// than as decoration.
+function _dealTypeStripeColor(d) {
+  if (!d) return 'transparent';
+  if (d.dealType === 'commercial') return '#6d28d9';
+  if (d.dealType === 'residential') return '#1d4ed8';
+  return 'transparent'; // legacy (pre-backfill) deals get no stripe
+}
+
+function openDealTypePicker(dealId) {
+  var d = (getState().deals || []).find(function (x) { return x.id === dealId; });
+  if (!d) return;
+  if (typeof canEditDeal === 'function' && !canEditDeal(d)) {
+    addToast('Only the deal owner or an admin can change the deal type', 'error');
+    return;
+  }
+  _pendingDealTypePicker = dealId;
+  renderPage();
+}
+
+function closeDealTypePicker() {
+  _pendingDealTypePicker = null;
+  renderPage();
+}
+
+// Apply a deal-type change. Same audit + activity pattern as saveDealEdit
+// (Brief 2 Phase 2 / Brief 5 Phase 1) so timeline and Audit page reflect
+// the change consistently. No-op if the new type matches the current one
+// (avoids polluting the activity timeline + audit log with empty edits).
+function setDealType(dealId, newType) {
+  if (newType !== 'residential' && newType !== 'commercial') return;
+  var d = (getState().deals || []).find(function (x) { return x.id === dealId; });
+  if (!d) { _pendingDealTypePicker = null; renderPage(); return; }
+  if (typeof canEditDeal === 'function' && !canEditDeal(d)) {
+    addToast('Only the deal owner or an admin can change the deal type', 'error');
+    _pendingDealTypePicker = null;
+    renderPage();
+    return;
+  }
+  if (d.dealType === newType) { _pendingDealTypePicker = null; renderPage(); return; }
+
+  var oldType = d.dealType || null;
+  var oldLabel = oldType === 'commercial' ? 'Commercial' : (oldType === 'residential' ? 'Residential' : 'Untyped');
+  var newLabel = newType === 'commercial' ? 'Commercial' : 'Residential';
+
+  var user = (typeof getCurrentUser === 'function' ? getCurrentUser() : null) || { name: 'Unknown' };
+  var now = new Date();
+  var actObj = {
+    id: 'a' + Date.now(),
+    type: 'edit',
+    subject: user.name + ' changed deal type',
+    text: 'Type: "' + oldLabel + '" → "' + newLabel + '"',
+    by: user.name,
+    date: now.toISOString().slice(0, 10),
+    time: now.toTimeString().slice(0, 5),
+    done: false,
+    changes: [{ field: 'dealType', label: 'Type', from: oldLabel, to: newLabel }],
+  };
+
+  var updated = Object.assign({}, d, { dealType: newType });
+  updated.activities = [actObj].concat(d.activities || []);
+  setState({
+    deals: getState().deals.map(function (x) { return x.id === dealId ? updated : x; }),
+  });
+
+  // Persist. dbUpdate sends just the deal_type column (snake_case) — the
+  // rest of the row is unchanged; this avoids round-tripping through
+  // dealToDb which would re-send everything.
+  try { dbUpdate('deals', dealId, { deal_type: newType }); } catch (e) {}
+  try { dbInsert('activities', actToDb(actObj, 'deal', dealId)); } catch (e) {}
+
+  // Audit (Brief 2 Phase 2 pattern). Distinct metadata.source so the
+  // Audit page filter can isolate type-picker edits from drawer edits.
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType: 'deal', entityId: dealId, action: 'deal.field_edited',
+      summary: 'Changed type on "' + (updated.title || dealId) + '" — ' + oldLabel + ' → ' + newLabel,
+      before: { dealType: oldType },
+      after:  { dealType: newType },
+      metadata: { source: 'dealtype-picker' },
+      branch: updated.branch || null,
+    });
+  }
+
+  _pendingDealTypePicker = null;
+  addToast('Deal type set to ' + newLabel, 'success');
+  renderPage();
+}
+
+function renderDealTypePickerModal() {
+  if (!_pendingDealTypePicker) return '';
+  var d = (getState().deals || []).find(function (x) { return x.id === _pendingDealTypePicker; });
+  if (!d) return '';
+  var cur = d.dealType;
+  var resOn = cur === 'residential';
+  var comOn = cur === 'commercial';
+  return '' +
+    '<div class="modal-bg" onclick="if(event.target===this)closeDealTypePicker()">' +
+      '<div class="modal" style="max-width:480px">' +
+        '<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">' +
+          '<h3 style="margin:0;font-size:16px;font-weight:700">Change deal type</h3>' +
+          '<button onclick="closeDealTypePicker()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">×</button>' +
+        '</div>' +
+        '<div style="padding:22px;display:flex;flex-direction:column;gap:12px">' +
+          '<div style="font-size:12px;color:#6b7280;line-height:1.4">Current: ' + _dealTypeBadge(d) + '. Pick a new type to apply immediately — the change is recorded in the deal\'s activity timeline and the audit log.</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">' +
+            '<button onclick="setDealType(\'' + d.id + '\',\'residential\')" style="cursor:pointer;border:2px solid ' + (resOn ? '#1d4ed8' : '#e5e7eb') + ';border-radius:10px;padding:14px;background:' + (resOn ? '#eff6ff' : '#fff') + ';transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px;text-align:left;font-family:inherit">' +
+              '<span style="font-size:13px;font-weight:700;color:#1a1a1a">Residential' + (resOn ? ' <span style="font-weight:500;color:#1d4ed8">· current</span>' : '') + '</span>' +
+              '<span style="font-size:11px;color:#6b7280;line-height:1.35">Single home, owner-occupied</span>' +
+            '</button>' +
+            '<button onclick="setDealType(\'' + d.id + '\',\'commercial\')" style="cursor:pointer;border:2px solid ' + (comOn ? '#6d28d9' : '#e5e7eb') + ';border-radius:10px;padding:14px;background:' + (comOn ? '#f5f3ff' : '#fff') + ';transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px;text-align:left;font-family:inherit">' +
+              '<span style="font-size:13px;font-weight:700;color:#1a1a1a">Commercial' + (comOn ? ' <span style="font-weight:500;color:#6d28d9">· current</span>' : '') + '</span>' +
+              '<span style="font-size:11px;color:#6b7280;line-height:1.35">Builder, body corp, rental, retail</span>' +
+            '</button>' +
+          '</div>' +
+        '</div>' +
+        '<div style="padding:14px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;border-radius:0 0 16px 16px;display:flex;justify-content:flex-end">' +
+          '<button class="btn-w" onclick="closeDealTypePicker()">Cancel</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+}
+
 function _findWonStageId(deal) {
   var pl = PIPELINES.find(function (p) { return p.id === deal.pid; });
   if (!pl) return null;
@@ -3871,6 +4016,15 @@ function renderDealDetail() {
         <div style="font-size:11px;color:#9ca3af;margin-top:2px">Weighted: ${fmt$(Math.round(getDealDisplayValue(d) * (pct / 100)))} · ${pct}%</div>
       </div>
 
+      <!-- Type — Brief 5 Phase 4. Click the badge to open the picker. -->
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f9fafb">
+        <span style="font-size:12px;color:#9ca3af">Type</span>
+        <span onclick="openDealTypePicker('${d.id}')" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px" title="Click to change">
+          ${_dealTypeBadge(d)}
+          <span style="font-size:10px;color:#9ca3af">▾</span>
+        </span>
+      </div>
+
       <!-- Key fields -->
       ${[
       ['Pipeline → Stage', curStage ? curStage.name : '—', curStage ? curStage.col : ''],
@@ -4158,7 +4312,10 @@ function renderContactDetail() {
       </div>
       ${cDeals.length === 0 ? `<div style="font-size:12px;color:#9ca3af">No deals yet</div>` : ''}
       ${cDeals.map(d => `<div style="padding:8px;background:#f9fafb;border-radius:8px;margin-bottom:6px;cursor:pointer" onclick="setState({dealDetailId:'${d.id}',contactDetailId:null})">
-        <div style="font-size:13px;font-weight:600;color:#1a1a1a">${d.title}</div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
+          <div style="font-size:13px;font-weight:600;color:#1a1a1a;flex:1;min-width:0">${d.title}</div>
+          ${_dealTypeBadge(d)}
+        </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px">
           <span style="font-size:12px;color:#9ca3af">${d.suburb || d.branch}</span>
           <span style="font-size:13px;font-weight:700">${fmt$(d.val)}</span>
