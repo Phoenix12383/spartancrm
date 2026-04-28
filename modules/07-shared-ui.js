@@ -142,7 +142,12 @@ function renderTopBar(){
   const {sidebarOpen,branch,notifs}=getState();
   const offset=sidebarOpen?220:64;
   const unread=notifs.filter(n=>!n.read).length;
+  const dev = (typeof isDevMode === 'function') && isDevMode();
+  const devBadge = dev
+    ? `<span title="Dev mode is on — stand-in trigger buttons are visible. Add ?dev=0 to URL to disable." style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:11px;font-weight:700;color:#92400e;padding:4px 10px;cursor:help;letter-spacing:.5px">🧪 DEV</span>`
+    : '';
   return `<header id="topbar" style="position:fixed;top:${MODULE_BAR_HEIGHT}px;left:${offset}px;right:0;height:56px;background:#fff;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;padding:0 24px;gap:16px;z-index:20;transition:left .2s">
+    ${devBadge}
     <div style="position:relative;flex:1;max-width:400px">
       <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:#9ca3af">${Icon({n:'search',size:14})}</span>
       <input id="topSearch" placeholder="Search contacts, deals, leads... (/)" style="width:100%;padding:7px 10px 7px 32px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;outline:none;font-family:inherit" oninput="handleTopSearch(this.value)" onfocus="document.getElementById('searchDrop').style.display='block'" onblur="setTimeout(()=>{const d=document.getElementById('searchDrop');if(d)d.style.display='none'},200)">

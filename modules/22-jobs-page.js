@@ -379,8 +379,14 @@ function renderJobDetail() {
     var testActions = jobDetailDevMode ? [] : null;
     var jid = job.id; var jn = job.jobNumber || jid;
     if (testActions) switch (job.status) {
+      case 'a_check_measure':
+        testActions.push({icon:'📏', label:'Surveyor Saves Check Measure (CAD)', source:'Surveyor Mobile App', onclick:'transitionJobStatus(\''+jid+'\',\'c_awaiting_2nd_payment\',\'CM saved — testing\');renderPage();'});
+        break;
       case 'c_awaiting_2nd_payment':
         testActions.push({icon:'💰', label:'Mark 45% Payment Received', source:'Accounts CRM (Xero)', onclick:'markPaymentReceived(\''+jid+'\',\'cl_cm\',\'c1_final_sign_off\',\'45% received — moving to Final Sign Off\')'});
+        break;
+      case 'c1_final_sign_off':
+        testActions.push({icon:'✍️', label:'Customer Signs Final Design DocuSign', source:'DocuSign Connect webhook', onclick:'transitionJobStatus(\''+jid+'\',\'c2_order_schedule_standard\',\'Customer signed — testing\');renderPage();'});
         break;
       case 'c2_order_schedule_standard':
       case 'c3_order_schedule_service':
@@ -400,6 +406,10 @@ function renderJobDetail() {
         break;
       case 'd5_hardware_revealing':
         testActions.push({icon:'🚚', label:'In Dispatch — Frames Ready to Leave', source:'Factory CRM', onclick:'transitionJobStatus(\''+jid+'\',\'e_dispatch_standard\',\'In dispatch — testing\');renderPage();'});
+        break;
+      case 'e_dispatch_standard':
+      case 'e1_dispatch_service':
+        testActions.push({icon:'🚐', label:'Crew Picks Up — Heading to Site', source:'Mobile App (Crew Lead taps Picked Up)', onclick:'transitionJobStatus(\''+jid+'\',\'f_installing\',\'Crew on the way — testing\');renderPage();'});
         break;
       case 'f_installing':
         testActions.push({icon:'✅', label:'Install Complete — Move to Triage', source:'Mobile App (Crew Lead taps Complete)', onclick:'transitionJobStatus(\''+jid+'\',\'b_check_status\',\'Install complete — moving to bookkeeper triage\');renderPage();'});
