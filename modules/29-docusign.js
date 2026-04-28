@@ -198,8 +198,21 @@ function buildFinalDesignPdfBase64(job) {
            ' · Job ' + (job.jobNumber || job.id),
            14, 285);
 
-  // Return base64 (without "data:application/pdf;base64," prefix)
-  return doc.output('datauristring').replace(/^data:application\/pdf;base64,/, '');
+  // Return base64. Use arraybuffer instead of datauristring — jsPDF's
+  // datauristring is "data:application/pdf;filename=generated.pdf;base64,..."
+  // and a naive prefix-strip leaves "filename=...;base64," mixed into the
+  // payload, which DocuSign rejects with UNSPECIFIED_ERROR ("not a valid
+  // Base-64 string").
+  var buf = doc.output('arraybuffer');
+  var bytes = new Uint8Array(buf);
+  var bin = '';
+  // Chunk the conversion to avoid blowing the call stack on large PDFs
+  // (apply() with a huge array can throw RangeError on some browsers).
+  var CHUNK = 0x8000;
+  for (var i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+  }
+  return btoa(bin);
 }
 
 // ─── Main entry: send the Final Design DocuSign ────────────────────────────
