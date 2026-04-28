@@ -839,13 +839,20 @@ function renderJobDetail() {
     var instProgress = (typeof getInstallProgress === 'function') ? getInstallProgress(job.id) : {arrivedAt:null,frameStages:[]};
     var progressPct = (typeof getInstallProgressPct === 'function') ? getInstallProgressPct(job) : 0;
     var frames = (job.windows||[]).length;
-    if (frames > 0 && hasInstallDate) {
+    // Always render the card so testers can see the feature. Show helpful messages when prerequisites missing.
+    {
       tabContent += '<div class="card" style="padding:16px;margin-bottom:14px;border:2px dashed #c4b5fd">'
         +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">'
         +'<div><h5 style="font-size:13px;font-weight:700;margin:0">🔨 Install Progress</h5>'
         +'<div style="font-size:10px;color:#7c3aed;font-weight:600;margin-top:2px">🧪 TESTING — these stages will be tapped by the install crew on the mobile app once that ships. For now, admin can update manually here.</div></div>'
-        +(instProgress.arrivedAt?'<span style="font-size:10px;color:#15803d;background:#dcfce7;padding:3px 8px;border-radius:4px;font-weight:600">✅ Arrived '+new Date(instProgress.arrivedAt).toLocaleString('en-AU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</span>':'<button onclick="markCrewArrived(\''+job.id+'\')" class="btn-r" style="font-size:11px;padding:4px 10px">📍 Tap Arrived</button>')
-        +'</div>'
+        +(frames>0&&hasInstallDate?(instProgress.arrivedAt?'<span style="font-size:10px;color:#15803d;background:#dcfce7;padding:3px 8px;border-radius:4px;font-weight:600">✅ Arrived '+new Date(instProgress.arrivedAt).toLocaleString('en-AU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</span>':'<button onclick="markCrewArrived(\''+job.id+'\')" class="btn-r" style="font-size:11px;padding:4px 10px">📍 Tap Arrived</button>'):'')
+        +'</div>';
+      if (!hasInstallDate) {
+        tabContent += '<div style="padding:14px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e">⏳ Schedule the install date first (above) before tracking progress.</div></div>';
+      } else if (frames === 0) {
+        tabContent += '<div style="padding:14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:12px;color:#1d4ed8">📐 This job has no frames defined yet. Frames are added during Original Design / Check Measure. Once frames exist, each will appear here as a per-stage tracker.</div></div>';
+      } else {
+        tabContent += ''
         // Overall progress bar
         +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
         +'<div style="flex:1;height:10px;background:#f3f4f6;border-radius:5px;overflow:hidden"><div style="height:100%;background:linear-gradient(90deg,#22c55e,#16a34a);width:'+progressPct+'%;border-radius:5px;transition:width .3s"></div></div>'
@@ -876,7 +883,8 @@ function renderJobDetail() {
         +'<span><b>D</b>=Demo\'d</span><span><b>F</b>=Fitted</span><span><b>F</b>=Foamed</span><span><b>T</b>=Trimmed</span><span><b>G</b>=Glazed</span><span><b>H</b>=Hardware</span><span><b>C</b>=Cleaned</span>'
         +'</div>'
         +'</div>';
-    }
+      } // close else branch
+    } // close progress card block
 
     // Completion card
     var canComplete = !!job.completionSignedAt && !installDone;
