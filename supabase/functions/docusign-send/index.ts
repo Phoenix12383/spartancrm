@@ -142,7 +142,8 @@ Deno.serve(async (req) => {
           status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
-      dbgUrl = `${acctBase}/templates/${tplId}/recipients?include_tabs=true`;
+      // Full template fetch — includes documents, recipients, tabs, etc.
+      dbgUrl = `${acctBase}/templates/${tplId}?include=recipients,documents,tabs`;
     }
     const dr = await fetch(dbgUrl, { headers: { 'Authorization': `Bearer ${dbgToken}` } });
     const dj = await dr.json();
