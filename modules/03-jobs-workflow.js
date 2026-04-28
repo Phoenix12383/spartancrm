@@ -76,14 +76,17 @@ const JOB_WINDOW_CONFIGS = ['Awning','Casement','Sliding 2-pane','Sliding 3-pane
 
 const CM_TRIM_CODES = ['50T','92x18SB','25T','SILL','90CG','30T','40T','FLAT','QUAD','SCOTIA','REVEAL'];
 
+// Per manual §6.5 — the 7 binding clauses on the Final Design DocuSign.
+// Some are conditional (Render Warning, Special Colour Lead Time, Variation
+// Acceptance) — they only render if the relevant flag is set on the job.
 const FINAL_SIGNOFF_CLAUSES = [
-  {key:'clause1', label:'Opening Direction',  text:'I confirm the opening direction of each window / door as specified.'},
-  {key:'clause2', label:'Glass Type',         text:'I confirm the glass specification for each opening (safety glass / laminate / Low-E / obscure).'},
-  {key:'clause3', label:'Colour & Profile',   text:'I confirm the exterior and interior colours and profile selections.'},
-  {key:'clause4', label:'Hardware & Handles', text:'I confirm the hardware finish and handle height (standard 1075mm unless noted).'},
-  {key:'clause5', label:'Flyscreens & Trims', text:'I confirm the flyscreen mesh type and trim / architrave selections.'},
-  {key:'clause6', label:'Override Clause',    text:'I acknowledge this Final Signed Order legally overrides the original quotation.'},
-  {key:'clause7', label:'Site Conditions',    text:'I acknowledge render chipping, access limitations, and other site conditions that may affect installation.'},
+  {key:'opening_direction',     label:'Opening Direction',       text:'I confirm the opening direction of each sash / door as specified in the Final Design.'},
+  {key:'glass_type',            label:'Glass Type',              text:'I confirm the glass specification for each pane (safety / laminate / Low-E / obscure as specified).'},
+  {key:'override_clause',       label:'Override Clause',         text:'I acknowledge this Final Signed Order legally overrides the original quotation.'},
+  {key:'render_warning',        label:'Render Warning',          text:'I acknowledge the property has rendered brick and that render may chip or be damaged during demolition. Spartan is not liable for render repair.', conditional:'renderWarning'},
+  {key:'special_colour',        label:'Special Colour Lead Time',text:'I acknowledge that a special-colour combination has been selected and that this extends the manufacturing lead time.', conditional:'specialColour'},
+  {key:'variation_acceptance',  label:'Variation Acceptance',    text:'I accept the price variation arising from Check Measure dimensions or specification changes (or have signed a credit note).', conditional:'hasVariation'},
+  {key:'production_authorisation', label:'Production Authorisation', text:'I authorise Spartan to begin manufacture against this Final Signed Order.'},
 ];
 
 // ── Gate logic: enforced status transitions ──────────────────────────────────
@@ -127,8 +130,13 @@ function canTransition(job, toStatus) {
   // c1_final_sign_off → c2_order_schedule_standard
   if (from === 'c1_final_sign_off' && (toStatus === 'c2_order_schedule_standard' || toStatus === 'c3_order_schedule_service')) {
     var sigs = job.signatures || {};
-    var allSigned = FINAL_SIGNOFF_CLAUSES.every(function(cl){ return sigs[cl.key] && sigs[cl.key].signedAt; });
-    if (!allSigned) return {ok:false, reason:'All 7 sign-off clauses must be signed.'};
+    // Only require clauses that apply to this job (conditional clauses gated by job flags).
+    var applicable = FINAL_SIGNOFF_CLAUSES.filter(function(cl){
+      if (!cl.conditional) return true;
+      return !!job[cl.conditional];
+    });
+    var allSigned = applicable.every(function(cl){ return sigs[cl.key] && sigs[cl.key].signedAt; });
+    if (!allSigned) return {ok:false, reason:'All applicable sign-off clauses must be signed ('+applicable.length+' required).'};
     return {ok:true};
   }
 
@@ -312,7 +320,7 @@ function markCmComplete(jobId) {
   var cu = getCurrentUser() || {id:'system', name:'System'};
   var now = new Date().toISOString();
   setState({ jobs: jobs.map(function(j){ return j.id === jobId ? Object.assign({}, j, {cmCompletedAt: now, cmDocUrl: cmFiles[0].id}) : j; }) });
-  dbUpdate('jobs', jobId, {cm_completed_at: now, cm_doc_url: cmFiles[0].id, updated: now});
+  dbUpdate('jobs', jobId, {cm_completed_at: now, cm_doc_url: cmFiles[0].id});
   // done:true — check measures are logged on completion, not scheduled ahead.
   // A "completions this period" KPI can now filter on type==='checkMeasure' && done===true.
   var act = {id:'a'+Date.now()+'_cm', type:'checkMeasure', subject:'Check measure completed', text:'Check measure completed — ' + wins.length + ' window(s) measured', date:now.slice(0,10), by:cu.name, done:true, dueDate:''};
@@ -344,7 +352,7 @@ function completeCmAndInvoice(jobId) {
   var cu = getCurrentUser() || {id:'system',name:'System'};
   var now = new Date().toISOString();
   setState({jobs: getState().jobs.map(function(j){return j.id===jobId?Object.assign({},j,{cmCompletedAt:now}):j;})});
-  dbUpdate('jobs', jobId, {cm_completed_at:now, updated:now});
+  dbUpdate('jobs', jobId, {cm_completed_at:now});
   logJobAudit(jobId, 'CM Completed', 'Check measure finalised. CM file: '+cmFiles[0].name);
   // Trigger 45% invoice (for COD jobs)
   var pm = job.paymentMethod || 'cod';
@@ -364,7 +372,7 @@ function markFinalDesignSigned(jobId) {
   if (!job.cmCompletedAt) { addToast('Check measure must be completed first','error'); return; }
   var now = new Date().toISOString();
   setState({jobs: getState().jobs.map(function(j){return j.id===jobId?Object.assign({},j,{finalSignedAt:now}):j;})});
-  dbUpdate('jobs', jobId, {final_signed_at:now, updated:now});
+  dbUpdate('jobs', jobId, {final_signed_at:now});
   logJobAudit(jobId, 'Final Design Signed', 'Client signature received. Advancing to installation scheduling.');
   // Advance status to scheduling
   transitionJobStatus(jobId, 'c2_order_schedule_standard', 'Final design signed — sent to Factory CRM for production');

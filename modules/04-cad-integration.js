@@ -812,7 +812,6 @@ async function transitionJobStatus(jobId, toStatus, note) {
     status_history: JSON.stringify(newHistory),
     hold: updates.hold,
     hold_reason: updates.holdReason || null,
-    updated: new Date().toISOString(),
   };
   if (updates.finalSignedAt) dbChanges.final_signed_at = updates.finalSignedAt;
   dbUpdate('jobs', jobId, dbChanges);

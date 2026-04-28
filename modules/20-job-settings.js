@@ -432,7 +432,8 @@ function renderJobSettings() {
     FINAL_SIGNOFF_CLAUSES.forEach(function(cl,i){
       content += '<div style="display:flex;gap:10px;padding:10px 14px;background:#f9fafb;border-radius:8px">'
         +'<span style="font-size:12px;font-weight:700;color:#c41230;width:20px;flex-shrink:0">'+(i+1)+'</span>'
-        +'<div><div style="font-size:12px;font-weight:600;margin-bottom:2px">'+cl.label+'</div>'
+        +'<div style="flex:1"><div style="display:flex;align-items:center;gap:6px;margin-bottom:2px"><span style="font-size:12px;font-weight:600">'+cl.label+'</span>'
+        +(cl.conditional?'<span style="font-size:9px;background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-weight:600">Conditional</span>':'')+'</div>'
         +'<div style="font-size:11px;color:#6b7280">'+cl.text+'</div></div></div>';
     });
     content += '</div></div>';

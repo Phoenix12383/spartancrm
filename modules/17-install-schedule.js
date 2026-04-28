@@ -336,10 +336,14 @@ function saveJobFiles(jobId, files) { localStorage.setItem('spartan_files_'+jobI
 function addJobFile(jobId, name, category, dataUrl) {
   var files = getJobFiles(jobId);
   var user = getCurrentUser() || {name:'Admin'};
-  var fileObj = {id:'file_'+Date.now(), name:name, category:category||'general', dataUrl:dataUrl, uploadedBy:user.name, uploadedAt:new Date().toISOString()};
+  var id = 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  var fileObj = {id:id, name:name, category:category||'general', dataUrl:dataUrl, uploadedBy:user.name, uploadedAt:new Date().toISOString()};
   files.push(fileObj);
   saveJobFiles(jobId, files);
-  if(_sb) dbInsert('job_files', {job_id:jobId, name:name, category:category||'general', data_url:dataUrl, uploaded_by:user.name});
+  // Send the same id to Supabase so local + remote stay aligned across reloads.
+  if (typeof _sb !== 'undefined' && _sb) {
+    dbInsert('job_files', {id:id, job_id:jobId, name:name, category:category||'general', data_url:dataUrl, uploaded_by:user.name});
+  }
   logJobAudit(jobId, 'File Uploaded', name+' ('+category+')');
   addToast('File uploaded: '+name, 'success');
 }
@@ -347,6 +351,10 @@ function removeJobFile(jobId, fileId) {
   var files = getJobFiles(jobId);
   var file = files.find(function(f){return f.id===fileId;});
   saveJobFiles(jobId, files.filter(function(f){return f.id!==fileId;}));
+  // Drop from Supabase so the file doesn't reappear on next dbLoadAll.
+  if (typeof _sb !== 'undefined' && _sb) {
+    try { _sb.from('job_files').delete().eq('id', fileId); } catch(e) { console.warn('job_files delete failed', fileId, e); }
+  }
   if (file) logJobAudit(jobId, 'File Removed', file.name);
   addToast('File removed', 'warning');
 }

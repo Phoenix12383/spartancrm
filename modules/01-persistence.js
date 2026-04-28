@@ -512,7 +512,16 @@ async function dbLoadAll() {
       var byJob = {};
       jobFilesRows.forEach(function(f) {
         if (!byJob[f.job_id]) byJob[f.job_id] = [];
-        byJob[f.job_id].push({ name:f.name, category:f.category, dataUrl:f.data_url, uploadedBy:f.uploaded_by, at:f.created_at });
+        // Field names must match what addJobFile / the UI reads (uploadedAt, id) — otherwise
+        // dates render as "Invalid Date" and the remove button has no row to target.
+        byJob[f.job_id].push({
+          id: f.id,
+          name: f.name,
+          category: f.category,
+          dataUrl: f.data_url,
+          uploadedBy: f.uploaded_by,
+          uploadedAt: f.created_at || f.uploaded_at || new Date().toISOString()
+        });
       });
       Object.keys(byJob).forEach(function(jobId) {
         localStorage.setItem('spartan_files_' + jobId, JSON.stringify(byJob[jobId]));
