@@ -122,7 +122,7 @@ function renderJobsPage() {
       + '<div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:' + (col||'#1a1a1a') + ';margin-top:4px">' + val + '</div></div>';
   }
 
-  function stripPrefix(label) { return label.replace(/^[a-iA-I]\.?\d*\.?\s*/,'').trim(); }
+  // (formerly stripPrefix — labels are already clean; no prefix to strip.)
 
   // Cell renderer
   function cellVal(col, j) {
@@ -134,7 +134,7 @@ function renderJobsPage() {
       case 'client': return c ? c.fn+' '+c.ln : '\u2014';
       case 'suburb': return j.suburb||'\u2014';
       case 'branch': return j.branch||'\u2014';
-      case 'status': return '<span class="bdg" style="background:'+st.col+'20;color:'+st.col+';border:1px solid '+st.col+'40;font-size:11px">'+stripPrefix(st.label)+'</span>';
+      case 'status': return '<span class="bdg" style="background:'+st.col+'20;color:'+st.col+';border:1px solid '+st.col+'40;font-size:11px">'+st.label+'</span>';
       case 'val': return '$'+Number(j.val||0).toLocaleString();
       case 'cmDate': return j.cmBookedDate||'\u2014';
       case 'installDate': return j.installDate||'\u2014';
@@ -160,10 +160,15 @@ function renderJobsPage() {
     }
   }
 
-  // Status dropdown
-  var statusDropdown = '<select class="sel" style="font-size:12px;padding:6px 12px;min-width:200px" onchange="setState({jobListFilter:this.value})">'
-    + '<option value="All"' + (statusFilter==='All'?' selected':'') + '>All Statuses</option>'
-    + JOB_STATUSES.map(function(s){ var count=allBranchJobs.filter(function(j){return j.status===s.key;}).length; return '<option value="'+s.key+'"'+(statusFilter===s.key?' selected':'')+'>'+stripPrefix(s.label)+(count?' ('+count+')':'')+'</option>'; }).join('')+'</select>';
+  // Status dropdown — primary-styled when filtering, neutral when "All"
+  var _isFiltering = statusFilter && statusFilter !== 'All';
+  var _filteredCount = _isFiltering ? allBranchJobs.filter(function(j){return j.status===statusFilter;}).length : allBranchJobs.length;
+  var statusDropdown = '<select class="sel" style="font-size:13px;font-weight:600;padding:7px 14px;min-width:240px;cursor:pointer;'
+    + (_isFiltering ? 'background:#fff5f6;border-color:#fecaca;color:#c41230' : 'background:#fff;border-color:#e5e7eb;color:#374151')
+    + '" onchange="setState({jobListFilter:this.value})">'
+    + '<option value="All" style="color:#374151"'+(statusFilter==='All'?' selected':'')+'>📋 All Statuses ('+allBranchJobs.length+')</option>'
+    + JOB_STATUSES.map(function(s){ var count=allBranchJobs.filter(function(j){return j.status===s.key;}).length; return '<option value="'+s.key+'" style="color:#374151"'+(statusFilter===s.key?' selected':'')+'>'+s.label+(count?' ('+count+')':'')+'</option>'; }).join('')
+    +'</select>';
 
   // Sortable header
   function sortTh(col) {
