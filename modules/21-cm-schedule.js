@@ -9,6 +9,58 @@
 // ══════════════════════════════════════════════════════════════════════════════
 var cmMapDate = new Date().toISOString().slice(0,10);
 var cmMapInstaller = 'all';
+var cmSuggestions = {}; // jobId → {installerId, date, time, reason}
+
+function suggestCmSlot(job, allBooked, installers) {
+  var branch = job.branch || 'VIC';
+  var suburb = (job.suburb || '').toLowerCase();
+  var branchInst = installers.filter(function(i){ return i.active && i.branch === branch; });
+  if (branchInst.length === 0) branchInst = installers.filter(function(i){ return i.active; });
+
+  var best = null;
+  var bestScore = -Infinity;
+
+  // Check next 14 days
+  for (var d = 0; d < 14; d++) {
+    var dt = new Date(); dt.setDate(dt.getDate() + d + 1);
+    var day = dt.getDay();
+    if (day === 0 || day === 6) continue; // skip weekends
+    var ds = dt.toISOString().slice(0, 10);
+
+    branchInst.forEach(function(inst) {
+      var maxCms = Math.max(1, Math.floor((inst.maxHoursPerDay || 8) / 2));
+      var dayBooked = allBooked.filter(function(j){ return j.cmAssignedTo === inst.id && j.cmBookedDate === ds; }).length;
+      if (dayBooked >= maxCms) return; // full
+
+      var score = 0;
+      score -= d * 2; // earlier = better
+      score -= dayBooked * 3; // fewer bookings = better
+
+      // Bonus: already has a job in same suburb that day
+      var sameSuburb = allBooked.some(function(j){ return j.cmAssignedTo === inst.id && j.cmBookedDate === ds && (j.suburb||'').toLowerCase() === suburb; });
+      if (sameSuburb) score += 10;
+
+      var capacityPct = Math.round(dayBooked / maxCms * 100);
+      if (score > bestScore) {
+        bestScore = score;
+        best = { installerId: inst.id, installerName: inst.name, date: ds, time: dayBooked === 0 ? '09:00' : '13:00',
+          reason: (sameSuburb ? 'Same suburb cluster · ' : '') + inst.name + ' · ' + dayBooked + '/' + maxCms + ' CMs · ' + capacityPct + '% capacity' };
+      }
+    });
+  }
+  return best;
+}
+
+function smartBookCm(jobId) {
+  var s = cmSuggestions[jobId];
+  if (!s) { addToast('No suggestion available', 'error'); return; }
+  updateJobField(jobId, 'cmBookedDate', s.date);
+  updateJobField(jobId, 'cmBookedTime', s.time);
+  updateJobField(jobId, 'cmAssignedTo', s.installerId);
+  delete cmSuggestions[jobId];
+  addToast('CM booked — ' + s.installerName + ' on ' + s.date, 'success');
+  renderPage();
+}
 
 // (Previous OSM-iframe mount helper removed — this page now uses real Google
 //  Maps via mountCMGoogleMap in 14a-google-maps-real.js.)
@@ -120,25 +172,38 @@ function renderCMMapPage() {
         +'</div>';
 
       grp.forEach(function(j){
-        var c = contacts.find(function(ct){return ct.id===j.contactId;});var cn=c?c.fn+' '+c.ln:'\u2014';
+        var c = contacts.find(function(ct){return ct.id===j.contactId;});var cn=c?c.fn+' '+c.ln:'—';
         var jobAge = j.created ? Math.floor((new Date()-new Date(j.created))/86400000) : 0;
-        right += '<div style="display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid #fafafa">'
-          +'<div style="flex:1;min-width:0">'
-          +'<div style="font-size:11px"><span style="font-weight:700;color:#c41230">'+(j.jobNumber||'')+'</span> '+cn+' <span style="color:#9ca3af;font-size:10px">'+jobAge+'d</span></div>'
-          +'<div style="font-size:10px;color:#6b7280">'+(j.street||'')+' \u00b7 '+(j.windows||[]).length+' frames \u00b7 $'+Math.round((j.val||0)/1000)+'k</div></div>'
-          +'<div style="display:flex;gap:3px;flex-shrink:0">'
-          +'<select class="sel" style="font-size:9px;padding:2px 3px;width:70px" id="cmb_inst_'+j.id+'">'
+        var sug = cmSuggestions[j.id];
+        var sugInstName = sug ? (installers.find(function(i){return i.id===sug.installerId;})||{name:sug.installerName}).name : '';
+        right += '<div style="padding:10px 16px;border-bottom:1px solid #f3f4f6">'
+          // Row 1: job number + name + age
+          +'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px">'
+          +'<span style="font-size:12px;font-weight:700;color:#c41230">'+(j.jobNumber||'')+'</span>'
+          +'<span style="font-size:11px;color:#374151;margin:0 6px;flex:1;padding-left:6px">'+cn+'</span>'
+          +'<span style="font-size:10px;color:#9ca3af">'+jobAge+'d</span>'
+          +'</div>'
+          // Row 2: address · frames · value
+          +'<div style="font-size:10px;color:#6b7280;margin-bottom:6px">'+(j.suburb||sub)+' · '+(j.street||'')+' · '+(j.windows||[]).length+' frames · $'+Math.round((j.val||0)/1000)+'k</div>'
+          // Row 3: smart suggestion banner (only if suggestion exists)
+          +(sug ? '<div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:4px;padding:4px 8px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center">'
+            +'<span style="font-size:10px;color:#6d28d9">⚡ '+sugInstName+' · '+sug.date+' · '+sug.time+'</span>'
+            +'<button onclick="smartBookCm(\''+j.id+'\')" title="'+sug.reason+'" class="btn-r" style="font-size:9px;padding:1px 8px;background:#7c3aed;border-color:#7c3aed;color:#fff">⚡ Accept</button>'
+            +'</div>' : '')
+          // Row 4: booking controls
+          +'<div style="display:flex;gap:4px;align-items:center">'
+          +'<select class="sel" style="font-size:10px;padding:2px 4px;flex:1" id="cmb_inst_'+j.id+'">'
           +'<option value="">Installer</option>'
-          +installers.map(function(inst){return '<option value="'+inst.id+'">'+inst.name.split(' ')[0]+'</option>';}).join('')
+          +installers.map(function(inst){var sel=sug&&sug.installerId===inst.id?' selected':'';return '<option value="'+inst.id+'"'+sel+'>'+inst.name+'</option>';}).join('')
           +'</select>'
-          +'<input type="date" class="inp" style="font-size:9px;padding:2px 3px;width:105px" id="cmb_date_'+j.id+'" value="'+cmMapDate+'">'
-          +'<select class="sel" style="font-size:9px;padding:2px 3px;width:55px" id="cmb_time_'+j.id+'">'
-          +'<option value="AM">AM</option><option value="PM">PM</option>'
-          +['08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','13:00','14:00','15:00'].map(function(t){return '<option value="'+t+'">'+formatTime12(t)+'</option>';}).join('')
+          +'<input type="date" class="inp" style="font-size:10px;padding:2px 4px;width:120px" id="cmb_date_'+j.id+'" value="'+(sug?sug.date:cmMapDate)+'">'
+          +'<select class="sel" style="font-size:10px;padding:2px 4px;width:60px" id="cmb_time_'+j.id+'">'
+          +['AM','PM','08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','13:00','14:00','15:00'].map(function(t){var sel=sug&&sug.time===t?' selected':'';return '<option value="'+t+'"'+sel+'>'+(t.includes(':')?formatTime12(t):t)+'</option>';}).join('')
           +'</select>'
-          +'<button onclick="var d=document.getElementById(\'cmb_date_'+j.id+'\').value;var t=document.getElementById(\'cmb_time_'+j.id+'\').value;var inst=document.getElementById(\'cmb_inst_'+j.id+'\').value;if(!d){addToast(\'Pick a date\',\'error\');return;}updateJobField(\''+j.id+'\',\'cmBookedDate\',d);updateJobField(\''+j.id+'\',\'cmBookedTime\',t);if(inst)updateJobField(\''+j.id+'\',\'cmAssignedTo\',inst);addToast(\''+(j.jobNumber||'Job')+' CM booked\',\'success\');renderPage();" class="btn-r" style="font-size:9px;padding:2px 8px;white-space:nowrap">Book</button>'
-          +'</div></div>';
-      });
+          +'<button onclick="var d=document.getElementById(\'cmb_date_'+j.id+'\').value;var t=document.getElementById(\'cmb_time_'+j.id+'\').value;var inst=document.getElementById(\'cmb_inst_'+j.id+'\').value;if(!d){addToast(\'Pick a date\',\'error\');return;}updateJobField(\''+j.id+'\',\'cmBookedDate\',d);updateJobField(\''+j.id+'\',\'cmBookedTime\',t);if(inst)updateJobField(\''+j.id+'\',\'cmAssignedTo\',inst);addToast(\''+(j.jobNumber||'Job')+' CM booked\',\'success\');renderPage();" class="btn-r" style="font-size:10px;padding:2px 10px;white-space:nowrap">Book</button>'
+          +'</div>'
+          +'</div>';
+      }); // end grp.forEach
 
       // Batch book button for the cluster
       if (grp.length >= 2) {
@@ -153,18 +218,57 @@ function renderCMMapPage() {
   }
   right += '</div>';
 
-  // Per-installer CM load
+  // Pre-compute suggestions for all unbooked jobs
+  unbooked.forEach(function(j){
+    if (!cmSuggestions[j.id]) cmSuggestions[j.id] = suggestCmSlot(j, booked, installers);
+  });
+
+  // Per-installer CM load with capacity %
   right += '<div class="card" style="padding:14px">'
-    +'<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9ca3af;margin-bottom:8px">Installer CM Load</div>';
+    +'<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9ca3af;margin-bottom:10px">Installer Capacity \u2014 '+new Date(cmMapDate+'T12:00').toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short'})+'</div>';
   installers.forEach(function(inst){
     var instCMs = booked.filter(function(j){return j.cmAssignedTo===inst.id;});
     var todayCMs = bookedToday.filter(function(j){return j.cmAssignedTo===inst.id;});
-    right += '<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #f9fafb">'
-      +'<div style="width:20px;height:20px;border-radius:50%;background:'+inst.colour+';color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(inst.name||'?')[0]+'</div>'
+    var maxCms = Math.max(1, Math.floor((inst.maxHoursPerDay||8)/2));
+    var pct = Math.min(100, Math.round(todayCMs.length/maxCms*100));
+    var barCol = pct >= 100 ? '#ef4444' : pct >= 75 ? '#f59e0b' : '#22c55e';
+    right += '<div style="padding:6px 0;border-bottom:1px solid #f9fafb">'
+      +'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'
+      +'<div style="width:22px;height:22px;border-radius:50%;background:'+inst.colour+';color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(inst.name||'?')[0]+'</div>'
       +'<div style="flex:1"><div style="font-size:11px;font-weight:600">'+inst.name+'</div>'
-      +'<div style="font-size:9px;color:#9ca3af">Today: '+todayCMs.length+' \u00b7 Total booked: '+instCMs.length+'</div></div></div>';
+      +'<div style="font-size:9px;color:#9ca3af">Today: '+todayCMs.length+'/'+maxCms+' CMs \u00b7 Total: '+instCMs.length+'</div></div>'
+      +'<span style="font-size:11px;font-weight:700;color:'+barCol+'">'+pct+'%</span></div>'
+      +'<div style="height:5px;background:#e5e7eb;border-radius:3px"><div style="height:5px;background:'+barCol+';border-radius:3px;width:'+pct+'%;transition:width .3s"></div></div>'
+      +'</div>';
   });
-  right += '</div></div>';
+  right += '</div>';
+
+  // 7-day availability grid
+  right += '<div class="card" style="padding:14px">'
+    +'<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9ca3af;margin-bottom:10px">7-Day Availability</div>';
+  var next7 = [];
+  for (var nd = 1; nd <= 10; nd++) {
+    var ndt = new Date(); ndt.setDate(ndt.getDate()+nd);
+    if (ndt.getDay()!==0 && ndt.getDay()!==6) next7.push(ndt.toISOString().slice(0,10));
+    if (next7.length >= 7) break;
+  }
+  right += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:10px">'
+    +'<thead><tr><th style="text-align:left;padding:3px 4px;color:#9ca3af;font-weight:600">Installer</th>'
+    +next7.map(function(ds){ var d=new Date(ds+'T12:00'); return '<th style="text-align:center;padding:3px 4px;color:#6b7280;font-weight:600;white-space:nowrap">'+d.toLocaleDateString('en-AU',{weekday:'short',day:'numeric'})+'</th>'; }).join('')
+    +'</tr></thead><tbody>';
+  installers.forEach(function(inst){
+    var maxCms = Math.max(1, Math.floor((inst.maxHoursPerDay||8)/2));
+    right += '<tr><td style="padding:3px 4px;font-weight:600;color:#374151;white-space:nowrap">'+inst.name.split(' ')[0]+'</td>';
+    next7.forEach(function(ds){
+      var cnt = booked.filter(function(j){return j.cmAssignedTo===inst.id && j.cmBookedDate===ds;}).length;
+      var pct = Math.min(100, Math.round(cnt/maxCms*100));
+      var bg = pct>=100?'#fee2e2':pct>=75?'#fef3c7':pct>0?'#dcfce7':'#f9fafb';
+      var col = pct>=100?'#b91c1c':pct>=75?'#92400e':pct>0?'#15803d':'#9ca3af';
+      right += '<td style="text-align:center;padding:3px 4px"><div style="background:'+bg+';color:'+col+';border-radius:4px;padding:2px 4px;font-weight:700">'+(pct>=100?'Full':cnt+'/'+maxCms)+'</div></td>';
+    });
+    right += '</tr>';
+  });
+  right += '</tbody></table></div></div></div>';
 
   // ── Weekly CM Revenue Chart ───────────────────────────────────────────────
   var weekDates = getWeekDates(0);
