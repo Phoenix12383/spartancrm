@@ -74,8 +74,268 @@ var _DEFAULT_COMMISSION_RULES = Object.freeze({
 function getCommissionRates() { try { return JSON.parse(localStorage.getItem(COMMISSION_RATES_LEGACY_KEY) || '{}'); } catch(e){ return {}; } }
 function saveCommissionRates(rates) { localStorage.setItem(COMMISSION_RATES_LEGACY_KEY, JSON.stringify(rates)); }
 
-function getCommissionPaid() { try { return JSON.parse(localStorage.getItem('spartan_commission_paid') || '{}'); } catch(e){ return {}; } }
-function saveCommissionPaid(paid) { localStorage.setItem('spartan_commission_paid', JSON.stringify(paid)); }
+// ════════════════════════════════════════════════════════════════════════════
+// STATE MACHINE — accrued / realised / paid (Brief 4 Phase 3)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Replaces the binary `spartan_commission_paid: {[dealId]: {status,
+// paidDate, paidBy}}` with a tri-state record at
+// `spartan_commission_status: {[dealId]: {state, accruedAt, realisedAt,
+// paidAt, paidBy, gateUsed, payRunId}}`.
+//
+// State transitions (one-way unless explicitly toggled):
+//   (none)        → accrued        on Won (via accrueCommission)
+//   accrued       → realised       on configured gate event (won / final_signed / final_payment)
+//   realised      → paid           via toggleCommissionPaid (or future Pay Run flow)
+//   paid          → realised       via toggleCommissionPaid (revert)
+//   accrued       → ✗ paid         BLOCKED — toast error "Commission must be realised first"
+//
+// Migration: on first read of getCommissionStatus(), if the new key is
+// missing but the legacy `spartan_commission_paid` map exists, we
+// transform every entry. Paid records land as state='paid' with
+// realisedAt + paidAt populated; unpaid records land as state='accrued'
+// (they were stuck in the binary "deal won but not paid" state, which is
+// what 'accrued' models exactly). Per the brief's mitigation note (Phase
+// 1 pattern), the legacy key is preserved as a read-only fallback for one
+// release; future cleanup will delete it.
+
+var COMMISSION_STATUS_KEY = 'spartan_commission_status';
+var COMMISSION_PAID_LEGACY_KEY = 'spartan_commission_paid';
+
+// Lazy migration. Returns true if a migration was performed, false otherwise.
+// Idempotent: once the new key exists, subsequent calls short-circuit.
+function _migrateLegacyCommissionPaid() {
+  try {
+    if (localStorage.getItem(COMMISSION_STATUS_KEY) !== null) return false;
+    var legacy = {};
+    try { legacy = JSON.parse(localStorage.getItem(COMMISSION_PAID_LEGACY_KEY) || '{}'); } catch (e) { legacy = {}; }
+    var dealIds = Object.keys(legacy);
+    if (dealIds.length === 0) return false;
+    var status = {};
+    var nowIso = new Date().toISOString();
+    var migratedCount = 0;
+    dealIds.forEach(function (dealId) {
+      var rec = legacy[dealId] || {};
+      var wasPaid = rec.status === 'paid';
+      var paidIso = rec.paidDate ? (String(rec.paidDate).slice(0, 10) + 'T00:00:00Z') : null;
+      status[dealId] = {
+        // Paid records carry forward as paid; unpaid records were stuck
+        // accrued (the binary tracker had no "realised" middle state, so
+        // the safest landing is 'accrued' — the new flow then has to fire
+        // the configured gate to advance them, which matches the new
+        // semantics and avoids over-promoting unpaid legacy data).
+        state: wasPaid ? 'paid' : 'accrued',
+        accruedAt:  paidIso || nowIso,
+        realisedAt: wasPaid ? (paidIso || nowIso) : null,
+        paidAt:     wasPaid ? paidIso : null,
+        paidBy:     rec.paidBy || null,
+        gateUsed:   wasPaid ? 'legacy_migration' : null,
+        // Brief 4 Phase 7 hook — payRunId:null marks these as "orphaned"
+        // paid commissions waiting to be bucketed into a historical pay
+        // run via the backfill flow once that lands.
+        payRunId:   null,
+      };
+      migratedCount++;
+    });
+    localStorage.setItem(COMMISSION_STATUS_KEY, JSON.stringify(status));
+    // Per the brief's mitigation pattern, do NOT delete the legacy key
+    // here. A future PR removes it after a release of stable usage on
+    // the new shape.
+    // TODO(brief-4-followup): delete `spartan_commission_paid` after one
+    // release of stable usage on the new key.
+    if (typeof appendAuditEntry === 'function') {
+      try {
+        appendAuditEntry({
+          entityType: 'commission', entityId: null,
+          action: 'system.commission_state_migrated',
+          summary: 'Migrated ' + migratedCount + ' commission record' + (migratedCount !== 1 ? 's' : '') + ' from spartan_commission_paid to spartan_commission_status',
+          metadata: { migration: 'paid_to_status_v1', migratedCount: migratedCount },
+        });
+      } catch (e) {}
+    }
+    return true;
+  } catch (e) { return false; }
+}
+
+// Public — read the full commission-status map. Runs the legacy migration
+// on first call. Always returns an object (possibly empty), never null.
+function getCommissionStatus() {
+  _migrateLegacyCommissionPaid();
+  try {
+    var raw = localStorage.getItem(COMMISSION_STATUS_KEY);
+    if (raw === null) return {};
+    var parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object') ? parsed : {};
+  } catch (e) { return {}; }
+}
+
+function saveCommissionStatus(status) {
+  try { localStorage.setItem(COMMISSION_STATUS_KEY, JSON.stringify(status || {})); } catch (e) {}
+}
+
+// Convenience — get the record for a specific deal, or null if no record.
+function getCommissionStatusForDeal(dealId) {
+  var status = getCommissionStatus();
+  return status[dealId] || null;
+}
+
+// Public — accrue commission on Won. If the rep's effective realisation
+// gate is 'won', also auto-realise so the deal is immediately payable.
+// Idempotent: re-running on an already-accrued (or further) deal is a
+// no-op so transient setState replays don't promote state inadvertently.
+// Audit entries:
+//   commission.accrued — always (one entry per deal at first accrual)
+//   commission.realised — only when gate === 'won' and we auto-realise
+function accrueCommission(deal) {
+  if (!deal || !deal.id) return false;
+  var status = getCommissionStatus();
+  var existing = status[deal.id];
+  if (existing && (existing.state === 'accrued' || existing.state === 'realised' || existing.state === 'paid')) {
+    return false; // already at or past 'accrued'
+  }
+  var nowIso = new Date().toISOString();
+  var rule = (typeof getEffectiveRuleForRep === 'function')
+    ? getEffectiveRuleForRep(deal.rep, deal.branch)
+    : { realisationGate: 'won' };
+  var rec = {
+    state: 'accrued',
+    accruedAt: nowIso,
+    realisedAt: null,
+    paidAt: null,
+    paidBy: null,
+    gateUsed: null,
+    payRunId: null,
+  };
+  // Auto-realise when the deal's configured gate is 'won' (the default).
+  // For 'final_signed' and 'final_payment' gates, the deal stays at
+  // 'accrued' until the corresponding hook fires.
+  var autoRealised = (rule.realisationGate === 'won');
+  if (autoRealised) {
+    rec.state = 'realised';
+    rec.realisedAt = nowIso;
+    rec.gateUsed = 'won';
+  }
+  status[deal.id] = rec;
+  saveCommissionStatus(status);
+  if (typeof appendAuditEntry === 'function') {
+    try {
+      appendAuditEntry({
+        entityType: 'commission', entityId: deal.id,
+        action: 'commission.accrued',
+        summary: 'Commission accrued for ' + (deal.title || deal.id),
+        after: { state: 'accrued', accruedAt: nowIso },
+        metadata: { realisationGate: rule.realisationGate, dealVal: deal.val || 0 },
+        branch: deal.branch || null,
+      });
+      if (autoRealised) {
+        appendAuditEntry({
+          entityType: 'commission', entityId: deal.id,
+          action: 'commission.realised',
+          summary: 'Commission auto-realised on Won (gate: won)',
+          before: { state: 'accrued' },
+          after:  { state: 'realised', realisedAt: nowIso, gateUsed: 'won' },
+          branch: deal.branch || null,
+        });
+      }
+    } catch (e) {}
+  }
+  return true;
+}
+
+// Public — realise commission for a deal. Called from the gate-firing
+// hook points (final_signed in 03-jobs-workflow.js, final_payment in
+// 22-jobs-page.js). Idempotent: short-circuits if the deal is already
+// realised or paid (so re-running the gate event doesn't overwrite
+// realisedAt). Returns true if the state actually flipped.
+//
+// Note: the hook points check the deal's configured gate before calling
+// this. If a gate event fires for a deal whose configured gate is
+// different (e.g. final_signed fires on a deal configured for
+// final_payment), the call site doesn't fire — this function would
+// realise unconditionally if called.
+function realiseCommission(dealId, gateUsed) {
+  if (!dealId) return false;
+  var status = getCommissionStatus();
+  var rec = status[dealId];
+  if (!rec) return false;
+  if (rec.state === 'realised' || rec.state === 'paid') return false;
+  var nowIso = new Date().toISOString();
+  var prevState = rec.state;
+  rec.state = 'realised';
+  rec.realisedAt = nowIso;
+  rec.gateUsed = gateUsed || rec.gateUsed || null;
+  status[dealId] = rec;
+  saveCommissionStatus(status);
+  if (typeof appendAuditEntry === 'function') {
+    try {
+      // Try to attach branch context from the deal record if we can find it.
+      var branch = null;
+      try {
+        var deal = (typeof getState === 'function' && getState().deals)
+          ? getState().deals.find(function (d) { return d.id === dealId; })
+          : null;
+        if (deal) branch = deal.branch || null;
+      } catch (e) {}
+      appendAuditEntry({
+        entityType: 'commission', entityId: dealId,
+        action: 'commission.realised',
+        summary: 'Commission realised via gate: ' + (gateUsed || '?'),
+        before: { state: prevState },
+        after:  { state: 'realised', realisedAt: nowIso, gateUsed: gateUsed || null },
+        branch: branch,
+      });
+    } catch (e) {}
+  }
+  return true;
+}
+
+// ── Backward-compat shims for pre-Phase-3 callers ───────────────────────────
+// `getCommissionPaid()` is read at the top of renderCommissionPage and at
+// several downstream call sites that check `paid[dealId].status === 'paid'`.
+// We translate the new shape back to the old `{status, paidDate, paidBy}`
+// format so the existing rendering code keeps working unchanged until
+// Phase 6 surfaces the tri-state model in the UI. New code should call
+// getCommissionStatus() / getCommissionStatusForDeal() directly.
+function getCommissionPaid() {
+  var status = getCommissionStatus();
+  var paid = {};
+  Object.keys(status).forEach(function (dealId) {
+    var rec = status[dealId];
+    if (!rec) return;
+    paid[dealId] = {
+      status: rec.state === 'paid' ? 'paid' : 'unpaid',
+      paidDate: rec.paidAt ? String(rec.paidAt).slice(0, 10) : null,
+      paidBy: rec.paidBy || null,
+    };
+  });
+  return paid;
+}
+// DEPRECATED — the legacy save path. Routes through saveCommissionStatus
+// for any straggler callers; new code uses saveCommissionStatus directly.
+function saveCommissionPaid(paid) {
+  if (!paid || typeof paid !== 'object') return;
+  var status = getCommissionStatus();
+  Object.keys(paid).forEach(function (dealId) {
+    var rec = paid[dealId];
+    if (!rec) return;
+    var existing = status[dealId] || {
+      state: 'accrued', accruedAt: new Date().toISOString(),
+      realisedAt: null, paidAt: null, paidBy: null, gateUsed: null, payRunId: null,
+    };
+    if (rec.status === 'paid') {
+      existing.state = 'paid';
+      existing.paidAt = rec.paidDate ? (rec.paidDate + 'T00:00:00Z') : new Date().toISOString();
+      existing.paidBy = rec.paidBy || existing.paidBy;
+    } else if (existing.state === 'paid') {
+      existing.state = 'realised';
+      existing.paidAt = null;
+      existing.paidBy = null;
+    }
+    status[dealId] = existing;
+  });
+  saveCommissionStatus(status);
+}
+
 function getCommissionAudit() { try { return JSON.parse(localStorage.getItem('spartan_commission_audit') || '[]'); } catch(e){ return []; } }
 function saveCommissionAudit(log) { localStorage.setItem('spartan_commission_audit', JSON.stringify(log)); }
 
@@ -498,42 +758,85 @@ function calcCommission(dealVal, repName) {
   return { exGst: exGst, rate: rate, commission: exGst * rate / 100 };
 }
 
+// Brief 4 Phase 3: only flips between realised ↔ paid. Trying to pay
+// an accrued (gate not yet fired) deal must error out with a hint about
+// which gate needs to fire first. The unified-audit-log entries continue
+// to use commission.paid / commission.unpaid action keys; the legacy
+// spartan_commission_audit array stays in place for the existing audit
+// subsection in renderCommissionPage.
 function toggleCommissionPaid(dealId) {
   var cu = getCurrentUser() || {};
   if (cu.role !== 'admin' && cu.role !== 'accounts') { addToast('Only Admin or Accounts can change payment status', 'error'); return; }
-  var paid = getCommissionPaid();
-  var deal = getState().deals.find(function(d){ return d.id === dealId; });
-  var oldStatus = paid[dealId] ? paid[dealId].status : 'unpaid';
-  var newStatus = oldStatus === 'paid' ? 'unpaid' : 'paid';
-  paid[dealId] = { status: newStatus, paidDate: newStatus === 'paid' ? new Date().toISOString().slice(0,10) : null, paidBy: cu.name };
-  saveCommissionPaid(paid);
-  // Audit log
-  var audit = getCommissionAudit();
-  audit.unshift({
-    timestamp: new Date().toISOString(),
+  var deal = (getState().deals || []).find(function(d){ return d.id === dealId; });
+
+  // Lazy accrual handling: a deal that's Won but somehow has no status
+  // record (legacy data, or a setState replay before accrueCommission
+  // fired) needs accruing first. We DON'T auto-accrue silently because
+  // that would mask state-machine bugs; instead, hint the user.
+  var rec = getCommissionStatusForDeal(dealId);
+  if (!rec) {
+    if (deal && deal.won) {
+      addToast('Commission not yet accrued for this deal. Re-mark Won to accrue, then try again.', 'error');
+    } else {
+      addToast('Commission can only be paid on a Won deal', 'error');
+    }
+    return;
+  }
+
+  // Phase 3 contract: paying an accrued deal directly is blocked.
+  if (rec.state === 'accrued') {
+    var rule = (typeof getEffectiveRuleForRep === 'function')
+      ? getEffectiveRuleForRep(deal ? deal.rep : null, deal ? deal.branch : null)
+      : { realisationGate: 'unknown' };
+    addToast('Commission must be realised first (gate: ' + rule.realisationGate + ')', 'error');
+    return;
+  }
+
+  // realised ↔ paid toggle
+  var oldState = rec.state;
+  var newState = oldState === 'paid' ? 'realised' : 'paid';
+  var nowIso = new Date().toISOString();
+  var status = getCommissionStatus();
+  status[dealId] = Object.assign({}, rec, {
+    state: newState,
+    paidAt: newState === 'paid' ? nowIso : null,
+    paidBy: newState === 'paid' ? cu.name : null,
+    // Mark legacy origin so Phase 7's pay-run backfill can identify
+    // entries that were paid via the toggle (vs via a Pay Run).
+    payRunId: newState === 'paid' ? (rec.payRunId || null) : null,
+  });
+  saveCommissionStatus(status);
+
+  // Legacy in-page audit subsection still reads spartan_commission_audit.
+  // Translate to the old vocabulary so its rendering stays unchanged.
+  var legacyAudit = getCommissionAudit();
+  legacyAudit.unshift({
+    timestamp: nowIso,
     dealId: dealId,
     dealTitle: deal ? deal.title : dealId,
     repName: deal ? deal.rep : '—',
     value: deal ? deal.val : 0,
-    action: newStatus === 'paid' ? 'Marked PAID' : 'Marked UNPAID',
+    action: newState === 'paid' ? 'Marked PAID' : 'Marked UNPAID',
     by: cu.name,
-    oldStatus: oldStatus,
-    newStatus: newStatus,
+    oldStatus: oldState === 'paid' ? 'paid' : 'unpaid',
+    newStatus: newState === 'paid' ? 'paid' : 'unpaid',
   });
-  saveCommissionAudit(audit);
-  // Brief 2 Phase 2: also write to the unified audit log. The legacy
-  // spartan_commission_audit array stays in place — the commission tab's
-  // existing audit subsection still reads it directly.
+  saveCommissionAudit(legacyAudit);
+
+  // Unified audit log (Brief 2 Phase 2). Action key stays the same so
+  // existing Audit-page filtering by commission.paid / commission.unpaid
+  // continues to work. Before/after now expose state strings instead of
+  // the legacy paid/unpaid pair.
   if (typeof appendAuditEntry === 'function') {
     appendAuditEntry({
-      entityType:'commission', entityId:dealId,
-      action: newStatus === 'paid' ? 'commission.paid' : 'commission.unpaid',
-      summary: (newStatus === 'paid' ? 'Marked' : 'Reverted') + ' commission ' + newStatus.toUpperCase() + ': ' + (deal ? deal.title : dealId),
-      before:{ status:oldStatus }, after:{ status:newStatus },
+      entityType: 'commission', entityId: dealId,
+      action: newState === 'paid' ? 'commission.paid' : 'commission.unpaid',
+      summary: (newState === 'paid' ? 'Marked' : 'Reverted') + ' commission ' + (newState === 'paid' ? 'PAID' : 'UNPAID') + ': ' + (deal ? deal.title : dealId),
+      before: { state: oldState }, after: { state: newState },
       branch: deal ? (deal.branch || null) : null,
     });
   }
-  addToast('Commission ' + newStatus, newStatus === 'paid' ? 'success' : 'warning');
+  addToast('Commission ' + (newState === 'paid' ? 'paid' : 'reverted to realised'), newState === 'paid' ? 'success' : 'warning');
   renderPage();
 }
 

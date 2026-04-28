@@ -3321,8 +3321,7 @@ function _commitWon(dealId, targetStageId, selectedQuoteId) {
   });
   dbInsert('activities', actToDb(act, 'deal', dealId));
 
-  // Audit (Brief 2 Phase 2). Brief 4 Phase 3 will hook in here too to fire
-  // accrueCommission(deal). For now just the audit log.
+  // Audit (Brief 2 Phase 2).
   if (typeof appendAuditEntry === 'function') {
     appendAuditEntry({
       entityType:'deal', entityId:dealId, action:'deal.won_marked',
@@ -3332,6 +3331,24 @@ function _commitWon(dealId, targetStageId, selectedQuoteId) {
       metadata:{ quoteLabel: selectedQuote.label || null, quoteNumber: selectedQuote.quoteNumber || null },
       branch: deal.branch || null,
     });
+  }
+
+  // Brief 4 Phase 3: accrue commission on Won. accrueCommission is
+  // idempotent \u2014 re-running on an already-accrued deal is a no-op so a
+  // setState replay or Won-button double-click can't promote state
+  // inadvertently. If the rep's effective realisation gate is 'won'
+  // (default), accrueCommission also auto-realises so the deal is
+  // immediately payable via toggleCommissionPaid. The post-update deal
+  // record (with won/wonDate/val/wonQuoteId set) is passed so the rule
+  // lookup uses the correct rep+branch context.
+  if (typeof accrueCommission === 'function') {
+    var _accrueDeal = Object.assign({}, deal, {
+      won: true,
+      wonDate: todayStr,
+      wonQuoteId: selectedQuoteId,
+      val: wonPrice,
+    });
+    try { accrueCommission(_accrueDeal); } catch (e) { /* defensive \u2014 never block the won flow */ }
   }
 
   addToast('\ud83c\udf89 Deal Won!', 'success');
