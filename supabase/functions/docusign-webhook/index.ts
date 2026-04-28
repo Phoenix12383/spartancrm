@@ -128,11 +128,16 @@ Deno.serve(async (req) => {
   // when sending. If we haven't yet added a docusign_envelope_id column, fall
   // back to a metadata search — the CRM-side store of envelope→job mapping is
   // expected to be the system of record.
-  const { data: jobs } = await sb
+  const { data: jobs, error: lookupErr } = await sb
     .from('jobs')
-    .select('id, docusign_envelope_id, status, audit_log')
+    .select('id, docusign_envelope_id, status')
     .eq('docusign_envelope_id', envelopeId)
     .limit(1);
+
+  if (lookupErr) {
+    console.error('Job lookup failed:', lookupErr);
+    return new Response('ok', { status: 200, headers: corsHeaders });
+  }
 
   const job = jobs && jobs[0];
   if (!job) {
