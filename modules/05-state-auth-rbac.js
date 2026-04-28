@@ -561,6 +561,11 @@ let _state = {
   leadDetailId: null,
   contactDetailId: null,
   contactActivities: {}, // keyed by contactId, shared across deals/leads/contacts
+  // Twilio Voice (stage 2). activeCall is null when the rep isn't on a call;
+  // when set, the active-call banner renders. callLogs is loaded from
+  // public.call_logs by dbLoadAll and kept fresh by the realtime subscription.
+  activeCall: null,
+  callLogs: [],
   leads: JSON.parse(JSON.stringify(LEADS_DATA)),
   leadFilter: 'All',
   leadSearch: '',

@@ -328,6 +328,7 @@ async function dbLoadAll() {
       _sb.from('users').select('*'),
       _sb.from('activities').select('*'),
       _sb.from('job_files').select('*'),
+      _sb.from('call_logs').select('*').order('started_at', { ascending: false }).limit(500),
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -490,8 +491,20 @@ async function dbLoadAll() {
       localStorage.setItem('spartan_users', JSON.stringify(dbUsers));
     }
 
+    // ── Call logs (Twilio Voice, stage 2) ────────────────────────────────────
+    // Most recent 500 outbound + inbound calls. Browser-side renderers
+    // (call history list, deal-detail timeline filters) read from state.callLogs.
+    var callLogs = (results[14] && results[14].data) || [];
+    if (callLogs.length > 0 || (getState().callLogs || []).length > 0) {
+      // Only patch state when the slice actually changed — avoids the cascading
+      // re-render that the comment around line 440 warns about.
+      if (!_recordsEqual(callLogs, getState().callLogs || [])) {
+        setState({ callLogs: callLogs }, { skipSync: true });
+      }
+    }
+
     _dbReady = true;
-    console.log('[Spartan] Loaded from Supabase:', contacts.length, 'contacts,', leads.length, 'leads,', deals.length, 'deals,', jobs.length, 'jobs');
+    console.log('[Spartan] Loaded from Supabase:', contacts.length, 'contacts,', leads.length, 'leads,', deals.length, 'deals,', jobs.length, 'jobs,', callLogs.length, 'call logs');
     return true;
   } catch(e) {
     console.error('[Spartan] DB load failed, using localStorage cache:', e);
@@ -583,6 +596,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'invoices'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'factory_orders'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'users'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'call_logs'}, function(){ dbLoadAll(); })
     .subscribe(function(status){ console.log('[Spartan] Realtime:', status); });
 }
 
