@@ -4,6 +4,235 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════════
+// UNIFIED AUDIT LOG (Module 01 — primitive only, Brief 2 Phase 1)
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Forensic record of who changed what, when, on any entity. Single localStorage
+// key `spartan_audit_log` holds an array of entries, capped at 5000 entries
+// (oldest pruned on overflow with a `system.audit_pruned` marker entry left
+// behind so the gap is visible).
+//
+// This phase ships only the primitive: append, query, filter. No UI yet (that's
+// Phase 3) and no wiring into existing call sites yet (that's Phase 2). The
+// helper is safe to call from any code path including during boot — guards
+// against missing getCurrentUser() with a 'system' fallback.
+//
+// Entry shape:
+//   id          'aud_' + Date.now() + '_' + 6-char random
+//   timestamp   ISO string (server-trustable enough; clock skew is fine)
+//   userId      from getCurrentUser() or 'system' if no user context
+//   userName    same source
+//   entityType  'deal' | 'contact' | 'lead' | 'job' | 'invoice' |
+//               'user' | 'settings' | 'commission' | 'rbac' |
+//               'integration' | 'system'
+//   entityId    string or null (some actions like settings have no entity)
+//   action      key from AUDIT_ACTIONS
+//   summary     single human-readable line for the UI table
+//   before      object snapshot of changed fields, or null
+//   after       object snapshot of changed fields, or null
+//   metadata    action-specific extras: {source:'drag'}, {competitor:'X'}, etc.
+//   branch      copied from current user or entity for state scoping
+
+// Canonical action vocabulary. Adding a new audit action requires adding its
+// key here first so the UI knows how to render it. Keys are dot-prefixed by
+// entity type for grep-ability.
+var AUDIT_ACTIONS = Object.freeze({
+  // Deal lifecycle
+  'deal.stage_changed':       'Stage changed',
+  'deal.field_edited':        'Deal edited',
+  'deal.won_marked':          'Deal won',
+  'deal.lost_marked':         'Deal lost',
+  'deal.won_unwound':         'Won deal cancelled',
+  'deal.quote_selected':      'Won quote selected',
+  // Contact + lead
+  'contact.field_edited':     'Contact edited',
+  'contact.created':          'Contact created',
+  'lead.field_edited':        'Lead edited',
+  'lead.created':             'Lead created',
+  'lead.converted':           'Lead converted to deal',
+  // Job + invoice
+  'job.field_edited':         'Job edited',
+  'job.status_changed':       'Job status changed',
+  'job.cad_saved':            'CAD design saved',
+  'job.final_signed':         'Final design signed',
+  'job.cm_completed':         'Check measure completed',
+  'invoice.created':          'Invoice created',
+  'invoice.sent':             'Invoice sent',
+  'invoice.paid':             'Invoice paid',
+  // Users + RBAC
+  'user.created':             'User created',
+  'user.role_changed':        'User role changed',
+  'user.activated':           'User activated',
+  'user.deactivated':         'User deactivated',
+  'user.login':               'User logged in',
+  'user.permissions_changed': 'User permissions changed',
+  'rbac.role_changed':        'Role permissions changed',
+  // Settings
+  'settings.template_edited': 'Email/SMS template edited',
+  'settings.status_edited':   'Custom status edited',
+  'settings.field_edited':    'Custom field edited',
+  'settings.tag_edited':      'Tag edited',
+  'settings.lost_reason_edited': 'Lost reasons edited',
+  'settings.phone_edited':    'Phone & IVR settings edited',
+  // Commission
+  'commission.rules_updated': 'Commission rules updated',
+  'commission.accrued':       'Commission accrued',
+  'commission.realised':      'Commission realised',
+  'commission.paid':          'Commission marked paid',
+  'commission.unpaid':        'Commission marked unpaid',
+  'commission.clawed_back':   'Commission clawed back',
+  'commission.pay_run_finalised':  'Pay run finalised',
+  'commission.pay_run_voided':     'Pay run voided',
+  'commission.pay_run_backfilled': 'Pay run backfilled',
+  // Integrations
+  'integration.connected':      'Integration connected',
+  'integration.disconnected':   'Integration disconnected',
+  'integration.credential_changed': 'Integration credentials changed',
+  // System / housekeeping
+  'system.audit_pruned':           'Audit log pruned',
+  'system.commission_state_migrated': 'Commission state migrated',
+});
+
+var AUDIT_LOG_KEY = 'spartan_audit_log';
+var AUDIT_LOG_CAP = 5000;
+var AUDIT_PRUNE_BATCH = 1000;
+
+// Read the full audit log from localStorage. Always returns an array (never
+// null) so callers can chain .filter without guards.
+function _readAuditLog() {
+  try {
+    var raw = localStorage.getItem(AUDIT_LOG_KEY);
+    if (!raw) return [];
+    var arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }
+}
+
+function _writeAuditLog(arr) {
+  try { localStorage.setItem(AUDIT_LOG_KEY, JSON.stringify(arr)); } catch (e) {}
+}
+
+// Public — append a single audit entry. Fills in id/timestamp/userId/userName
+// from current context. Mirrors to Supabase if `_sb` is available; failure to
+// mirror is logged once but never throws. Returns the persisted entry so the
+// caller can reference its id (e.g. for later correlation).
+function appendAuditEntry(entry) {
+  if (!entry || !entry.action) return null;
+
+  var cu = (typeof getCurrentUser === 'function') ? (getCurrentUser() || {}) : {};
+  var nowIso = new Date().toISOString();
+  var rand = Math.random().toString(36).slice(2, 8);
+
+  var fullEntry = {
+    id:         entry.id || ('aud_' + Date.now() + '_' + rand),
+    timestamp:  entry.timestamp || nowIso,
+    userId:     entry.userId || cu.id || 'system',
+    userName:   entry.userName || cu.name || 'System',
+    entityType: entry.entityType || null,
+    entityId:   entry.entityId || null,
+    action:     entry.action,
+    summary:    entry.summary || (AUDIT_ACTIONS[entry.action] || entry.action),
+    before:     (entry.before === undefined) ? null : entry.before,
+    after:      (entry.after === undefined) ? null : entry.after,
+    metadata:   entry.metadata || null,
+    branch:     entry.branch || cu.branch || null,
+  };
+
+  var log = _readAuditLog();
+
+  // Retention: if the log would exceed the cap, drop the oldest batch and
+  // leave a marker entry behind so the gap is visible in the timeline. The
+  // marker is recorded BEFORE the new entry so it sits chronologically with
+  // the deletion event.
+  if (log.length >= AUDIT_LOG_CAP) {
+    var removed = log.splice(0, AUDIT_PRUNE_BATCH);
+    var firstTs = (removed[0] && removed[0].timestamp) || '';
+    var lastTs  = (removed[removed.length - 1] && removed[removed.length - 1].timestamp) || '';
+    var pruneMarker = {
+      id:         'aud_' + Date.now() + '_prune_' + Math.random().toString(36).slice(2, 6),
+      timestamp:  nowIso,
+      userId:     'system',
+      userName:   'System',
+      entityType: 'system',
+      entityId:   null,
+      action:     'system.audit_pruned',
+      summary:    'Pruned ' + removed.length + ' oldest audit entries (' + firstTs.slice(0,10) + ' → ' + lastTs.slice(0,10) + ')',
+      before:     null,
+      after:     { droppedCount: removed.length, fromTimestamp: firstTs, toTimestamp: lastTs },
+      metadata:   null,
+      branch:     null,
+    };
+    log.push(pruneMarker);
+    if (typeof dbInsert === 'function' && typeof _sb !== 'undefined' && _sb) {
+      try { dbInsert('audit_log', _auditEntryToDb(pruneMarker)); } catch (e) {}
+    }
+  }
+
+  log.push(fullEntry);
+  _writeAuditLog(log);
+
+  // Mirror to Supabase. Soft dependency — table may not exist yet (the
+  // SQL migration ships in Phase 2/3), in which case dbInsert errors get
+  // swallowed once via the existing _dbWarnOnce helper in 01-persistence.js.
+  if (typeof dbInsert === 'function' && typeof _sb !== 'undefined' && _sb) {
+    try { dbInsert('audit_log', _auditEntryToDb(fullEntry)); } catch (e) {}
+  }
+
+  return fullEntry;
+}
+
+// snake_case mapping for Supabase. Mirrors the actToDb / dealToDb pattern
+// from 01-persistence.js. Keep in sync with the SQL schema in Phase 2/3.
+function _auditEntryToDb(e) {
+  return {
+    id:          e.id,
+    timestamp:   e.timestamp,
+    user_id:     e.userId,
+    user_name:   e.userName,
+    entity_type: e.entityType,
+    entity_id:   e.entityId,
+    action:      e.action,
+    summary:     e.summary,
+    before:      e.before,
+    after:       e.after,
+    metadata:    e.metadata,
+    branch:      e.branch,
+  };
+}
+
+// Public — query the audit log. Optional filter shape:
+//   {entityType, entityId, userId, action, from, to}
+// `from` / `to` are ISO date strings (inclusive on both ends). Returns
+// entries newest-first. With no filter, returns everything (capped by the
+// log itself, not by the call).
+function getAuditLog(filter) {
+  filter = filter || {};
+  var log = _readAuditLog();
+  var out = log.filter(function(e) {
+    if (filter.entityType && e.entityType !== filter.entityType) return false;
+    if (filter.entityId && e.entityId !== filter.entityId) return false;
+    if (filter.userId && e.userId !== filter.userId) return false;
+    if (filter.action && e.action !== filter.action) return false;
+    if (filter.from && e.timestamp < filter.from) return false;
+    if (filter.to && e.timestamp > filter.to) return false;
+    return true;
+  });
+  // Newest first
+  out.sort(function(a, b) { return (b.timestamp || '').localeCompare(a.timestamp || ''); });
+  return out;
+}
+
+// Public — convenience wrapper for the inline audit timeline on entity
+// detail views. Equivalent to getAuditLog({entityType, entityId}).
+function getAuditForEntity(entityType, entityId) {
+  return getAuditLog({ entityType: entityType, entityId: entityId });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// END Unified Audit Log
+// ══════════════════════════════════════════════════════════════════════════════
+
 // ── STATE ─────────────────────────────────────────────────────────────────────
 // ROLE-BASED ACCESS CONTROL (RBAC)
 var ALL_ROLES = [
