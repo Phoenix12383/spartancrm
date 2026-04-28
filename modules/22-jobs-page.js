@@ -425,7 +425,7 @@ function renderJobDetail() {
       +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Time</label>'
       +'<select class="sel" onchange="updateJobField(\''+job.id+'\',\'cmBookedTime\',this.value)">'
       +'<option value="">Select\u2026</option>'
-      +['AM','PM','8:00','9:00','10:00','11:00','12:00','13:00','14:00','15:00','16:00'].map(function(t){return '<option value="'+t+'"'+(job.cmBookedTime===t?' selected':'')+'>'+t+'</option>';}).join('')
+      +['08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','13:00','13:30','14:00','14:30','15:00','15:30','16:00'].map(function(t){return '<option value="'+t+'"'+(job.cmBookedTime===t?' selected':'')+'>'+formatTime12(t)+'</option>';}).join('')
       +'</select></div>'
       +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Assigned To</label>'
       +'<select class="sel" onchange="updateJobField(\''+job.id+'\',\'cmAssignedTo\',this.value)">'
