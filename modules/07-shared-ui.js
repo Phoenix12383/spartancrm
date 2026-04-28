@@ -52,6 +52,7 @@ const PATHS = {
   scheduler:'M3 6a2 2 0 012-2h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6z|M8 2v4|M16 2v4|M3 10h18',
   timesheets:'M12 2a10 10 0 100 20 10 10 0 000-20z|M12 6v6l4 2',
   reports:'M18 20V10|M12 20V4|M6 20v-6',
+  audit:'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z|M14 2v6h6|M10 14l2 2 4-4',
   settings:'M12 15a3 3 0 100-6 3 3 0 000 6z|M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z',
   plus:'M12 5v14|M5 12h14', search:'M11 17a6 6 0 100-12 6 6 0 000 12z|M21 21l-4.35-4.35',
   bell:'M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9|M13.73 21a2 2 0 01-3.46 0',
@@ -428,19 +429,19 @@ function renderSidebar(){
   const mode = crmMode || 'sales';
   const salesNav=[
     ['dashboard','Dashboard'],['contacts','Contacts'],['leads','Leads'],['deals','Deals'],['won','Won Deals'],['calendar','Calendar'],['invoicing','Invoicing'],['commission','Commission'],
-    ['email','Email'],['phone','Phone'],['reports','Reports'],['map','Schedule Map'],['settings','Settings'],
+    ['email','Email'],['phone','Phone'],['reports','Reports'],['audit','Audit'],['map','Schedule Map'],['settings','Settings'],
   ];
   const jobsNav=[
-    ['jobdashboard','Dashboard'],['jobs','Jobs'],['finalsignoff','Final Sign Off'],['schedule','Install Schedule'],['capacity','Smart Planner'],['cmmap','CM Schedule Map'],['weeklyrev','Weekly Revenue'],['invoicing','Invoicing'],['jobsettings','Settings'],
+    ['jobdashboard','Dashboard'],['jobs','Jobs'],['finalsignoff','Final Sign Off'],['schedule','Install Schedule'],['capacity','Smart Planner'],['cmmap','CM Schedule Map'],['weeklyrev','Weekly Revenue'],['invoicing','Invoicing'],['audit','Audit'],['jobsettings','Settings'],
   ];
   const factoryNav=[
-    ['factorydash','Dashboard'],['prodqueue','Job Queue'],['prodboard','Production Board'],['factorybom','BOM & Cut Sheets'],['factorycap','Capacity Planner'],['factorydispatch','Dispatch'],
+    ['factorydash','Dashboard'],['prodqueue','Job Queue'],['prodboard','Production Board'],['factorybom','BOM & Cut Sheets'],['factorycap','Capacity Planner'],['factorydispatch','Dispatch'],['audit','Audit'],
   ];
   const accountsNav=[
-    ['accdash','Dashboard'],['accoutstanding','Outstanding'],['accbills','Supplier Bills'],['accweekly','Weekly In vs Out'],['acccashflow','Cash Flow'],['accrecon','Reconciliation'],['accbranch','Branch P&L'],['accxero','Xero Integration'],
+    ['accdash','Dashboard'],['accoutstanding','Outstanding'],['accbills','Supplier Bills'],['accweekly','Weekly In vs Out'],['acccashflow','Cash Flow'],['accrecon','Reconciliation'],['accbranch','Branch P&L'],['accxero','Xero Integration'],['audit','Audit'],
   ];
   const serviceNav=[
-    ['servicelist','Service Calls'],['servicemap','Service Scheduler'],['svcschedule','Install Openings'],['invoicing','Invoicing'],['jobsettings','Settings'],
+    ['servicelist','Service Calls'],['servicemap','Service Scheduler'],['svcschedule','Install Openings'],['invoicing','Invoicing'],['audit','Audit'],['jobsettings','Settings'],
   ];
   const nav = mode === 'jobs' ? jobsNav : mode === 'service' ? serviceNav : mode === 'factory' ? factoryNav : mode === 'accounts' ? accountsNav : salesNav;
   // Filter nav items by permissions
