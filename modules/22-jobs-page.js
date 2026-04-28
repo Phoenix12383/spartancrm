@@ -384,13 +384,18 @@ function renderJobDetail() {
     var cu = getCurrentUser() || {};
     var isManager = cu.role === 'admin' || cu.role === 'sales_manager';
 
+    var cmDoneForDesign = !!job.cmCompletedAt;
     tabContent = '<div class="card" style="padding:20px">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
-      +'<div><h4 style="font-size:16px;font-weight:700;margin:0">\ud83d\udd12 Original Design <span style="font-size:12px;font-weight:400;color:#6b7280">(Locked)</span></h4>'
-      +'<p style="color:#6b7280;font-size:12px;margin:4px 0 0">Approved design from deal. Changes require sales manager password.</p></div>'
+      +'<div><h4 style="font-size:16px;font-weight:700;margin:0">\ud83d\udd12 Original Design <span style="font-size:12px;font-weight:400;color:#6b7280">(Locked'+(cmDoneForDesign?' \u2014 CM complete':'')+')</span></h4>'
+      +'<p style="color:#6b7280;font-size:12px;margin:4px 0 0">'+(cmDoneForDesign?'CM is complete \u2014 Original Design is now read-only. All design changes must go through the <a href="#" onclick="event.preventDefault();setState({jobDetailTab:\'final_design\'})" style="color:#c41230;font-weight:600">Final Design</a> tab to keep a clean audit trail.':'Approved design from deal. Changes require sales manager password.')+'</p></div>'
       +'<div style="display:flex;gap:8px">'
       +'<button onclick="openCadDesigner(\'job\',\''+job.id+'\',\'design\')" class="btn-w" style="font-size:12px;gap:4px">\ud83d\udc41 View in CAD</button>'
-      +(isManager ? '<button onclick="openCadDesigner(\'job\',\''+job.id+'\',\'design\')" class="btn-r" style="font-size:12px;gap:4px">\ud83d\udd13 Edit Design (Manager)</button>' : '<button onclick="var pw=prompt(\'Enter sales manager password to edit:\');if(pw===\'spartan2026\'){openCadDesigner(\'job\',\''+job.id+'\',\'design\');}else if(pw!==null){addToast(\'Incorrect password\',\'error\');}" class="btn-w" style="font-size:12px;gap:4px;color:#9ca3af">\ud83d\udd10 Request Edit Access</button>')
+      +(cmDoneForDesign
+        ? '<button onclick="setState({jobDetailTab:\'final_design\'})" class="btn-r" style="font-size:12px;gap:4px">\u2192 Final Design tab</button>'
+        : (isManager
+          ? '<button onclick="openCadDesigner(\'job\',\''+job.id+'\',\'design\')" class="btn-r" style="font-size:12px;gap:4px">\ud83d\udd13 Edit Design (Manager)</button>'
+          : '<button onclick="var pw=prompt(\'Enter sales manager password to edit:\');if(pw===\'spartan2026\'){openCadDesigner(\'job\',\''+job.id+'\',\'design\');}else if(pw!==null){addToast(\'Incorrect password\',\'error\');}" class="btn-w" style="font-size:12px;gap:4px;color:#9ca3af">\ud83d\udd10 Request Edit Access</button>'))
       +'</div></div>';
 
     if (hasCadData) {
