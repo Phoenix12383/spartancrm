@@ -2980,6 +2980,15 @@ function moveDealToStage(dealId, stageId, opts) {
     by: (getCurrentUser() || { name: 'Admin' }).name, done: false, dueDate: '',
   };
   var _wd = (stage && stage.isWon) ? new Date().toISOString().slice(0, 10) : (deal.wonDate || null);
+  // Brief 4 Phase 2: track stage entry timestamps so the commission engine's
+  // age-penalty calculation can derive daysToWin from the relevant
+  // "active sales engagement" stage entry (Quote Sent / Proposal Sent in
+  // the seed pipelines). Most-recent entry wins on re-entry — matches the
+  // intended semantics where a deal that bounces back into Quote Sent
+  // restarts its age clock for penalty purposes. Pre-Phase-2 deals
+  // without history fall back to deal.created in the calc engine.
+  var _stageHistory = Object.assign({}, deal.stageHistory || {});
+  _stageHistory[stageId] = new Date().toISOString();
   setState({
     deals: deals.map(d => d.id === dealId
       ? {
@@ -2987,11 +2996,12 @@ function moveDealToStage(dealId, stageId, opts) {
         won: !!(stage && stage.isWon),
         lost: !!(stage && stage.isLost),
         wonDate: _wd,
+        stageHistory: _stageHistory,
         activities: [act, ...(d.activities || [])]
       }
       : d)
   });
-  dbUpdate('deals', dealId, { sid: stageId, won: !!(stage && stage.isWon), lost: !!(stage && stage.isLost), won_date: _wd });
+  dbUpdate('deals', dealId, { sid: stageId, won: !!(stage && stage.isWon), lost: !!(stage && stage.isLost), won_date: _wd, stage_history: _stageHistory });
   dbInsert('activities', actToDb(act, 'deal', dealId));
   if (stage && stage.isWon) { addToast('🎉 Deal Won!', 'success'); }
   // Audit (Brief 2 Phase 2). The Won + Lost transitions write their own
