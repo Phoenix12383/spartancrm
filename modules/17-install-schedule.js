@@ -493,6 +493,61 @@ function markJobComplete(jobId) {
   addToast('Job completed! Final invoice sent.', 'success');
 }
 
+// ── Workflow stand-in actions (TESTING — will be auto-fired by integrations) ─
+// Each helper performs the same side-effects the production system would do
+// when the corresponding integration ships (Xero / Factory CRM / Mobile App).
+
+// Mark a payment as received and (optionally) advance the job's status. Used
+// by the Workflow Test buttons on the Overview tab. Marks cl_cm or cl_final
+// paid + auto-transitions per manual §3.
+function markPaymentReceived(jobId, claimId, nextStatus, note) {
+  var claims = getJobClaims(jobId);
+  claims = claims.map(function(c){
+    return c.id === claimId ? Object.assign({}, c, {status:'paid', paidDate:new Date().toISOString().slice(0,10)}) : c;
+  });
+  saveJobClaims(jobId, claims);
+  logJobAudit(jobId, 'Payment Received', claimId + ' (testing stand-in for Xero detection)');
+  if (nextStatus && typeof transitionJobStatus === 'function') {
+    transitionJobStatus(jobId, nextStatus, note || 'Auto-transition after payment received (testing)');
+  }
+  addToast('Payment recorded — status advanced.', 'success');
+  renderPage();
+}
+
+// Bookkeeper Path A — Job Complete (no service needed). Fires final 5% invoice
+// and transitions to g_final_payment per manual §4.8.
+function bookkeeperPathA(jobId) {
+  var job = (getState().jobs||[]).find(function(j){return j.id===jobId;});
+  if (!job) return;
+  // Generate final 5% invoice if not already
+  var claims = getJobClaims(jobId);
+  var finalClaim = claims.find(function(c){return c.id==='cl_final';});
+  if (finalClaim && finalClaim.status === 'pending') {
+    var due = new Date(Date.now() + 7*24*3600000).toISOString().slice(0,10);
+    generateJobInvoice(jobId, 'cl_final', 5, '5% Completion — Final Balance — ' + (job.jobNumber||''), due);
+  }
+  if (typeof transitionJobStatus === 'function') {
+    transitionJobStatus(jobId, 'g_final_payment', 'Bookkeeper Path A — job complete, final invoice issued');
+  }
+  logJobAudit(jobId, 'Path A — Complete', 'Bookkeeper marked job complete (no service needed). Final 5% invoice issued.');
+  addToast('Path A — final 5% invoice issued. Awaiting payment.', 'success');
+  renderPage();
+}
+
+// Bookkeeper Path B — Service Required. Routes to Service CRM service workflow.
+function bookkeeperPathB(jobId) {
+  if (typeof transitionJobStatus === 'function') {
+    transitionJobStatus(jobId, 'h_service_booked', 'Bookkeeper Path B — service work required');
+  }
+  logJobAudit(jobId, 'Path B — Service Required', 'Bookkeeper flagged service work. Routes to Service CRM.');
+  addToast('Path B — service flagged. Service CRM integration is TBD.', 'warning');
+  renderPage();
+}
+
+window.markPaymentReceived = markPaymentReceived;
+window.bookkeeperPathA = bookkeeperPathA;
+window.bookkeeperPathB = bookkeeperPathB;
+
 // Auto-generate pre-install invoice when install date is set
 function checkPreInstallInvoice(jobId) {
   var jobs = getState().jobs || [];

@@ -364,7 +364,70 @@ function renderJobDetail() {
   // Tab content
   var tabContent = '';
   if (tab === 'overview') {
-    tabContent = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
+    // ── Workflow Test Buttons (TESTING — will be auto-fired by integrations) ─
+    // Per the manual, these status changes happen automatically (Xero detects
+    // payment, Factory CRM moves through production, Mobile App taps Arrived/Complete).
+    // Until those integrations ship, admin can fire each step manually here.
+    var testActions = [];
+    var jid = job.id; var jn = job.jobNumber || jid;
+    switch (job.status) {
+      case 'c_awaiting_2nd_payment':
+        testActions.push({icon:'💰', label:'Mark 45% Payment Received', source:'Accounts CRM (Xero)', onclick:'markPaymentReceived(\''+jid+'\',\'cl_cm\',\'c1_final_sign_off\',\'45% received — moving to Final Sign Off\')'});
+        break;
+      case 'c2_order_schedule_standard':
+      case 'c3_order_schedule_service':
+        testActions.push({icon:'🏭', label:'Push to Factory — Material Order Placed', source:'Factory CRM', onclick:'transitionJobStatus(\''+jid+'\',\'d1_awaiting_material\',\'Pushed to factory — testing\');renderPage();'});
+        break;
+      case 'd1_awaiting_material':
+        testActions.push({icon:'📦', label:'Material Arrived at Factory', source:'Factory CRM', onclick:'transitionJobStatus(\''+jid+'\',\'d2_material_at_factory\',\'Material arrived — testing\');renderPage();'});
+        break;
+      case 'd2_material_at_factory':
+        testActions.push({icon:'✂️', label:'Cutting Started', source:'Factory CRM', onclick:'transitionJobStatus(\''+jid+'\',\'d3_cutting\',\'Cutting started — testing\');renderPage();'});
+        break;
+      case 'd3_cutting':
+        testActions.push({icon:'⚙️', label:'Milling / Steel / Welding Started', source:'Factory CRM', onclick:'transitionJobStatus(\''+jid+'\',\'d4_milling_steel_welding\',\'Milling started — testing\');renderPage();'});
+        break;
+      case 'd4_milling_steel_welding':
+        testActions.push({icon:'🔩', label:'Hardware / Revealing Started', source:'Factory CRM', onclick:'transitionJobStatus(\''+jid+'\',\'d5_hardware_revealing\',\'Hardware/revealing — testing\');renderPage();'});
+        break;
+      case 'd5_hardware_revealing':
+        testActions.push({icon:'🚚', label:'In Dispatch — Frames Ready to Leave', source:'Factory CRM', onclick:'transitionJobStatus(\''+jid+'\',\'e_dispatch_standard\',\'In dispatch — testing\');renderPage();'});
+        break;
+      case 'f_installing':
+        testActions.push({icon:'✅', label:'Install Complete — Move to Triage', source:'Mobile App (Crew Lead taps Complete)', onclick:'transitionJobStatus(\''+jid+'\',\'b_check_status\',\'Install complete — moving to bookkeeper triage\');renderPage();'});
+        break;
+      case 'b_check_status':
+        testActions.push({icon:'✅', label:'Path A — Job Complete (no service)', source:'Bookkeeper triage (manual §4.8)', onclick:'bookkeeperPathA(\''+jid+'\')', primary:true});
+        testActions.push({icon:'🛠️', label:'Path B — Service Required', source:'Bookkeeper triage (manual §4.8)', onclick:'if(confirm(\'Flag '+jn+' for service work? This will route to Service CRM.\'))bookkeeperPathB(\''+jid+'\')'});
+        break;
+      case 'g_final_payment':
+        testActions.push({icon:'💰', label:'Mark Final 5% Payment Received', source:'Accounts CRM (Xero)', onclick:'markPaymentReceived(\''+jid+'\',\'cl_final\',\'h_completed_standard\',\'Final payment received — job complete\')'});
+        break;
+    }
+    var workflowCard = '';
+    if (testActions.length > 0) {
+      workflowCard = '<div class="card" style="padding:0;margin-bottom:16px;border:2px dashed #c4b5fd;overflow:hidden">'
+        +'<div style="padding:12px 16px;background:linear-gradient(180deg,#faf5ff,#fff);border-bottom:1px solid #ede9fe;display:flex;align-items:center;gap:10px">'
+        +'<span style="font-size:18px">🧪</span>'
+        +'<div><div style="font-size:14px;font-weight:700;margin:0">Workflow Test Buttons</div>'
+        +'<div style="font-size:11px;color:#6d28d9;margin-top:2px">In production, these status changes auto-fire from the listed system. Until those integrations ship, click to advance manually.</div></div>'
+        +'</div>'
+        +'<div style="padding:14px 16px;display:flex;flex-direction:column;gap:8px">';
+      testActions.forEach(function(a){
+        workflowCard += '<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:#f9fafb;border:1px solid #f3f4f6;border-radius:8px">'
+          +'<span style="font-size:22px;flex-shrink:0">'+a.icon+'</span>'
+          +'<div style="flex:1;min-width:0">'
+          +'<div style="font-size:13px;font-weight:600;color:#111">'+a.label+'</div>'
+          +'<div style="font-size:11px;color:#9ca3af;margin-top:2px">Will be auto-fired by: <strong style="color:#6d28d9">'+a.source+'</strong></div>'
+          +'</div>'
+          +'<button onclick="'+a.onclick+'" class="'+(a.primary?'btn-r':'btn-w')+'" style="font-size:12px;padding:7px 14px;font-weight:600;white-space:nowrap;flex-shrink:0">Fire →</button>'
+          +'</div>';
+      });
+      workflowCard += '</div></div>';
+    }
+
+    tabContent = workflowCard
+      + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
       + '<div class="card" style="padding:20px"><h3 style="font-family:Syne,sans-serif;font-size:15px;font-weight:700;margin:0 0 12px">Site Conditions</h3>'
       + '<div style="display:grid;gap:10px;font-size:13px">'
       + '<div><span style="color:#6b7280">Access Notes:</span> ' + (job.accessNotes||'<span style="color:#d1d5db">None specified</span>') + '</div>'
