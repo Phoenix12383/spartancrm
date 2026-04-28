@@ -94,6 +94,11 @@ function dealToDb(d) {
     // Brief 5: deal-level type, independent of contact.type. Null is permitted on legacy rows;
     // backfill (Brief 5 Phase 3) will fill them. New deals must carry one of 'residential' | 'commercial'.
     deal_type:d.dealType||null,
+    // Brief 4 Phase 2: per-stage entry timestamps {[stageId]: isoTimestamp}
+    // populated by moveDealToStage. Used by the commission engine's age-
+    // penalty calculation. Empty/null on pre-Phase-2 rows; the calc
+    // engine falls back to created date when this is missing.
+    stage_history:d.stageHistory||null,
     tags:d.tags||[], activities:d.activities||[]};
 }
 function dbToDeal(r) {
@@ -109,6 +114,8 @@ function dbToDeal(r) {
     // Brief 5: deal-level type. Read as null when missing — backfill on boot will fill from contact.type
     // (Phase 3). Don't default to 'residential' here; that would short-circuit the backfill detection.
     dealType:r.deal_type||null,
+    // Brief 4 Phase 2: stage-entry timestamp map. Empty object on legacy rows.
+    stageHistory:r.stage_history||{},
     tags:r.tags||[], activities:r.activities||[]};
 }
 function leadToDb(l) {

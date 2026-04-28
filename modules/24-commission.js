@@ -257,8 +257,243 @@ function setRepRate(repName, pct) {
   renderPage();
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// CALC ENGINE (Brief 4 Phase 2)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// `calcDealCommission(deal)` is the new full-fat calc that applies all
+// configured factors and returns a breakdown the UI can render.
+//
+// Pipeline:
+//   1. exGst    = dealVal / 1.1
+//   2. baseRate = getEffectiveRuleForRep(deal.rep, deal.branch).baseRate
+//   3. multiplier = weighted-average product multiplier across the deal's
+//      relevant quote (wonQuoteId for won, activeQuoteId for open)
+//   4. volumeBonus = highest tripped bonus from this rep's PRIOR won deals
+//      in the same calendar month (subsequent-only — see gotcha below)
+//   5. agePenalty = applied when daysFromQuoteEntry > ageThresholdDays
+//   6. effectiveRate = max(0, baseRate + volumeBonusPct - agePenaltyPct)
+//   7. commission   = exGst × (effectiveRate / 100) × multiplier
+//
+// Volume bonus recursion: the brief flagged that "exceeds threshold → bonus"
+// is recursive (does the trigger deal itself benefit, or only the next
+// one?). Picking "subsequent only — never the trigger" — it's the only
+// choice without a time-paradox. We sum the rep's PRIOR won deals in the
+// month (wonDate strictly before this deal's wonDate) and ignore this
+// deal's own value when checking against the threshold.
+//
+// Age penalty fallback: pre-Phase-2 deals don't have stageHistory written.
+// `_getAgeAnchorDate(deal)` falls back to `deal.created` so legacy deals
+// don't get arbitrarily penalised by missing data. Fresh deals (created
+// after this PR ships) accumulate stage-entry timestamps via
+// `moveDealToStage` and get accurate age measurements.
+//
+// Product multiplier weighting: the brief specified `lineTotal` per
+// projectItem, but the actual quote shape stores only a quote-level
+// totalPrice — no per-item pricing. Weighting by item count is the
+// pragmatic substitute (each frame contributes equally to the average).
+// A future "weight by area" toggle could surface in Phase 5 Settings if
+// the team wants per-frame area weighting.
+
+// Whole-day diff between two ISO date strings (YYYY-MM-DD). Negative inputs
+// clamp to 0 — calc engine should never report negative ages.
+function _daysBetween(isoStart, isoEnd) {
+  if (!isoStart || !isoEnd) return null;
+  var s = new Date(String(isoStart).slice(0, 10) + 'T00:00:00Z').getTime();
+  var e = new Date(String(isoEnd  ).slice(0, 10) + 'T00:00:00Z').getTime();
+  if (isNaN(s) || isNaN(e)) return null;
+  return Math.max(0, Math.round((e - s) / 86400000));
+}
+
+// Resolve the "active sales engagement" stage entry timestamp for a deal.
+// The actual seed pipelines have no stage literally named QuoteBooked —
+// "Quote Sent" (residential s3) and "Proposal Sent" (commercial s9) are
+// the equivalents. We match on /quote|proposal/i so custom pipelines with
+// alternate naming (e.g. "Quote Issued") still work without code changes.
+// Returns ISO date (YYYY-MM-DD) or null. Falls back to deal.created when
+// stageHistory hasn't been populated yet.
+function _getAgeAnchorDate(deal) {
+  if (!deal) return null;
+  if (deal.stageHistory && typeof PIPELINES !== 'undefined') {
+    var pl = PIPELINES.find(function (p) { return p.id === deal.pid; });
+    if (pl && Array.isArray(pl.stages)) {
+      var ageStage = pl.stages.find(function (s) {
+        return /quote|proposal/i.test(s.name || '');
+      });
+      if (ageStage && deal.stageHistory[ageStage.id]) {
+        return String(deal.stageHistory[ageStage.id]).slice(0, 10);
+      }
+    }
+  }
+  return (deal.created || '').slice(0, 10) || null;
+}
+
+// Compute the weighted-average product multiplier across the deal's
+// relevant quote. Returns 1.0 (multiplier identity) when no quote / no
+// items are present. See the section comment above for the
+// "weight by item count" rationale.
+function _computeProductMultiplier(deal, productMultipliers) {
+  productMultipliers = productMultipliers || [];
+  var multByKey = {};
+  productMultipliers.forEach(function (m) {
+    if (m && m.productKey) multByKey[m.productKey] = (typeof m.multiplier === 'number') ? m.multiplier : 1.0;
+  });
+  var defaultMult = (multByKey['_default'] != null) ? multByKey['_default'] : 1.0;
+
+  // Pick the relevant quote: won → wonQuoteId; open → activeQuoteId; else first.
+  var quotes = (deal && Array.isArray(deal.quotes)) ? deal.quotes : [];
+  var quote = null;
+  if (deal && deal.wonQuoteId) quote = quotes.find(function (q) { return q && q.id === deal.wonQuoteId; });
+  if (!quote && deal && deal.activeQuoteId) quote = quotes.find(function (q) { return q && q.id === deal.activeQuoteId; });
+  if (!quote && quotes.length > 0) quote = quotes[0];
+  if (!quote || !Array.isArray(quote.projectItems) || quote.projectItems.length === 0) {
+    return defaultMult;
+  }
+
+  // Weighted average — each frame counts as 1 weight unit (no per-item
+  // pricing in the quote shape). productType missing on a frame falls
+  // through to the _default multiplier.
+  var totalWeight = 0, weightedSum = 0;
+  quote.projectItems.forEach(function (item) {
+    var weight = 1;
+    var pt = (item && item.productType) ? item.productType : '_default';
+    var mult = (multByKey[pt] != null) ? multByKey[pt] : defaultMult;
+    weightedSum += weight * mult;
+    totalWeight += weight;
+  });
+  return totalWeight > 0 ? weightedSum / totalWeight : defaultMult;
+}
+
+// Compute the rep's volume bonus for this deal. Subsequent-only: this
+// deal's own value never counts towards its own threshold. Reads the
+// rep's PRIOR won deals in the same calendar month (wonDate strictly
+// less than this deal's wonDate; if this deal isn't won yet, we use the
+// deal's `created` as the anchor for projection purposes).
+//
+// `allDeals` is injected so unit tests can pass a controlled deal array
+// without going through the global getState().
+function _computeVolumeBonusPct(deal, volumeBonuses, allDeals) {
+  if (!Array.isArray(volumeBonuses) || volumeBonuses.length === 0) return 0;
+  if (!deal || !deal.rep) return 0;
+  var anchorIso = (deal.wonDate || deal.created || '').slice(0, 10);
+  if (!anchorIso) return 0;
+  var anchorMonth = anchorIso.slice(0, 7);
+
+  if (!Array.isArray(allDeals)) {
+    allDeals = (typeof getState === 'function' && getState().deals) ? getState().deals : [];
+  }
+  var monthlyTotalExGst = 0;
+  allDeals.forEach(function (d) {
+    if (!d || d === deal || (deal.id && d.id === deal.id)) return; // skip self
+    if (d.rep !== deal.rep) return;
+    if (!d.won || !d.wonDate) return;
+    var wd = String(d.wonDate).slice(0, 10);
+    if (wd.slice(0, 7) !== anchorMonth) return;
+    if (wd >= anchorIso) return; // strictly prior
+    monthlyTotalExGst += (d.val || 0) / 1.1;
+  });
+
+  // Find the highest tripped bonus.
+  var sorted = volumeBonuses.slice().sort(function (a, b) {
+    return (b.threshold || 0) - (a.threshold || 0);
+  });
+  for (var i = 0; i < sorted.length; i++) {
+    if (monthlyTotalExGst >= (sorted[i].threshold || 0)) {
+      return sorted[i].bonusPct || 0;
+    }
+  }
+  return 0;
+}
+
+// Compute the age penalty for a deal. Returns {daysToWin, penaltyPct}.
+// daysToWin is null when we can't resolve the anchor date; in that case
+// no penalty applies.
+function _computeAgePenalty(deal, rule) {
+  var threshold = (rule && rule.ageThresholdDays != null) ? rule.ageThresholdDays : 0;
+  var penalty   = (rule && rule.agePenaltyPct   != null) ? rule.agePenaltyPct   : 0;
+  if (!threshold || !penalty) return { daysToWin: null, penaltyPct: 0 };
+  var anchor = _getAgeAnchorDate(deal);
+  // For open deals (no wonDate yet) the projection compares against today.
+  // For won deals it compares against the actual wonDate.
+  var endDate = (deal && deal.wonDate) ? deal.wonDate : new Date().toISOString().slice(0, 10);
+  var daysToWin = _daysBetween(anchor, endDate);
+  if (daysToWin == null) return { daysToWin: null, penaltyPct: 0 };
+  if (daysToWin <= threshold) return { daysToWin: daysToWin, penaltyPct: 0 };
+  return { daysToWin: daysToWin, penaltyPct: penalty };
+}
+
+// Public — compute commission for a deal record. Returns the full
+// breakdown shape Phase 6's UI will surface in the hover popover.
+// Pre-Phase-2 callers use the legacy `calcCommission(dealVal, repName)`
+// shim below — that returns the simpler {exGst, rate, commission} shape
+// without multipliers/bonuses/penalties (it doesn't have access to the
+// quote / wonDate / stageHistory it would need).
+function calcDealCommission(deal, opts) {
+  opts = opts || {};
+  if (!deal) {
+    return {
+      exGst: 0, baseRate: 0, productMultiplier: 1.0, volumeBonusPct: 0,
+      agePenaltyPct: 0, effectiveRate: 0, commission: 0,
+      // Legacy field — keeps {exGst,rate,commission} consumers working.
+      rate: 0,
+      breakdown: [],
+      meta: { reason: 'no-deal' },
+    };
+  }
+  var rules = getCommissionRules();
+  var rule  = getEffectiveRuleForRep(deal.rep, deal.branch);
+  var exGst = (deal.val || 0) / 1.1;
+  var baseRate = (typeof rule.baseRate === 'number') ? rule.baseRate : 0;
+
+  var productMultiplier = _computeProductMultiplier(deal, rules.productMultipliers || []);
+  var volumeBonusPct    = _computeVolumeBonusPct(deal, rules.volumeBonuses || [], opts.allDeals);
+  var ageInfo           = _computeAgePenalty(deal, rule);
+  var agePenaltyPct     = ageInfo.penaltyPct;
+
+  var effectiveRate = Math.max(0, baseRate + volumeBonusPct - agePenaltyPct);
+  var commission = exGst * (effectiveRate / 100) * productMultiplier;
+
+  // Build the breakdown array for the UI. Only include lines that actually
+  // affect the result so the popover stays compact for the common case.
+  var breakdown = [];
+  breakdown.push({ label: 'Ex-GST value', value: '$' + exGst.toFixed(2) });
+  breakdown.push({ label: 'Base rate',    value: baseRate + '%' });
+  if (volumeBonusPct > 0) {
+    breakdown.push({ label: 'Volume bonus (target hit)', value: '+' + volumeBonusPct + '%' });
+  }
+  if (agePenaltyPct > 0 && ageInfo.daysToWin != null) {
+    breakdown.push({ label: 'Age penalty (' + ageInfo.daysToWin + ' days)', value: '-' + agePenaltyPct + '%' });
+  }
+  breakdown.push({ label: 'Effective rate', value: effectiveRate + '%' });
+  if (productMultiplier !== 1.0) {
+    breakdown.push({ label: 'Product multiplier', value: '×' + parseFloat(productMultiplier.toFixed(3)) });
+  }
+  breakdown.push({ label: 'Commission', value: '$' + commission.toFixed(2) });
+
+  return {
+    exGst: exGst,
+    baseRate: baseRate,
+    productMultiplier: productMultiplier,
+    volumeBonusPct: volumeBonusPct,
+    agePenaltyPct: agePenaltyPct,
+    effectiveRate: effectiveRate,
+    commission: commission,
+    // Legacy field for backward compat with pre-Phase-2 consumers.
+    rate: baseRate,
+    breakdown: breakdown,
+    meta: { daysToWin: ageInfo.daysToWin },
+  };
+}
+
+// DEPRECATED — pre-Phase-2 wrapper. Returns the legacy {exGst, rate,
+// commission} shape using only the rep's base rate. Multipliers,
+// volume bonuses, and age penalties require the full deal record so
+// can't be computed from val + repName alone — call calcDealCommission(deal)
+// instead. Kept as a wrapper so the existing renderCommissionPage call
+// sites (rep cards, totals, deals table) keep working unchanged until
+// Phase 6 surfaces the breakdown in the UI.
 function calcCommission(dealVal, repName) {
-  var exGst = dealVal / 1.1;
+  var exGst = (dealVal || 0) / 1.1;
   var rate = getRepRate(repName);
   return { exGst: exGst, rate: rate, commission: exGst * rate / 100 };
 }
