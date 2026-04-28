@@ -48,24 +48,49 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Twilio has TWO mutually-exclusive status updates for ending a call:
+  //   - Status='canceled'  works on queued/ringing calls (not yet connected)
+  //   - Status='completed' works on in-progress calls (already connected)
+  // Sending the wrong one for the call's current state is a silent no-op.
+  // We don't know the state from the browser side reliably, so try cancel
+  // first (which handles the "rep clicks End while customer phone is still
+  // ringing" case — the most common cause of confusion). If that fails with
+  // an "invalid status transition" error, the call is already in-progress,
+  // so try completed.
+  let result = null;
+  let lastError = null;
+
   try {
-    // Twilio's update() with status='completed' is the official "kill this
-    // call now" signal. Returns the updated Call resource on success.
-    await client.calls(sid).update({ status: 'completed' });
-    res.status(200).json({ ok: true, sid });
+    result = await client.calls(sid).update({ status: 'canceled' });
   } catch (e) {
-    // Common errors:
-    //   - Call already ended (returns 20003 / 21220 — fine, no-op)
-    //   - Call not found (Twilio rejected with code 20404)
-    //   - Auth issue (shouldn't happen given env vars are validated)
-    const status = e && e.status ? e.status : 502;
-    const code = e && e.code ? e.code : 'unknown';
-    // 20003 / 21220 are "call already in a terminal state" — treat as success
-    if (status === 404 || (code && (String(code) === '20003' || String(code) === '21220'))) {
-      res.status(200).json({ ok: true, sid, alreadyEnded: true });
-      return;
-    }
-    console.error('[Spartan] hangup REST call failed:', e && e.message ? e.message : e, 'code=' + code);
-    res.status(status).json({ error: 'Failed to terminate call: ' + (e.message || 'unknown'), code });
+    lastError = e;
   }
+
+  if (!result) {
+    // canceled failed — try completed (call might be already in-progress)
+    try {
+      result = await client.calls(sid).update({ status: 'completed' });
+      lastError = null;
+    } catch (e) {
+      lastError = e;
+    }
+  }
+
+  if (result) {
+    res.status(200).json({ ok: true, sid, action: result.status === 'canceled' ? 'canceled' : 'completed' });
+    return;
+  }
+
+  // Both attempts failed. Common reasons:
+  //   - Call already ended on its own (treated as success — idempotent)
+  //   - Call SID doesn't exist (404)
+  //   - Auth issue (shouldn't happen if env vars are validated)
+  const status = (lastError && lastError.status) ? lastError.status : 502;
+  const code = (lastError && lastError.code) ? lastError.code : 'unknown';
+  if (status === 404 || String(code) === '20003' || String(code) === '21220' || String(code) === '21210') {
+    res.status(200).json({ ok: true, sid, alreadyEnded: true });
+    return;
+  }
+  console.error('[Spartan] hangup REST call failed:', lastError && lastError.message ? lastError.message : lastError, 'code=' + code);
+  res.status(status).json({ error: 'Failed to terminate call: ' + ((lastError && lastError.message) || 'unknown'), code });
 }
