@@ -160,6 +160,15 @@ function gmailHandleToken(resp) {
     // Connect-Gmail also unlocks the phone module — kick off device registration
     // so the rep doesn't have to refresh after granting OAuth permission.
     if (typeof twilioInit === 'function') twilioInit();
+    // Audit (Brief 2 Phase 2). Don't include the access token in metadata —
+    // it's a credential. Just record that a connection happened + the email.
+    if (typeof appendAuditEntry === 'function') {
+      appendAuditEntry({
+        entityType:'integration', entityId:'gmail', action:'integration.connected',
+        summary:'Gmail connected: ' + profile.email,
+        after:{ provider:'gmail', email:profile.email, name:profile.name },
+      });
+    }
   }).catch(() => {
     var gmailUser = { email: 'Connected', name: 'Gmail User', picture: '' };
     setState({ gmailConnected: true, gmailToken: resp.access_token, gmailUser: gmailUser });
@@ -229,8 +238,17 @@ function gmailDisconnect() {
   _calEvents = [];
   _calFetched = false;
   _calLoading = false;
+  // Capture before state for audit (the gmailUser email, etc.) before we clear it.
+  var prevUser = getState().gmailUser;
   setState({ gmailConnected: false, gmailToken: null, gmailUser: null });
   addToast('Gmail disconnected', 'warning');
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'integration', entityId:'gmail', action:'integration.disconnected',
+      summary:'Gmail disconnected' + (prevUser && prevUser.email ? ': ' + prevUser.email : ''),
+      before: prevUser ? { provider:'gmail', email:prevUser.email } : null,
+    });
+  }
 }
 
 // ── Gmail Inbox & Sent Sync ──────────────────────────────────────────────────

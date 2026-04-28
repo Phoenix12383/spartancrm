@@ -912,6 +912,18 @@ function saveLeadEdit() {
   // Persist the activity row alongside the lead (leads slice gets upserted via setState sync).
   try { dbInsert('activities', actToDb(actObj, 'lead', id)); } catch(e) {}
 
+  // Audit (Brief 2 Phase 2). Group all field changes into a single entry.
+  if (typeof appendAuditEntry === 'function') {
+    var beforeObj = {}; var afterObj = {};
+    changes.forEach(function (ch) { beforeObj[ch.field] = ch.from; afterObj[ch.field] = ch.to; });
+    appendAuditEntry({
+      entityType: 'lead', entityId: id, action: 'lead.field_edited',
+      summary: 'Edited ' + (lead.fn||'') + ' ' + (lead.ln||'') + ' — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : ''),
+      before: beforeObj, after: afterObj,
+      branch: updated.branch || null,
+    });
+  }
+
   addToast('Saved — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : '') + ' updated', 'success');
 }
 
