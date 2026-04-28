@@ -101,12 +101,31 @@ Deno.serve(async (req) => {
     }
   }
 
-  let body: SendRequest;
+  let body: SendRequest & { action?: string };
   try {
     body = await req.json();
   } catch (_e) {
     return new Response(JSON.stringify({ ok: false, error: 'Invalid JSON body' }), {
       status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+
+  // ── Debug action: list templates in the account ──
+  // POST {action:"list-templates"} returns the templates available so we can
+  // verify the template ID. Remove or gate behind a debug flag for production.
+  if (body.action === 'list-templates') {
+    let dbgToken: string;
+    try { dbgToken = await getDocuSignAccessToken(); }
+    catch (e) {
+      return new Response(JSON.stringify({ ok: false, error: 'Auth failed', detail: String(e) }), {
+        status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+    const tplsUrl = `${getDocuSignApiBase()}/v2.1/accounts/${getDocuSignAccountId()}/templates`;
+    const dr = await fetch(tplsUrl, { headers: { 'Authorization': `Bearer ${dbgToken}` } });
+    const dj = await dr.json();
+    return new Response(JSON.stringify(dj, null, 2), {
+      status: dr.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   }
 
