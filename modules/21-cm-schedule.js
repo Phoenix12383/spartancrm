@@ -144,6 +144,12 @@ function renderCMMapPage() {
   }
   left += '</div></div>';
 
+  // Compute fresh suggestions BEFORE rendering cards so they reflect latest bookings
+  cmSuggestions = {};
+  unbooked.forEach(function(j){
+    cmSuggestions[j.id] = suggestCmSlot(j, booked, installers);
+  });
+
   // ── Right: Unbooked + proximity clusters + booking ────────────────────────
   var right = '<div style="display:flex;flex-direction:column;gap:14px">';
 
@@ -217,12 +223,6 @@ function renderCMMapPage() {
     right += '</div>';
   }
   right += '</div>';
-
-  // Re-compute suggestions fresh each render so capacity reflects latest bookings
-  cmSuggestions = {};
-  unbooked.forEach(function(j){
-    cmSuggestions[j.id] = suggestCmSlot(j, booked, installers);
-  });
 
   // Per-installer CM load with capacity %
   right += '<div class="card" style="padding:14px">'
