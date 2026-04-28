@@ -1,0 +1,91 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/twilio/ivr-route — IVR digit handler (A4).
+//
+// Twilio calls this when a customer presses a digit on the IVR menu set up by
+// /incoming. We look up the team for that digit, find all active users in
+// the matching role(s), and simul-ring all of them via stacked <Client>
+// elements inside a single <Dial>.
+//
+// First rep to pick up gets the call. On <Dial timeout> (no one answers in
+// 25s) or invalid digit, fall through to voicemail.
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { validateTwilioRequest } from '../_lib/twilioValidate.js';
+import { getServerSupabase } from '../_lib/supabase.js';
+import { findUsersForTeamDigit, IVR_MENU } from '../_lib/twilioRouting.js';
+
+const NO_ANSWER_VOICEMAIL_GREETING = 'Sorry, no one is available to take your call right now. Please leave a message after the beep.';
+const INVALID_DIGIT_GREETING = 'Sorry, that was not a valid option. Please leave a message after the beep.';
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    res.status(405).send('Method not allowed');
+    return;
+  }
+  if (!validateTwilioRequest(req, req.body)) {
+    res.status(403).send('Invalid Twilio signature');
+    return;
+  }
+
+  const body = req.body || {};
+  const digit = String(body.Digits || '').trim();
+
+  // Invalid / unknown digit → voicemail directly
+  if (!digit || !IVR_MENU[digit]) {
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Nicole">${escapeXml(INVALID_DIGIT_GREETING)}</Say>
+  <Record action="/api/twilio/voicemail" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed"/>
+  <Say voice="Polly.Nicole">Thanks. Goodbye.</Say>
+</Response>`;
+    res.setHeader('Content-Type', 'text/xml');
+    res.status(200).send(twiml);
+    return;
+  }
+
+  const supabase = getServerSupabase();
+  const teamUsers = await findUsersForTeamDigit(supabase, digit);
+
+  // Build simul-ring TwiML. If no users on that team, go straight to voicemail.
+  if (teamUsers.length === 0) {
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Nicole">Sorry, no one is currently available in that team. Please leave a message after the beep.</Say>
+  <Record action="/api/twilio/voicemail" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed"/>
+  <Say voice="Polly.Nicole">Thanks. Goodbye.</Say>
+</Response>`;
+    res.setHeader('Content-Type', 'text/xml');
+    res.status(200).send(twiml);
+    return;
+  }
+
+  // Stack a <Client> per user inside one <Dial>. First to accept wins;
+  // others get cancelled by Twilio automatically.
+  const clientsXml = teamUsers
+    .map(u => `<Client>spartan_${escapeXml(u.id)}</Client>`)
+    .join('\n    ');
+
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial timeout="25" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed">
+    ${clientsXml}
+  </Dial>
+  <Say voice="Polly.Nicole">${escapeXml(NO_ANSWER_VOICEMAIL_GREETING)}</Say>
+  <Record action="/api/twilio/voicemail" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed"/>
+  <Say voice="Polly.Nicole">Thanks. Goodbye.</Say>
+</Response>`;
+
+  res.setHeader('Content-Type', 'text/xml');
+  res.status(200).send(twiml);
+}
+
+function escapeXml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}

@@ -566,6 +566,10 @@ let _state = {
   // public.call_logs by dbLoadAll and kept fresh by the realtime subscription.
   activeCall: null,
   callLogs: [],
+  // Stage 3 — set when an inbound call is ringing this rep's browser. The
+  // incoming-call banner reads this to render the Answer/Decline UI.
+  // Cleared on accept (promotes to activeCall), decline, or auto-timeout.
+  incomingCall: null,
   leads: JSON.parse(JSON.stringify(LEADS_DATA)),
   leadFilter: 'All',
   leadSearch: '',
