@@ -321,6 +321,17 @@ function sendFinalDesignDocuSign(jobId) {
 
   if (!_sb) { addToast('Supabase client not initialised — cannot send DocuSign', 'error'); return; }
 
+  // Dev-mode auto-advance: bring status forward to c1_final_sign_off so the
+  // visible workflow lines up with what's about to happen (envelope sent →
+  // customer signs → webhook flips c1 → c2). In production, this only runs
+  // when the UI gate already permits the click, which happens at c1.
+  if ((typeof isDevMode === 'function') && isDevMode()) {
+    var advanceFrom = ['a_check_measure', 'c_awaiting_2nd_payment', 'c4_date_change_hold'];
+    if (advanceFrom.indexOf(job.status) >= 0 && typeof transitionJobStatus === 'function') {
+      transitionJobStatus(jobId, 'c1_final_sign_off', 'Final Design DocuSign sent (Dev auto-advance)');
+    }
+  }
+
   addToast('Sending DocuSign envelope…', 'info');
 
   _sb.functions.invoke('docusign-send', {

@@ -701,6 +701,32 @@ window.addEventListener('message', function(event) {
       return;
     }
 
+    // \u2500\u2500 Dev-mode auto-advance \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    // In production each status transition is driven by an external event
+    // (Accounts CRM detects the 45% paid, Mobile App fires "Tap Complete",
+    // etc.). Until those integrations ship, dev mode advances the status
+    // here so the visible workflow keeps up with what the user just did in
+    // CAD. No-op when dev mode is off.
+    if (typeof isDevMode === 'function' && isDevMode()) {
+      var jobAfter = (getState().jobs || []).find(function(j) { return j.id === _cadModal.entityId; });
+      var curStatus = jobAfter ? jobAfter.status : null;
+      if (_cadModal.mode === 'survey') {
+        // Save in survey mode = surveyor finished the CM. Advance to
+        // c_awaiting_2nd_payment unless we're already past that point.
+        var surveyAdvanceFrom = ['a_check_measure', 'c4_date_change_hold'];
+        if (surveyAdvanceFrom.indexOf(curStatus) >= 0 && typeof transitionJobStatus === 'function') {
+          transitionJobStatus(_cadModal.entityId, 'c_awaiting_2nd_payment', 'CM saved (Dev auto-advance)');
+        }
+      } else if (_cadModal.mode === 'final') {
+        // Save in final mode = Sales Manager prepared the Final Design.
+        // Advance to c1_final_sign_off unless we're already at or past it.
+        var finalAdvanceFrom = ['a_check_measure', 'c_awaiting_2nd_payment', 'c4_date_change_hold'];
+        if (finalAdvanceFrom.indexOf(curStatus) >= 0 && typeof transitionJobStatus === 'function') {
+          transitionJobStatus(_cadModal.entityId, 'c1_final_sign_off', 'Final Design saved (Dev auto-advance)');
+        }
+      }
+    }
+
     var modeCopy = _cadModal.mode === 'survey' ? 'Survey' :
                    _cadModal.mode === 'final'  ? 'Final design' : 'Design';
     addToast('\u2705 ' + modeCopy + ' saved', 'success');
