@@ -817,6 +817,24 @@ async function transitionJobStatus(jobId, toStatus, note) {
   if (updates.finalSignedAt) dbChanges.final_signed_at = updates.finalSignedAt;
   dbUpdate('jobs', jobId, dbChanges);
 
+  // Brief 4 Phase 3: realise commission via the alternate finalSignedAt
+  // path (when sign-off happens via status transition c1 → c2/c3 rather
+  // than the markFinalDesignSigned button). Same gate-match check as the
+  // markFinalDesignSigned hook in 03-jobs-workflow.js — only fire if the
+  // deal's configured gate is 'final_signed'. Idempotent; never blocks
+  // the status transition on error.
+  if (updates.finalSignedAt && job.dealId && typeof realiseCommission === 'function' && typeof getEffectiveRuleForRep === 'function') {
+    try {
+      var _deal2 = (getState().deals || []).find(function (d) { return d.id === job.dealId; });
+      if (_deal2) {
+        var _rule2 = getEffectiveRuleForRep(_deal2.rep, _deal2.branch);
+        if (_rule2 && _rule2.realisationGate === 'final_signed') {
+          realiseCommission(job.dealId, 'final_signed');
+        }
+      }
+    } catch (e) {}
+  }
+
   // Log activity
   var act = {
     id: 'a' + Date.now() + Math.random().toString(36).slice(2,6),
