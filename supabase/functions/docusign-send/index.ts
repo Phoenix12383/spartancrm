@@ -180,27 +180,39 @@ Deno.serve(async (req) => {
   const flags = body.flags || {};
   const signHereTabs = buildSignHereTabs(flags);
 
+  // Build a composite envelope (no template). All recipient + tab config
+  // lives in this request — DocuSign just routes the envelope. Avoids the
+  // fragility of a template that depends on UI-side tab-to-recipient
+  // assignment surviving every edit.
   const envelopeDef = {
     emailSubject: body.emailSubject || `Action Required: Sign your Spartan Final Design — Job ${body.jobId}`,
     emailBlurb:   body.emailBlurb   || `Hi ${body.customerName},\n\nYour Spartan Double Glazing Final Design is ready for your signature. Please review the attached document and sign each clause to authorise production.`,
-    status: 'sent', // 'created' = draft; 'sent' = fire immediately
-    templateId: templateId,
-    templateRoles: [{
-      email: body.customerEmail,
-      name:  body.customerName,
-      roleName: 'Customer',
-      tabs: { signHereTabs: signHereTabs },
-    }],
-    // Override the template's placeholder document with the CAD-generated PDF.
-    // documentId '1' is DocuSign's convention for the first/only document in
-    // a single-document envelope — matches the template's document.
+    status: 'sent',
     documents: [{
       documentBase64: body.pdfBase64,
       name: `Final Design — ${body.jobId}.pdf`,
       fileExtension: 'pdf',
       documentId: '1',
     }],
+    recipients: {
+      signers: [{
+        email:  body.customerEmail,
+        name:   body.customerName,
+        roleName: 'Customer',
+        recipientId: '1',
+        routingOrder: '1',
+        tabs: {
+          signHereTabs: signHereTabs.map(t => ({
+            ...t,
+            documentId:  '1',
+            recipientId: '1',
+          })),
+        },
+      }],
+    },
   };
+  // (Template kept around for backwards compat — not used in this flow.)
+  void templateId;
 
   const apiBase = getDocuSignApiBase();
   const accountId = getDocuSignAccountId();
