@@ -32,7 +32,7 @@
         console.log('Spartan CRM - Loading Logical Modules');
         console.log('========================================\n');
         
-        const BUILD_VERSION = '20260429k';
+        const BUILD_VERSION = '20260429m';
 
         // Logical loading order based on dependencies
         const modules = [
@@ -87,7 +87,10 @@
             
             // Layer 11: Calendar
             '27-calendar-page.js',
-            
+
+            // Layer 11b: Customer signature (DocuSign envelopes)
+            '29-docusign.js',
+
             // Layer 12: Initialization (MUST BE LAST)
             '99-init.js'
         ];

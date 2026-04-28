@@ -677,8 +677,31 @@ function renderJobDetail() {
         // Signature sub-section (legacy markFinalDesignSigned button — DocuSign is Step 6)
         tabContent += '<div style="margin-top:14px;padding-top:12px;border-top:1px dashed #e5e7eb">'
           +'<h6 style="font-size:12px;font-weight:700;margin:0 0 6px;color:#374151">\u270d\ufe0f Client Signature</h6>'
-          +'<div style="font-size:11px;color:#6b7280;margin-bottom:10px">Once the client has signed the final design, mark it as signed to advance the job to installation. <em>DocuSign integration is coming in Step 6.</em></div>'
-          +'<button onclick="markFinalDesignSigned(\''+job.id+'\')" class="btn-r" style="font-size:13px;padding:8px 20px;gap:6px"'+(isManager?'':' disabled title="Manager only"')+'>\u270d\ufe0f Mark as Signed & Advance</button>'
+          +'<div style="font-size:11px;color:#6b7280;margin-bottom:10px">Send the Final Design to the customer for DocuSign e-signature (per manual §6.5). The 7 clauses are placed via anchor strings; conditional clauses (Render Warning, Special Colour, Variation) are only included when the matching job flag is set.</div>'
+          +(function(){
+            var dsRec = (typeof getDocuSignEnvelopeForJob === 'function') ? getDocuSignEnvelopeForJob(job.id) : null;
+            var html = '';
+            if (dsRec && dsRec.envelopeId) {
+              var dsDone = !!dsRec.signedAt || dsRec.status === 'completed';
+              var dsBad  = dsRec.status === 'declined' || dsRec.status === 'voided';
+              var dsCol  = dsDone ? '#15803d' : dsBad ? '#b91c1c' : '#1d4ed8';
+              var dsBg   = dsDone ? '#f0fdf4' : dsBad ? '#fef2f2' : '#eff6ff';
+              html += '<div style="padding:10px 12px;background:'+dsBg+';border:1px solid '+dsCol+'40;border-radius:8px;margin-bottom:10px">'
+                + '<div style="font-size:11px;font-weight:700;color:'+dsCol+'">\ud83d\udcdd DocuSign envelope ' + (dsRec.status||'sent').toUpperCase() + '</div>'
+                + '<div style="font-size:10px;color:#6b7280;margin-top:2px;font-family:monospace">' + dsRec.envelopeId + '</div>'
+                + (dsRec.sentAt   ? '<div style="font-size:10px;color:#9ca3af;margin-top:1px">Sent ' + new Date(dsRec.sentAt).toLocaleString('en-AU') + '</div>' : '')
+                + (dsRec.signedAt ? '<div style="font-size:10px;color:#15803d;margin-top:1px">Signed ' + new Date(dsRec.signedAt).toLocaleString('en-AU') + '</div>' : '')
+                + '</div>';
+            }
+            html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
+              + '<button onclick="sendFinalDesignDocuSign(\'' + job.id + '\')" class="btn-r" style="font-size:13px;padding:8px 20px;gap:6px"' + (isManager?'':' disabled title="Manager only"') + '>\ud83d\udce4 ' + (dsRec && dsRec.envelopeId ? 'Resend' : 'Send') + ' DocuSign</button>'
+              + (dsRec && dsRec.envelopeId
+                  ? '<button onclick="refreshDocuSignStatus(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px">\ud83d\udd04 Refresh Status</button>'
+                  : '')
+              + '</div>';
+            return html;
+          })()
+          +'<button onclick="markFinalDesignSigned(\''+job.id+'\')" class="btn-w" style="font-size:11px;padding:6px 12px;gap:4px;color:#9ca3af" title="Manual stand-in if DocuSign is not deployed"'+(isManager?'':' disabled')+'>\u270d\ufe0f Manual Stand-in (no DocuSign)</button>'
           +'</div>'
           +'</div>';
       } else {

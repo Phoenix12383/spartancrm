@@ -1,0 +1,16 @@
+# Spartan CRM — Supabase project config
+# This file ties the local repo to the Supabase project so `supabase deploy`
+# works without needing `--project-ref` every time.
+
+project_id = "sedpmsgiscowohpqdjza"
+
+[functions.docusign-send]
+# Customer-facing data (PDF, customer email) is forwarded to DocuSign.
+# The function authenticates with DocuSign via JWT (RSA private key in secrets).
+verify_jwt = true
+
+[functions.docusign-webhook]
+# DocuSign Connect calls this — incoming requests don't carry a Supabase JWT,
+# so we disable Supabase's JWT verification. We verify DocuSign's HMAC signature
+# inside the function instead.
+verify_jwt = false
