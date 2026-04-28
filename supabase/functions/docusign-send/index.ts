@@ -110,11 +110,11 @@ Deno.serve(async (req) => {
     });
   }
 
-  // ── Debug actions ──
-  // POST {action:"list-templates"}                           → list templates
-  // POST {action:"get-envelope", envelopeId:"..."}           → envelope status
-  // Useful for verifying setup; gate behind a debug flag in production.
-  if (body.action === 'list-templates' || body.action === 'get-envelope') {
+  // ── Debug actions (gate behind a debug flag in production) ──
+  //   POST {action:"list-templates"}                            → list templates
+  //   POST {action:"get-envelope",  envelopeId:"..."}            → envelope status
+  //   POST {action:"get-template",  templateId?:"..."}           → template tabs/recipients
+  if (body.action === 'list-templates' || body.action === 'get-envelope' || body.action === 'get-template') {
     let dbgToken: string;
     try { dbgToken = await getDocuSignAccessToken(); }
     catch (e) {
@@ -126,14 +126,23 @@ Deno.serve(async (req) => {
     let dbgUrl = '';
     if (body.action === 'list-templates') {
       dbgUrl = `${acctBase}/templates`;
-    } else {
+    } else if (body.action === 'get-envelope') {
       const envId = (body as { envelopeId?: string }).envelopeId;
       if (!envId) {
-        return new Response(JSON.stringify({ ok: false, error: 'envelopeId required for get-envelope' }), {
+        return new Response(JSON.stringify({ ok: false, error: 'envelopeId required' }), {
           status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
       dbgUrl = `${acctBase}/envelopes/${envId}?include=recipients`;
+    } else { // get-template
+      const tplId = (body as { templateId?: string }).templateId
+                    || Deno.env.get('DOCUSIGN_TEMPLATE_FINAL_DESIGN');
+      if (!tplId) {
+        return new Response(JSON.stringify({ ok: false, error: 'templateId required' }), {
+          status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      dbgUrl = `${acctBase}/templates/${tplId}/recipients?include_tabs=true`;
     }
     const dr = await fetch(dbgUrl, { headers: { 'Authorization': `Bearer ${dbgToken}` } });
     const dj = await dr.json();
