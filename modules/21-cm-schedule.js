@@ -218,9 +218,10 @@ function renderCMMapPage() {
   }
   right += '</div>';
 
-  // Pre-compute suggestions for all unbooked jobs
+  // Re-compute suggestions fresh each render so capacity reflects latest bookings
+  cmSuggestions = {};
   unbooked.forEach(function(j){
-    if (!cmSuggestions[j.id]) cmSuggestions[j.id] = suggestCmSlot(j, booked, installers);
+    cmSuggestions[j.id] = suggestCmSlot(j, booked, installers);
   });
 
   // Per-installer CM load with capacity %
