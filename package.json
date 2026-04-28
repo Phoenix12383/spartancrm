@@ -1,0 +1,14 @@
+{
+  "name": "spartancrm",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Spartan CRM — static frontend + Vercel serverless backend for Twilio Voice/SMS integration.",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "twilio": "^5.3.0"
+  }
+}
