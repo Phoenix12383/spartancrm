@@ -59,22 +59,37 @@ function _setDocuSignEnvelopeForJob(jobId, rec) {
 }
 
 // ─── Final Design PDF builder (jsPDF) ──────────────────────────────────────
-// Builds a one-page "Final Design Sign-Off" PDF carrying:
-//   - Job + customer header
-//   - Frame summary table from cadFinalData (or fallback)
-//   - Sign-Off Clauses section with anchor strings the DocuSign template
-//     references. Conditional anchors only printed when the corresponding
-//     job flag is set.
+// Builds a Final Design Sign-Off PDF and tracks the exact (page, x, y) of
+// each interactive field as it draws. Returns:
+//   {
+//     pdfBase64,
+//     tabs: {
+//       signHereTabs: [...],   // 4-7 sigs depending on job flags
+//       fullNameTabs: [...],   // auto-fills customer name in the header
+//       dateSignedTabs: [...], // auto-fills today's date when customer signs
+//     }
+//   }
 //
-// Phoenix's CAD will eventually generate a richer Final Design PDF with the
-// same anchor convention; once it does, we can stop generating client-side
-// and just forward the CAD-produced PDF.
+// Coordinates are in DocuSign pixel units (72 dpi, top-left origin). jsPDF
+// uses millimetres so we convert at recording time. Tab positions are
+// tracked per page; doc.addPage() is wrapped to keep the page counter
+// consistent.
+//
+// Returns null on jsPDF not loaded.
 function buildFinalDesignPdfBase64(job) {
   if (!window.jspdf || !window.jspdf.jsPDF) {
     addToast('jsPDF not loaded — cannot generate Final Design PDF', 'error');
     return null;
   }
   var doc = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4' });
+
+  // mm → DocuSign pixels (72 px per inch)
+  var MM_PX = 72 / 25.4;
+  var px = function(mm) { return String(Math.round(mm * MM_PX)); };
+
+  var page = 1;
+  var addPage = function() { doc.addPage(); page++; };
+
   var contacts = (getState().contacts || []);
   var contact = contacts.find(function(c) { return c.id === (job.contactId || job.cid); }) || {};
   var customerName = ((contact.fn || '') + ' ' + (contact.ln || '')).trim() || 'Customer';
@@ -91,12 +106,39 @@ function buildFinalDesignPdfBase64(job) {
   doc.text('Final Design Sign-Off', 14, 25);
   doc.setLineWidth(0.5); doc.line(14, 28, 196, 28);
 
-  // Customer + job summary
+  // Customer + job summary. We draw a placeholder line under "Customer:"
+  // and let DocuSign overlay the auto-fill name tab on top of it. This
+  // way the customer sees their name pre-filled by DocuSign at signing.
   doc.setFontSize(10); doc.setFont('helvetica', 'bold');
-  doc.text('Customer:', 14, 36); doc.setFont('helvetica', 'normal'); doc.text(customerName, 40, 36);
+  doc.text('Customer:', 14, 36);
+  doc.setFont('helvetica', 'normal');
+  doc.text(customerName, 40, 36);  // visible default; DocuSign overlays the tab
+
   doc.setFont('helvetica', 'bold'); doc.text('Job:',      14, 42); doc.setFont('helvetica', 'normal'); doc.text(String(job.jobNumber || job.id), 40, 42);
   doc.setFont('helvetica', 'bold'); doc.text('Address:',  14, 48); doc.setFont('helvetica', 'normal'); doc.text(addr || '—', 40, 48, { maxWidth: 156 });
   doc.setFont('helvetica', 'bold'); doc.text('Frames:',   14, 54); doc.setFont('helvetica', 'normal'); doc.text(String(frames.length), 40, 54);
+
+  // ─── Tab capture ────────────────────────────────────────────────────────
+  // FullName: auto-fills the customer's name (read-only) in the header line
+  var signHereTabs = [];
+  var fullNameTabs = [{
+    tabLabel:   'sp_customer_name',
+    pageNumber: String(page),
+    xPosition:  px(40),       // matches "doc.text(customerName, 40, 36)"
+    yPosition:  px(36 - 4),   // -4 mm because text baseline vs. tab top-left
+    locked:     'true',       // read-only, customer cannot edit
+    font:       'Helvetica',
+    fontSize:   'Size10',
+  }];
+  // DateSigned: auto-fills the date the customer clicks Sign. Top-right.
+  var dateSignedTabs = [{
+    tabLabel:   'sp_date_signed',
+    pageNumber: String(page),
+    xPosition:  px(160),
+    yPosition:  px(36 - 4),
+    font:       'Helvetica',
+    fontSize:   'Size10',
+  }];
 
   // Frames table
   var y = 64;
@@ -118,7 +160,7 @@ function buildFinalDesignPdfBase64(job) {
     entry_door:'Entry Door', stacker_door:'Stacker Door',
   };
   frames.forEach(function(f, i) {
-    if (y > 200) { doc.addPage(); y = 20; }
+    if (y > 200) { addPage(); y = 20; }
     doc.text(String(i + 1),                                      14, y);
     doc.text(TYPE_LABELS[f.productType] || f.productType || '—', 24, y, { maxWidth: 38 });
     doc.text((f.width || 0) + ' × ' + (f.height || 0),           64, y);
@@ -128,7 +170,7 @@ function buildFinalDesignPdfBase64(job) {
   });
 
   // Sign-Off Clauses section
-  if (y > 200) { doc.addPage(); y = 20; }
+  if (y > 200) { addPage(); y = 20; }
   y += 6;
   doc.setFontSize(12); doc.setFont('helvetica', 'bold');
   doc.text('Sign-Off Clauses', 14, y); y += 4;
@@ -136,83 +178,92 @@ function buildFinalDesignPdfBase64(job) {
   doc.setFontSize(8); doc.setFont('helvetica', 'normal');
   doc.text('You must sign each applicable clause to authorise production.', 14, y); y += 6;
 
-  // Helper: print a numbered clause + invisible anchor on the right margin.
-  // Anchor printed in white at 1pt so DocuSign can find it without the
-  // customer seeing visual clutter.
-  function clause(num, title, bodyLines, anchor) {
-    if (y > 245) { doc.addPage(); y = 20; }
+  // Helper: print a numbered clause and capture the signature tab position.
+  // Visible "Sign here →" label, with the actual signature tab placed
+  // alongside it (right margin) at known pixel coordinates.
+  function clause(num, title, bodyLines, label) {
+    if (y > 250) { addPage(); y = 20; }
+    var clauseStartY = y;
     doc.setFontSize(9); doc.setFont('helvetica', 'bold');
     doc.text(num + '. ' + title, 14, y); y += 4;
     doc.setFont('helvetica', 'normal');
-    bodyLines.forEach(function(line) { doc.text(line, 14, y, { maxWidth: 150 }); y += 4; });
-    // Anchor (white, 1pt — invisible to the customer)
-    doc.setTextColor(255, 255, 255); doc.setFontSize(1);
-    doc.text(anchor, 165, y - 4);
-    doc.setTextColor(0, 0, 0); doc.setFontSize(8);
-    y += 6;
+    bodyLines.forEach(function(line) { doc.text(line, 14, y, { maxWidth: 130 }); y += 4; });
+    // Visible "Sign here →" pointer + an underline where the sig will land
+    var sigY = clauseStartY + 1;
+    doc.setFontSize(8); doc.setTextColor(120, 120, 120);
+    doc.text('Sign here →', 138, sigY + 3);
+    doc.setTextColor(0, 0, 0);
+    doc.setLineWidth(0.2); doc.line(160, sigY + 5, 196, sigY + 5);
+    // Capture the DocuSign tab at that position
+    signHereTabs.push({
+      tabLabel:   label,
+      pageNumber: String(page),
+      xPosition:  px(160),
+      yPosition:  px(sigY - 3),  // top-left of the sig widget
+    });
+    y += 4; // spacing before next clause
   }
 
   clause('1', 'Opening Direction',
     ['I confirm the opening direction of each sash is as shown in the design above.'],
-    '\\sp_sig_opening_dir\\');
+    'sp_sig_opening_dir');
   clause('2', 'Glass Type',
     ['I confirm the glass specification listed for each pane is what I have selected.'],
-    '\\sp_sig_glass_type\\');
+    'sp_sig_glass_type');
   clause('3', 'Override Clause',
     ['I acknowledge that this Final Design supersedes the original quotation.',
-     'Once signed, the dimensions, configuration, colours, glass, hardware, and pricing',
-     'in this Final Design are the binding specification for manufacture and install.'],
-    '\\sp_sig_override\\');
+     'Once signed, the spec above is binding for manufacture and install.'],
+    'sp_sig_override');
 
   if (job.renderWarning) {
     clause('4', 'Render Warning',
-      ['My property has rendered brick. I acknowledge that during demolition, render',
-       'around the existing window opening may chip or crack. Spartan is not liable',
-       'for render repairs unless agreed in writing as a separate quote.'],
-      '\\sp_sig_render_warning\\');
+      ['My property has rendered brick. I acknowledge that during demolition,',
+       'render around the existing opening may chip or crack. Spartan is not',
+       'liable for render repairs unless agreed in writing.'],
+      'sp_sig_render_warning');
   }
   if (job.specialColour) {
     clause('5', 'Special Colour Lead Time',
-      ['One or more frames use a special (non-standard) colour. I accept the additional',
-       '4–6 week lead time and will not hold Spartan to the standard install date.'],
-      '\\sp_sig_special_colour\\');
+      ['I accept the additional 4–6 week lead time for special-colour frames.'],
+      'sp_sig_special_colour');
   }
   if (job.hasVariation) {
     clause('6', 'Variation Acceptance',
-      ['I accept the variation in scope and price as detailed in the Variation Quote',
-       'I have signed separately. The new total price replaces the original quote price.'],
-      '\\sp_sig_variation\\');
+      ['I accept the variation as detailed in the separately-signed Variation Quote.'],
+      'sp_sig_variation');
   }
 
   clause('7', 'Production Authorisation',
-    ['I authorise Spartan Double Glazing to begin manufacturing the frames specified above.',
-     'I understand that once production starts, design changes may incur a Variation Quote',
-     'and additional fees, and that delays may apply.'],
-    '\\sp_sig_production_auth\\');
+    ['I authorise Spartan Double Glazing to begin manufacturing the frames above.',
+     'Design changes after production starts may incur a Variation Quote.'],
+    'sp_sig_production_auth');
 
   // Footer
-  if (y > 270) { doc.addPage(); y = 20; }
-  y += 6;
+  if (y > 270) { addPage(); y = 20; }
   doc.setFontSize(7); doc.setTextColor(120, 120, 120);
   doc.text('Spartan Double Glazing · ' + new Date().toLocaleDateString('en-AU') +
            ' · Job ' + (job.jobNumber || job.id),
            14, 285);
 
-  // Return base64. Use arraybuffer instead of datauristring — jsPDF's
+  // Return base64 + tabs. Use arraybuffer instead of datauristring — jsPDF's
   // datauristring is "data:application/pdf;filename=generated.pdf;base64,..."
-  // and a naive prefix-strip leaves "filename=...;base64," mixed into the
-  // payload, which DocuSign rejects with UNSPECIFIED_ERROR ("not a valid
-  // Base-64 string").
+  // and a naive prefix-strip leaves "filename=...;base64," mixed in, which
+  // DocuSign rejects with UNSPECIFIED_ERROR ("not a valid Base-64 string").
   var buf = doc.output('arraybuffer');
   var bytes = new Uint8Array(buf);
   var bin = '';
-  // Chunk the conversion to avoid blowing the call stack on large PDFs
-  // (apply() with a huge array can throw RangeError on some browsers).
   var CHUNK = 0x8000;
   for (var i = 0; i < bytes.length; i += CHUNK) {
     bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
   }
-  return btoa(bin);
+  return {
+    pdfBase64: btoa(bin),
+    tabs: {
+      signHereTabs:   signHereTabs,
+      fullNameTabs:   fullNameTabs,
+      dateSignedTabs: dateSignedTabs,
+    },
+  };
 }
 
 // ─── Main entry: send the Final Design DocuSign ────────────────────────────
@@ -232,9 +283,9 @@ function sendFinalDesignDocuSign(jobId) {
   if (!customerName) { addToast('Customer name is required on the contact', 'error'); return; }
   if (!customerEmail) { addToast('Customer email is required on the contact', 'error'); return; }
 
-  // Build PDF synchronously
-  var pdfBase64 = buildFinalDesignPdfBase64(job);
-  if (!pdfBase64) return;
+  // Build PDF and capture exact tab positions in one pass.
+  var pdfData = buildFinalDesignPdfBase64(job);
+  if (!pdfData || !pdfData.pdfBase64) return;
 
   if (!_sb) { addToast('Supabase client not initialised — cannot send DocuSign', 'error'); return; }
 
@@ -245,7 +296,8 @@ function sendFinalDesignDocuSign(jobId) {
       jobId: jobId,
       customerName: customerName,
       customerEmail: customerEmail,
-      pdfBase64: pdfBase64,
+      pdfBase64: pdfData.pdfBase64,
+      tabs: pdfData.tabs,    // programmatic placement: signHere/fullName/dateSigned
       flags: {
         renderWarning: !!job.renderWarning,
         specialColour: !!job.specialColour,

@@ -42,6 +42,24 @@ interface SendRequest {
     specialColour?: boolean;
     hasVariation?: boolean;
   };
+  // Optional programmatic tab placement. When provided, takes precedence
+  // over the anchor-based CLAUSE_TABS fallback. Pass any DocuSign tab type
+  // (signHereTabs, fullNameTabs, dateSignedTabs, textTabs, checkboxTabs,
+  // initialHereTabs, etc.) — the function attaches them to the Customer
+  // recipient as-is. Each tab needs documentId + pageNumber + xPosition +
+  // yPosition (or anchorString) and (optionally) tabLabel.
+  tabs?: {
+    signHereTabs?:     Array<Record<string, string>>;
+    initialHereTabs?:  Array<Record<string, string>>;
+    dateSignedTabs?:   Array<Record<string, string>>;
+    fullNameTabs?:     Array<Record<string, string>>;
+    emailAddressTabs?: Array<Record<string, string>>;
+    textTabs?:         Array<Record<string, string>>;
+    checkboxTabs?:     Array<Record<string, string>>;
+    numberTabs?:       Array<Record<string, string>>;
+    titleTabs?:        Array<Record<string, string>>;
+    companyTabs?:      Array<Record<string, string>>;
+  };
 }
 
 // Map of clause key → tabLabel + anchor string. Tab labels match the Data Labels
@@ -178,7 +196,37 @@ Deno.serve(async (req) => {
   }
 
   const flags = body.flags || {};
-  const signHereTabs = buildSignHereTabs(flags);
+
+  // Decide which tabs strategy to use:
+  //   1. If body.tabs is provided, use the caller's programmatic placement
+  //      (any DocuSign tab type with pageNumber + xPosition + yPosition or
+  //      anchorString). This is the preferred path for the Final Design
+  //      flow because the CRM knows exactly where it drew each clause.
+  //   2. Otherwise fall back to anchor-based tabs from CLAUSE_TABS, which
+  //      DocuSign locates by scanning the PDF for the matching anchor.
+  let recipientTabs: Record<string, Array<Record<string, string>>>;
+  if (body.tabs && Object.keys(body.tabs).length > 0) {
+    recipientTabs = {};
+    for (const [tabType, items] of Object.entries(body.tabs)) {
+      if (!Array.isArray(items) || items.length === 0) continue;
+      // Stamp documentId + recipientId on every tab so the caller can omit
+      // them. Single-document, single-signer envelope so both are '1'.
+      recipientTabs[tabType] = items.map((t) => ({
+        ...t,
+        documentId:  t.documentId  || '1',
+        recipientId: t.recipientId || '1',
+      }));
+    }
+  } else {
+    const signHereTabs = buildSignHereTabs(flags);
+    recipientTabs = {
+      signHereTabs: signHereTabs.map((t) => ({
+        ...t,
+        documentId:  '1',
+        recipientId: '1',
+      })),
+    };
+  }
 
   // Build a composite envelope (no template). All recipient + tab config
   // lives in this request — DocuSign just routes the envelope. Avoids the
@@ -201,13 +249,7 @@ Deno.serve(async (req) => {
         roleName: 'Customer',
         recipientId: '1',
         routingOrder: '1',
-        tabs: {
-          signHereTabs: signHereTabs.map(t => ({
-            ...t,
-            documentId:  '1',
-            recipientId: '1',
-          })),
-        },
+        tabs: recipientTabs,
       }],
     },
   };
