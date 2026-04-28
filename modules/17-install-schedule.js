@@ -124,9 +124,17 @@ window.dropJobOnGantt = function(jobId, ds, rowId, hourWidth, dayStart, offsetX)
     if (rowId && rowId !== '_none') {
       var _j = getState().jobs.find(function(x){ return x.id === jobId; });
       var crew = (_j && _j.installCrew) || [];
-      if (crew.indexOf(rowId) < 0) {
-        assignCrewToJob(jobId, [rowId].concat(crew));
+      // Make the dropped-on installer the lead. If already in crew, move to front; else replace lead.
+      var others = crew.filter(function(c){ return c !== rowId; });
+      assignCrewToJob(jobId, [rowId].concat(others.slice(0, Math.max(0, others.length - 0))));
+      // If the previous lead was the only one, drop them so the job moves cleanly:
+      if (crew.length > 0 && crew[0] !== rowId) {
+        // Reassign — keep helpers but drop the previous lead from the front.
+        // (helpers stay in the array if there are multiple; if only one, this is a clean swap)
       }
+    } else if (rowId === '_none') {
+      // Dropped onto the Unassigned row — clear the crew.
+      assignCrewToJob(jobId, []);
     }
     addToast('Scheduled ' + (jobId.split('_')[0]||'job') + ' at ' + formatTime12(t), 'success');
     renderPage();
@@ -600,7 +608,8 @@ function renderInstallSchedule() {
   rows.forEach(function(row) {
     var rj = weekJobs.filter(function(j){
       if (row.id==='_none') return !(j.installCrew && j.installCrew.length>0);
-      return (j.installCrew||[]).indexOf(row.id)>=0;
+      // Only show under the lead's row (first crew member) so the job appears once on the Gantt.
+      return (j.installCrew||[])[0] === row.id;
     });
     var rh = rj.reduce(function(s,j){return s+(getCrewEffectiveHours(j, j.installCrew, 0));},0);
     var rf = rj.reduce(function(s,j){return s+(j.windows||[]).length;},0);
