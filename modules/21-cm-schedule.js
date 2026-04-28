@@ -189,7 +189,7 @@ function renderCMMapPage() {
         right += '<div style="padding:10px 16px;border-bottom:1px solid #f3f4f6">'
           // Row 1: job number + name + age
           +'<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px">'
-          +'<span style="font-size:12px;font-weight:700;color:#c41230">'+(j.jobNumber||'')+'</span>'
+          +'<a href="#" onclick="event.preventDefault();setState({page:\'jobs\',jobDetailId:\''+j.id+'\',jobDetailTab:\'progress_claims\'})" style="font-size:12px;font-weight:700;color:#c41230;text-decoration:none;cursor:pointer" onmouseover="this.style.textDecoration=\'underline\'" onmouseout="this.style.textDecoration=\'none\'">'+(j.jobNumber||'')+'</a>'
           +'<span style="font-size:11px;color:#374151;margin:0 6px;flex:1;padding-left:6px">'+cn+'</span>'
           +'<span style="font-size:10px;color:#9ca3af">'+jobAge+'d</span>'
           +'</div>'
