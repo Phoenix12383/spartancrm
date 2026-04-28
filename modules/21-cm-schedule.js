@@ -199,7 +199,7 @@ function renderCMMapPage() {
           // Row 4: booking controls
           +'<div style="display:flex;gap:4px;align-items:center">'
           +'<select class="sel" style="font-size:10px;padding:2px 4px;flex:1" id="cmb_inst_'+j.id+'">'
-          +'<option value="">Installer</option>'
+          +'<option value="">— Select installer —</option>'
           +installers.map(function(inst){var sel=sug&&sug.installerId===inst.id?' selected':'';return '<option value="'+inst.id+'"'+sel+'>'+inst.name+'</option>';}).join('')
           +'</select>'
           +'<input type="date" class="inp" style="font-size:10px;padding:2px 4px;width:120px" id="cmb_date_'+j.id+'" value="'+(sug?sug.date:cmMapDate)+'">'
