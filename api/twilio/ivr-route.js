@@ -12,7 +12,8 @@
 
 import { validateTwilioRequest } from '../_lib/twilioValidate.js';
 import { getServerSupabase } from '../_lib/supabase.js';
-import { findUsersForTeamDigit, findAllActiveUsers, IVR_MENU } from '../_lib/twilioRouting.js';
+import { findAllActiveUsers } from '../_lib/twilioRouting.js';
+import { getPhoneSettings } from '../_lib/phoneSettings.js';
 
 const NO_ANSWER_VOICEMAIL_GREETING = 'Sorry, no one is available to take your call right now. Please leave a message after the beep.';
 const INVALID_DIGIT_GREETING = 'Sorry, that was not a valid option. Trying to reach anyone available now.';
@@ -32,15 +33,18 @@ export default async function handler(req, res) {
   const digit = String(body.Digits || '').trim();
 
   const supabase = getServerSupabase();
+  const settings = await getPhoneSettings();
+  const ivrMenu = settings.ivr_menu || {};
+  const voiceName = settings.voice_name || 'Polly.Nicole';
 
   // Invalid / unknown digit → ring every active user, then voicemail. Same
   // behaviour as the no-digit path in /incoming so callers who fat-finger
   // a key still reach a human if anyone's around.
-  if (!digit || !IVR_MENU[digit]) {
+  if (!digit || !ivrMenu[digit]) {
     const allUsers = await findAllActiveUsers(supabase);
     let twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Nicole">${escapeXml(INVALID_DIGIT_GREETING)}</Say>`;
+  <Say voice="${escapeXml(voiceName)}">${escapeXml(INVALID_DIGIT_GREETING)}</Say>`;
     if (allUsers.length > 0) {
       const clientsXml = allUsers
         .map(u => `<Client>spartan_${escapeXml(u.id)}</Client>`)
@@ -51,24 +55,34 @@ export default async function handler(req, res) {
   </Dial>`;
     }
     twiml += `
-  <Say voice="Polly.Nicole">${escapeXml(NO_ANSWER_VOICEMAIL_GREETING)}</Say>
+  <Say voice="${escapeXml(voiceName)}">${escapeXml(NO_ANSWER_VOICEMAIL_GREETING)}</Say>
   <Record action="/api/twilio/voicemail" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed"/>
-  <Say voice="Polly.Nicole">Thanks. Goodbye.</Say>
+  <Say voice="${escapeXml(voiceName)}">Thanks. Goodbye.</Say>
 </Response>`;
     res.setHeader('Content-Type', 'text/xml');
     res.status(200).send(twiml);
     return;
   }
 
-  const teamUsers = await findUsersForTeamDigit(supabase, digit);
+  // Look up active users for the matched team using the admin-configured roles.
+  const teamRoles = (ivrMenu[digit] && ivrMenu[digit].roles) || [];
+  let teamUsers = [];
+  if (teamRoles.length > 0) {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, name, email, role')
+      .in('role', teamRoles)
+      .eq('active', true);
+    if (!error && data) teamUsers = data;
+  }
 
   // Build simul-ring TwiML. If no users on that team, go straight to voicemail.
   if (teamUsers.length === 0) {
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Nicole">Sorry, no one is currently available in that team. Please leave a message after the beep.</Say>
+  <Say voice="${escapeXml(voiceName)}">Sorry, no one is currently available in that team. Please leave a message after the beep.</Say>
   <Record action="/api/twilio/voicemail" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed"/>
-  <Say voice="Polly.Nicole">Thanks. Goodbye.</Say>
+  <Say voice="${escapeXml(voiceName)}">Thanks. Goodbye.</Say>
 </Response>`;
     res.setHeader('Content-Type', 'text/xml');
     res.status(200).send(twiml);
@@ -86,9 +100,9 @@ export default async function handler(req, res) {
   <Dial timeout="25" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed">
     ${clientsXml}
   </Dial>
-  <Say voice="Polly.Nicole">${escapeXml(NO_ANSWER_VOICEMAIL_GREETING)}</Say>
+  <Say voice="${escapeXml(voiceName)}">${escapeXml(NO_ANSWER_VOICEMAIL_GREETING)}</Say>
   <Record action="/api/twilio/voicemail" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed"/>
-  <Say voice="Polly.Nicole">Thanks. Goodbye.</Say>
+  <Say voice="${escapeXml(voiceName)}">Thanks. Goodbye.</Say>
 </Response>`;
 
   res.setHeader('Content-Type', 'text/xml');

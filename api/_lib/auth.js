@@ -59,7 +59,7 @@ export async function verifyGoogleAndLookupUser(req) {
   const supabase = getServerSupabase();
   const { data: user, error: dbErr } = await supabase
     .from('users')
-    .select('id, name, email, role, branch, active')
+    .select('id, name, email, role, branch, active, last_token_issued_at')
     .ilike('email', tokenInfo.email)
     .maybeSingle();
 

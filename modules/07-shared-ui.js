@@ -159,6 +159,14 @@ function renderTopBar(){
           ${['all','VIC','ACT','SA'].map(b=>`<div onclick="setState({branch:'${b}'});hideBranchDrop()" style="padding:8px 14px;font-size:13px;cursor:pointer;border-radius:6px;font-weight:${branch===b?'700':'400'};color:${branch===b?'#c41230':'#333'}" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background=''">${b==='all'?'All Branches':b}</div>`).join('')}
         </div>
       </div>
+      ${(function(){
+        // Voicemail badge — only renders when there's at least one unread voicemail.
+        // Click navigates to the Phone page where the voicemails section lives.
+        if (typeof unreadVoicemailCount !== 'function') return '';
+        var vmCount = unreadVoicemailCount();
+        if (vmCount <= 0) return '';
+        return `<button title="${vmCount} unread voicemail${vmCount===1?'':'s'}" onclick="setState({page:'phone'})" style="position:relative;padding:7px;border:none;background:none;cursor:pointer;color:#6b7280;border-radius:8px;font-size:18px" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">📨<span style="position:absolute;top:-2px;right:-2px;min-width:16px;height:16px;padding:0 4px;background:#c41230;border-radius:50%;font-size:10px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center">${vmCount}</span></button>`;
+      })()}
       <div style="position:relative">
         <button id="notifBell" onclick="toggleNotifDrop()" style="position:relative;padding:7px;border:none;background:none;cursor:pointer;transition:transform .2s,color .2s;color:#6b7280;border-radius:8px" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">
           ${Icon({n:'bell',size:18})}

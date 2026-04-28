@@ -331,6 +331,7 @@ async function dbLoadAll() {
       _sb.from('call_logs').select('*').order('started_at', { ascending: false }).limit(500),
       _sb.from('sms_logs').select('*').order('sent_at', { ascending: false }).limit(1000),
       _sb.from('sms_templates').select('*').order('name', { ascending: true }),
+      _sb.from('phone_settings').select('*').eq('id', 'singleton').maybeSingle(),
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -519,6 +520,16 @@ async function dbLoadAll() {
       }
     }
 
+    // ── Phone & IVR settings (stage 6) ──────────────────────────────────────
+    var phoneSettings = (results[17] && results[17].data) || null;
+    if (phoneSettings) {
+      try {
+        if (JSON.stringify(phoneSettings) !== JSON.stringify(getState().phoneSettings || null)) {
+          setState({ phoneSettings: phoneSettings }, { skipSync: true });
+        }
+      } catch(e) { setState({ phoneSettings: phoneSettings }, { skipSync: true }); }
+    }
+
     _dbReady = true;
     console.log('[Spartan] Loaded from Supabase:', contacts.length, 'contacts,', leads.length, 'leads,', deals.length, 'deals,', jobs.length, 'jobs,', callLogs.length, 'call logs,', smsLogs.length, 'SMS,', smsTemplates.length, 'SMS templates');
     return true;
@@ -615,6 +626,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'call_logs'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'sms_logs'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'sms_templates'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'phone_settings'}, function(){ dbLoadAll(); })
     .subscribe(function(status){ console.log('[Spartan] Realtime:', status); });
 }
 

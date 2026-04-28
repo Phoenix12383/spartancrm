@@ -283,6 +283,10 @@ var ALL_PERMISSIONS = [
   // Phone (Twilio Voice + SMS)
   {key:'phone.access',label:'Phone & Voice Calls',module:'Phone',group:'phone'},
   {key:'phone.sms',label:'Send SMS',module:'Phone',group:'phone'},
+  {key:'phone.recordings.own',label:'Listen to own call recordings',module:'Phone',group:'phone'},
+  {key:'phone.recordings.team',label:'Listen to team call recordings',module:'Phone',group:'phone'},
+  {key:'phone.recordings.all',label:'Listen to all call recordings',module:'Phone',group:'phone'},
+  {key:'phone.admin',label:'Manage phone & IVR settings',module:'Phone',group:'phone'},
   // Data visibility
   {key:'data.view_values',label:'See job values & pricing',module:'Data Access',group:'data'},
   {key:'data.view_margins',label:'See profit margins & costs',module:'Data Access',group:'data'},
@@ -298,16 +302,16 @@ var DEFAULT_ROLE_PERMS = {
     'jobs.dashboard','jobs.list','jobs.signoff','jobs.schedule','jobs.planner','jobs.cmmap','jobs.revenue',
     'accounts.dashboard','accounts.outstanding',
     'service.list',
-    'phone.access','phone.sms',
+    'phone.access','phone.sms','phone.recordings.team','phone.recordings.own',
     'data.view_values','data.view_margins','data.edit_jobs','data.cad_edit'],
   sales_rep: ['sales.dashboard','sales.contacts','sales.leads','sales.deals','sales.calendar','sales.commission',
     'jobs.dashboard','jobs.list',
-    'phone.access','phone.sms',
+    'phone.access','phone.sms','phone.recordings.own',
     'data.view_values'],
   accounts: ['accounts.dashboard','accounts.outstanding','accounts.bills','accounts.weekly','accounts.cashflow','accounts.recon','accounts.branch','accounts.xero',
     'sales.invoicing','sales.dashboard',
     'jobs.dashboard','jobs.list','jobs.revenue',
-    'phone.access','phone.sms',
+    'phone.access','phone.sms','phone.recordings.own',
     'data.view_values','data.view_margins'],
   production_manager: ['factory.dashboard','factory.queue','factory.board','factory.bom','factory.capacity','factory.dispatch',
     'jobs.dashboard','jobs.list','jobs.schedule',
@@ -318,7 +322,7 @@ var DEFAULT_ROLE_PERMS = {
     'phone.access'],
   service_staff: ['service.list','service.map','service.openings',
     'jobs.dashboard','jobs.list',
-    'phone.access','phone.sms'],
+    'phone.access','phone.sms','phone.recordings.own'],
   viewer: ['sales.dashboard','jobs.dashboard','factory.dashboard','accounts.dashboard','service.list'],
 };
 
@@ -576,6 +580,10 @@ let _state = {
   // filters this by entity_id. smsTemplates is the saved template library.
   smsLogs: [],
   smsTemplates: [],
+  // Stage 6 — Phone & IVR admin-editable settings. Singleton row in
+  // public.phone_settings. Loaded by dbLoadAll, kept fresh by realtime so
+  // changes by an admin in another tab propagate within ~1s.
+  phoneSettings: null,
   leads: JSON.parse(JSON.stringify(LEADS_DATA)),
   leadFilter: 'All',
   leadSearch: '',

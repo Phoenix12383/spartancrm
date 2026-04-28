@@ -15,8 +15,10 @@
 
 import { twilio } from '../_lib/twilioClient.js';
 import { verifyGoogleAndLookupUser } from '../_lib/auth.js';
+import { getServerSupabase } from '../_lib/supabase.js';
 
 const TOKEN_TTL_SECONDS = 3600; // 1 hour — matches Twilio's max for AccessToken
+const TOKEN_MIN_INTERVAL_MS = 5000; // Reject tokens issued less than 5s apart
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -32,6 +34,28 @@ export default async function handler(req, res) {
     return;
   }
   const user = auth.user;
+
+  // Rate-limit: reject if a token was issued for this user less than
+  // TOKEN_MIN_INTERVAL_MS ago. Stops a leaked Google token from being used to
+  // burn through the Twilio balance via repeated /token issuance. Anchored on
+  // users.last_token_issued_at — a single column update per request.
+  const supabase = getServerSupabase();
+  const nowMs = Date.now();
+  if (user.last_token_issued_at) {
+    const lastMs = new Date(user.last_token_issued_at).getTime();
+    if (!isNaN(lastMs) && (nowMs - lastMs) < TOKEN_MIN_INTERVAL_MS) {
+      const retryAfterSec = Math.ceil((TOKEN_MIN_INTERVAL_MS - (nowMs - lastMs)) / 1000);
+      res.setHeader('Retry-After', String(retryAfterSec));
+      res.status(429).json({ error: 'Too many token requests — wait a moment and try again' });
+      return;
+    }
+  }
+  // Record this issuance. Fire-and-forget — we don't need to wait for it to
+  // succeed before issuing the JWT (worst case the rate-limit doesn't apply
+  // for this one request, which is fine for a per-rep ceiling).
+  supabase.from('users').update({ last_token_issued_at: new Date(nowMs).toISOString() }).eq('id', user.id).then(r => {
+    if (r.error) console.warn('[Spartan] last_token_issued_at update failed:', r.error.message);
+  });
 
   // Step 4: build the Twilio AccessToken with a VoiceGrant
   const requiredEnv = ['TWILIO_ACCOUNT_SID', 'TWILIO_API_KEY_SID', 'TWILIO_API_KEY_SECRET', 'TWILIO_TWIML_APP_SID'];

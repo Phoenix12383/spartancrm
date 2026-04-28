@@ -21,11 +21,9 @@
 import { validateTwilioRequest } from '../_lib/twilioValidate.js';
 import { getServerSupabase } from '../_lib/supabase.js';
 import { findEntityByPhone } from '../_lib/entityLookup.js';
-import { findAssignedRepForCaller, findAllActiveUsers, IVR_MENU } from '../_lib/twilioRouting.js';
-import { isBusinessHours } from '../_lib/businessHours.js';
+import { findAssignedRepForCaller, findAllActiveUsers } from '../_lib/twilioRouting.js';
+import { getPhoneSettings, isBusinessHoursFromSettings } from '../_lib/phoneSettings.js';
 
-const GREETING = 'Welcome to Spartan Double Glazing. Press 1 for Sales, 2 for Service, 3 for Accounts, or 4 for Admin. To speak with anyone, please hold.';
-const VOICEMAIL_GREETING = 'Sorry, you have reached us outside business hours. Please leave a message after the beep and we will return your call.';
 const NO_ANSWER_VOICEMAIL_GREETING = 'Sorry, no one is available to take your call right now. Please leave a message after the beep.';
 
 export default async function handler(req, res) {
@@ -45,6 +43,8 @@ export default async function handler(req, res) {
   const to = body.To || '';
 
   const supabase = getServerSupabase();
+  const settings = await getPhoneSettings();
+  const voiceName = settings.voice_name || 'Polly.Nicole';
 
   // Look up the caller (if known) so we can attach the call_logs row to the
   // right entity from the moment it starts ringing.
@@ -68,13 +68,13 @@ export default async function handler(req, res) {
     });
   }
 
-  // 1. After hours → voicemail
-  if (!isBusinessHours()) {
+  // 1. After hours → voicemail (uses admin-configured greeting + business hours)
+  if (!isBusinessHoursFromSettings(settings)) {
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Nicole">${escapeXml(VOICEMAIL_GREETING)}</Say>
+  <Say voice="${escapeXml(voiceName)}">${escapeXml(settings.voicemail_greeting)}</Say>
   <Record action="/api/twilio/voicemail" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed"/>
-  <Say voice="Polly.Nicole">Thanks. Goodbye.</Say>
+  <Say voice="${escapeXml(voiceName)}">Thanks. Goodbye.</Say>
 </Response>`;
     res.setHeader('Content-Type', 'text/xml');
     res.status(200).send(twiml);
@@ -101,7 +101,7 @@ export default async function handler(req, res) {
   // and as the entry point when there's no smart match).
   twiml += `
   <Gather numDigits="1" timeout="10" action="/api/twilio/ivr-route" method="POST">
-    <Say voice="Polly.Nicole">${escapeXml(GREETING)}</Say>
+    <Say voice="${escapeXml(voiceName)}">${escapeXml(settings.greeting)}</Say>
   </Gather>`;
 
   // No digit pressed → honour the "or to speak with anyone, please hold" promise
