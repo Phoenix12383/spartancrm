@@ -40,9 +40,12 @@ export default async function handler(req, res) {
     return;
   }
 
-  const fromNumber = process.env.TWILIO_PHONE_NUMBER;
+  // Prefer a dedicated SMS number when configured (typically an AU mobile,
+  // since local landlines have spotty SMS support). Falls back to the voice
+  // number so existing single-number deployments keep working unchanged.
+  const fromNumber = process.env.TWILIO_SMS_NUMBER || process.env.TWILIO_PHONE_NUMBER;
   if (!fromNumber) {
-    res.status(500).json({ error: 'Backend misconfigured: TWILIO_PHONE_NUMBER not set' });
+    res.status(500).json({ error: 'Backend misconfigured: neither TWILIO_SMS_NUMBER nor TWILIO_PHONE_NUMBER is set' });
     return;
   }
 
