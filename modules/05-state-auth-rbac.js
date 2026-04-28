@@ -282,6 +282,7 @@ var ALL_PERMISSIONS = [
   {key:'service.openings',label:'Install Openings',module:'Service CRM',group:'service'},
   // Phone (Twilio Voice + SMS)
   {key:'phone.access',label:'Phone & Voice Calls',module:'Phone',group:'phone'},
+  {key:'phone.sms',label:'Send SMS',module:'Phone',group:'phone'},
   // Data visibility
   {key:'data.view_values',label:'See job values & pricing',module:'Data Access',group:'data'},
   {key:'data.view_margins',label:'See profit margins & costs',module:'Data Access',group:'data'},
@@ -297,16 +298,16 @@ var DEFAULT_ROLE_PERMS = {
     'jobs.dashboard','jobs.list','jobs.signoff','jobs.schedule','jobs.planner','jobs.cmmap','jobs.revenue',
     'accounts.dashboard','accounts.outstanding',
     'service.list',
-    'phone.access',
+    'phone.access','phone.sms',
     'data.view_values','data.view_margins','data.edit_jobs','data.cad_edit'],
   sales_rep: ['sales.dashboard','sales.contacts','sales.leads','sales.deals','sales.calendar','sales.commission',
     'jobs.dashboard','jobs.list',
-    'phone.access',
+    'phone.access','phone.sms',
     'data.view_values'],
   accounts: ['accounts.dashboard','accounts.outstanding','accounts.bills','accounts.weekly','accounts.cashflow','accounts.recon','accounts.branch','accounts.xero',
     'sales.invoicing','sales.dashboard',
     'jobs.dashboard','jobs.list','jobs.revenue',
-    'phone.access',
+    'phone.access','phone.sms',
     'data.view_values','data.view_margins'],
   production_manager: ['factory.dashboard','factory.queue','factory.board','factory.bom','factory.capacity','factory.dispatch',
     'jobs.dashboard','jobs.list','jobs.schedule',
@@ -317,7 +318,7 @@ var DEFAULT_ROLE_PERMS = {
     'phone.access'],
   service_staff: ['service.list','service.map','service.openings',
     'jobs.dashboard','jobs.list',
-    'phone.access'],
+    'phone.access','phone.sms'],
   viewer: ['sales.dashboard','jobs.dashboard','factory.dashboard','accounts.dashboard','service.list'],
 };
 
@@ -570,6 +571,11 @@ let _state = {
   // incoming-call banner reads this to render the Answer/Decline UI.
   // Cleared on accept (promotes to activeCall), decline, or auto-timeout.
   incomingCall: null,
+  // Stage 4 — Twilio SMS. smsLogs is a flat array of all messages (in/out)
+  // loaded by dbLoadAll, kept fresh by realtime. The SMS tab in detail panels
+  // filters this by entity_id. smsTemplates is the saved template library.
+  smsLogs: [],
+  smsTemplates: [],
   leads: JSON.parse(JSON.stringify(LEADS_DATA)),
   leadFilter: 'All',
   leadSearch: '',

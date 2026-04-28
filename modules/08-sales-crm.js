@@ -1972,6 +1972,7 @@ function renderEntityDetail({
     { id: 'activity', label: 'Activity', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>' },
     { id: 'notes', label: 'Notes', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' },
     { id: 'call', label: 'Call', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8a19.79 19.79 0 01-3.07-8.67A2 2 0 012 .84h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 8.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg>' },
+    { id: 'sms', label: 'SMS', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' },
     { id: 'email', label: 'Email', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>' },
     { id: 'files', label: 'Files', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>' },
   ];
@@ -2309,6 +2310,63 @@ function renderTabForm(entityId, entityType, tab, contact) {
     </div>`;
   }
 
+  // ── SMS tab (stage 4) ─────────────────────────────────────────────────────
+  if (tab === 'sms') {
+    const smsAllowed = (typeof hasPermission === 'function') ? hasPermission('phone.sms') : true;
+    const allSms = getState().smsLogs || [];
+    const thread = allSms
+      .filter(m => m.entity_id === entityId && m.entity_type === entityType)
+      .sort((a, b) => (a.sent_at || '').localeCompare(b.sent_at || ''));
+    const tpls = (getState().smsTemplates || []).slice(0, 5);
+    const draft = (typeof _getInlineSmsDraft === 'function') ? _getInlineSmsDraft(entityId) : { body: '' };
+    const charCount = (draft.body || '').length;
+    const charColor = charCount > 160 ? '#dc2626' : charCount > 140 ? '#f59e0b' : '#6b7280';
+    return `<div style="padding:12px 16px;border-bottom:1px solid #f0f0f0">
+      ${!smsAllowed ? `<div style="padding:14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;text-align:center;color:#6b7280;font-size:13px;margin-bottom:10px">You don't have permission to send SMS.</div>` : ''}
+
+      <!-- Phone bar -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#f9fafb;border-radius:10px;border:1px solid #e5e7eb;margin-bottom:12px">
+        <div>
+          <div style="font-size:13px;font-weight:600">${name || 'Contact'}</div>
+          <div style="font-size:12px;color:#6b7280;margin-top:1px">${phone || 'No phone on file'}</div>
+        </div>
+      </div>
+
+      <!-- Thread (max-height with scroll) -->
+      ${thread.length > 0 ? `<div style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto;padding:8px 4px;margin-bottom:10px;background:#f9fafb;border-radius:10px">
+        ${thread.map(m => {
+          const out = m.direction === 'outbound';
+          const bubble = out
+            ? 'background:#c41230;color:#fff;align-self:flex-end;border-radius:14px 14px 4px 14px'
+            : 'background:#fff;color:#1a1a1a;align-self:flex-start;border-radius:14px 14px 14px 4px;border:1px solid #e5e7eb';
+          const time = (m.sent_at || '').slice(11, 16);
+          const statusBadge = out
+            ? `<span style="font-size:10px;opacity:.75;margin-left:6px">${escapeHtml(m.status || '')}</span>`
+            : '';
+          return `<div style="max-width:80%;padding:8px 12px;font-size:13px;line-height:1.4;${bubble}">
+            <div>${_escText(m.body || '')}</div>
+            <div style="font-size:10px;opacity:.7;margin-top:3px">${time}${statusBadge}</div>
+          </div>`;
+        }).join('')}
+      </div>` : `<div style="padding:18px;text-align:center;color:#9ca3af;font-size:12px;background:#f9fafb;border-radius:10px;margin-bottom:10px">No messages yet</div>`}
+
+      <!-- Templates -->
+      ${(smsAllowed && tpls.length > 0) ? `<div style="padding:8px 10px;background:#fef9c3;border:1px solid #fde68a;border-radius:10px;margin-bottom:10px">
+        <div style="font-size:10px;font-weight:700;color:#92400e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">📋 Templates</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${tpls.map(t => `<button onclick="applySmsTemplateInline('${t.id}','${entityId}','${entityType}')" style="font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid #fde68a;background:#fff;cursor:pointer;font-family:inherit;color:#92400e;font-weight:600">${_escText(t.name)}</button>`).join('')}
+        </div>
+      </div>` : ''}
+
+      <!-- Composer -->
+      ${smsAllowed ? `<textarea id="smsBody_${entityId}" class="inp" rows="3" placeholder="Type your SMS…" oninput="setInlineSmsDraft('${entityId}',this.value); document.getElementById('smsCharCount_${entityId}').textContent=this.value.length+'/160'; document.getElementById('smsCharCount_${entityId}').style.color=this.value.length>160?'#dc2626':this.value.length>140?'#f59e0b':'#6b7280'" style="font-size:13px;resize:none;border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin-bottom:8px">${_escText(draft.body || '')}</textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span id="smsCharCount_${entityId}" style="font-size:11px;color:${charColor}">${charCount}/160</span>
+        <button onclick="sendSmsFromTab('${entityId}','${entityType}')" class="btn-r" style="font-size:12px;padding:5px 18px"${(!phone || !smsAllowed) ? ' disabled style="font-size:12px;padding:5px 18px;opacity:.5;cursor:not-allowed"' : ''}>${!phone ? 'No phone' : 'Send SMS'}</button>
+      </div>` : ''}
+    </div>`;
+  }
+
   // ── Email tab ─────────────────────────────────────────────────────────────
   if (tab === 'email') {
     const connected = getState().gmailConnected;
@@ -2511,6 +2569,64 @@ function setInlineEmailDraftField(entityId, field, value) {
   _inlineEmailDrafts[entityId] = d;
 }
 function clearInlineEmailDraft(entityId) { delete _inlineEmailDrafts[entityId]; }
+
+// ── Inline SMS draft (stage 4) ────────────────────────────────────────────
+// Same pattern as email — survive renderPage() rebuilds without losing typed
+// text. Cleared once the SMS is successfully sent.
+var _inlineSmsDrafts = {}; // { [entityId]: { body } }
+function _getInlineSmsDraft(entityId) {
+  return _inlineSmsDrafts[entityId] || { body: '' };
+}
+function setInlineSmsDraft(entityId, body) {
+  _inlineSmsDrafts[entityId] = { body: body || '' };
+}
+function clearInlineSmsDraft(entityId) { delete _inlineSmsDrafts[entityId]; }
+
+// Apply an SMS template to the inline composer for an entity. Resolves merge
+// fields ({{firstName}}, {{repName}}, etc.) against the live record and
+// pre-fills the textarea via the draft so a renderPage() doesn't wipe it.
+function applySmsTemplateInline(templateId, entityId, entityType) {
+  var s = getState();
+  var tpl = (s.smsTemplates || []).find(function(t){ return t.id === templateId; });
+  if (!tpl) { addToast('Template not found', 'error'); return; }
+  var entity = null;
+  if (entityType === 'contact') entity = (s.contacts || []).find(function(c){ return c.id === entityId; });
+  else if (entityType === 'lead') entity = (s.leads || []).find(function(l){ return l.id === entityId; });
+  else if (entityType === 'deal') entity = (s.deals || []).find(function(d){ return d.id === entityId; });
+  var ctx = (typeof smsBuildMergeContext === 'function') ? smsBuildMergeContext(entity, entityType) : {};
+  var resolved = (typeof smsApplyMergeFields === 'function') ? smsApplyMergeFields(tpl.body, ctx) : tpl.body;
+  setInlineSmsDraft(entityId, resolved);
+  renderPage();
+}
+
+// Read the body from the textarea (or draft) and dispatch to twilioSendSms.
+// Resolves the destination phone from the entity record.
+async function sendSmsFromTab(entityId, entityType) {
+  var ta = document.getElementById('smsBody_' + entityId);
+  var body = ta ? ta.value : (_getInlineSmsDraft(entityId).body || '');
+  if (!body || !body.trim()) { addToast('Type a message first', 'warning'); return; }
+
+  var s = getState();
+  var phone = '';
+  if (entityType === 'contact') {
+    var c = (s.contacts || []).find(function(x){ return x.id === entityId; });
+    phone = c ? c.phone : '';
+  } else if (entityType === 'lead') {
+    var l = (s.leads || []).find(function(x){ return x.id === entityId; });
+    phone = l ? l.phone : '';
+  } else if (entityType === 'deal') {
+    var d = (s.deals || []).find(function(x){ return x.id === entityId; });
+    var contact = d ? (s.contacts || []).find(function(x){ return x.id === d.cid; }) : null;
+    phone = contact ? contact.phone : '';
+  }
+  if (!phone) { addToast('No phone number on file', 'warning'); return; }
+
+  var result = await twilioSendSms(phone, body, entityId, entityType);
+  if (result && result.sid) {
+    clearInlineSmsDraft(entityId);
+    renderPage();
+  }
+}
 
 // HTML-escape for use inside attribute values (subject input's `value=`).
 function _escAttr(s) {
