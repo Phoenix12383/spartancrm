@@ -120,6 +120,25 @@ function logJobAudit(jobId, action, detail, oldVal, newVal) {
   log.unshift(entry);
   saveJobAuditLog(jobId, log);
   if(_sb) dbInsert('job_audit', {job_id:jobId, action:action, detail:detail||'', by_user:user.name});
+  // Brief 2 Phase 2: also write to the unified audit log so the Jobs CRM
+  // audit tab keeps working AND the global audit page sees these entries.
+  // Don't replace getJobAuditLog — the Jobs CRM tab still reads it directly.
+  if (typeof appendAuditEntry === 'function') {
+    // Map common job-audit action verbs to the canonical AUDIT_ACTIONS keys.
+    // Unmapped actions fall through to the generic job.field_edited bucket.
+    var mappedAction = 'job.field_edited';
+    if (/status/i.test(action)) mappedAction = 'job.status_changed';
+    else if (/cad/i.test(action)) mappedAction = 'job.cad_saved';
+    else if (/final\s*sign/i.test(action)) mappedAction = 'job.final_signed';
+    else if (/cm|check\s*measure/i.test(action)) mappedAction = 'job.cm_completed';
+    appendAuditEntry({
+      entityType:'job', entityId:jobId, action:mappedAction,
+      summary:action + (detail ? ' — ' + detail : ''),
+      before:(oldVal != null && oldVal !== '') ? oldVal : null,
+      after: (newVal != null && newVal !== '') ? newVal : null,
+      metadata:{ rawAction:action },
+    });
+  }
 }
 
 // ── Job Files (localStorage-backed + Supabase) ─────────────────────────────

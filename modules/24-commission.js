@@ -23,8 +23,21 @@ function getRepRate(repName) {
 
 function setRepRate(repName, pct) {
   var rates = getCommissionRates();
-  rates[repName] = parseFloat(pct) || 0;
+  var prevPct = rates[repName];
+  var newPct = parseFloat(pct) || 0;
+  rates[repName] = newPct;
   saveCommissionRates(rates);
+  // Audit (Brief 2 Phase 2). The commission engine refactor in Brief 4 will
+  // change the storage shape — this audit hook stays valid because it
+  // captures both pcts and the rep name regardless of where the data lives.
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'commission', entityId:null, action:'commission.rules_updated',
+      summary:repName + ' commission rate: ' + (prevPct == null ? '—' : prevPct + '%') + ' → ' + newPct + '%',
+      before:{ repName:repName, ratePct:prevPct == null ? null : prevPct },
+      after:{ repName:repName, ratePct:newPct },
+    });
+  }
   addToast(repName + ' commission set to ' + pct + '%', 'success');
   renderPage();
 }
@@ -58,6 +71,18 @@ function toggleCommissionPaid(dealId) {
     newStatus: newStatus,
   });
   saveCommissionAudit(audit);
+  // Brief 2 Phase 2: also write to the unified audit log. The legacy
+  // spartan_commission_audit array stays in place — the commission tab's
+  // existing audit subsection still reads it directly.
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'commission', entityId:dealId,
+      action: newStatus === 'paid' ? 'commission.paid' : 'commission.unpaid',
+      summary: (newStatus === 'paid' ? 'Marked' : 'Reverted') + ' commission ' + newStatus.toUpperCase() + ': ' + (deal ? deal.title : dealId),
+      before:{ status:oldStatus }, after:{ status:newStatus },
+      branch: deal ? (deal.branch || null) : null,
+    });
+  }
   addToast('Commission ' + newStatus, newStatus === 'paid' ? 'success' : 'warning');
   renderPage();
 }
@@ -83,6 +108,15 @@ function toggleOverridePaid(monthKey) {
   var audit = getCommissionAudit();
   audit.unshift({ timestamp: new Date().toISOString(), dealId: 'override_' + monthKey, dealTitle: 'Manager Override \u2014 ' + monthKey, repName: 'Sales Manager', value: 0, action: newStatus === 'paid' ? 'Override PAID' : 'Override UNPAID', by: cu.name, oldStatus: oldStatus, newStatus: newStatus });
   saveCommissionAudit(audit);
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'commission', entityId:'override_'+monthKey,
+      action: newStatus === 'paid' ? 'commission.paid' : 'commission.unpaid',
+      summary: (newStatus === 'paid' ? 'Marked' : 'Reverted') + ' Manager Override ' + newStatus.toUpperCase() + ': ' + monthKey,
+      before:{ status:oldStatus }, after:{ status:newStatus },
+      metadata:{ kind:'manager_override', monthKey:monthKey },
+    });
+  }
   addToast('Override ' + monthKey + ' ' + newStatus, newStatus === 'paid' ? 'success' : 'warning');
   renderPage();
 }

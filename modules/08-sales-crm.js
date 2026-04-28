@@ -710,6 +710,18 @@ function saveContactEdit() {
   });
   try { dbInsert('activities', actToDb(actObj, 'contact', id)); } catch (e) { }
 
+  // Audit (Brief 2 Phase 2). Group all field changes into a single entry.
+  if (typeof appendAuditEntry === 'function') {
+    var beforeObj = {}; var afterObj = {};
+    changes.forEach(function (ch) { beforeObj[ch.field] = ch.from; afterObj[ch.field] = ch.to; });
+    appendAuditEntry({
+      entityType: 'contact', entityId: id, action: 'contact.field_edited',
+      summary: 'Edited ' + (c.fn||'') + ' ' + (c.ln||'') + ' — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : ''),
+      before: beforeObj, after: afterObj,
+      branch: updated.branch || null,
+    });
+  }
+
   addToast('Saved — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : '') + ' updated', 'success');
 }
 
@@ -951,6 +963,8 @@ function saveDealEdit() {
   const postcode = document.getElementById('de_postcode')?.value.trim() || '';
   const closeDate = document.getElementById('de_close')?.value;
   if (!title) { addToast('Title required', 'error'); return; }
+  // Snapshot before-state for audit. Capture only the fields the form can edit.
+  var beforeState = { title:d.title, val:d.val, sid:d.sid, rep:d.rep, street:d.street, suburb:d.suburb, state:d.state, postcode:d.postcode, closeDate:d.closeDate };
   setState({
     deals: getState().deals.map(deal =>
       deal.id === d.id ? {
@@ -960,6 +974,22 @@ function saveDealEdit() {
     )
   });
   dbUpdate('deals', d.id, { title: title, val: val, sid: sid || d.sid, rep: rep || d.rep, street: street, suburb: suburb || d.suburb, postcode: postcode, close_date: closeDate || d.closeDate || null });
+  // Audit the edit. Stage changes flow through moveDealToStage, so the sid
+  // delta here is rare (the dropdown does include stage, so it's possible)
+  // but it'll show up in the before/after.
+  if (typeof appendAuditEntry === 'function') {
+    var afterState = { title:title, val:val, sid:sid||d.sid, rep:rep||d.rep, street:street, suburb:suburb||d.suburb, state:state||d.state, postcode:postcode, closeDate:closeDate||d.closeDate };
+    var changedFields = Object.keys(afterState).filter(function(k){ return String(beforeState[k]||'') !== String(afterState[k]||''); });
+    if (changedFields.length > 0) {
+      appendAuditEntry({
+        entityType:'deal', entityId:d.id, action:'deal.field_edited',
+        summary:'Edited "' + title + '" — ' + changedFields.length + ' field' + (changedFields.length!==1?'s':''),
+        before:beforeState, after:afterState,
+        metadata:{ source:'kanban-quick-edit' },
+        branch:d.branch||null,
+      });
+    }
+  }
   kanbanEditModal = null;
   addToast('Deal updated', 'success');
   renderPage();
@@ -1345,6 +1375,17 @@ function dropDeal(stageId) {
   });
   dbUpdate('deals', _did, { sid: stageId, won: !!(st && st.isWon), lost: !!(st && st.isLost), won_date: (st && st.isWon) ? new Date().toISOString().slice(0, 10) : null });
   dbInsert('activities', actToDb(act, 'deal', _did));
+  // Audit ordinary mid-pipeline drags. Won / Lost drag paths return early
+  // above and gate through their own audit-emitting flows.
+  if (typeof appendAuditEntry === 'function' && !(st && st.isWon) && !(st && st.isLost)) {
+    appendAuditEntry({
+      entityType:'deal', entityId:_did, action:'deal.stage_changed',
+      summary:'Stage changed to ' + (st ? st.name : stageId),
+      before:{ sid: deal.sid }, after:{ sid: stageId },
+      metadata:{ source:'kanban-drag' },
+      branch: deal.branch || null,
+    });
+  }
   dragDeal = null; dragOverStage = null; unhighlightAllCols();
   if (st && st.isWon) addToast('🎉 Deal Won!', 'success');
   else addToast('Moved to ' + (st ? st.name : stageId), 'info');
@@ -2922,6 +2963,18 @@ function moveDealToStage(dealId, stageId, opts) {
   dbUpdate('deals', dealId, { sid: stageId, won: !!(stage && stage.isWon), lost: !!(stage && stage.isLost), won_date: _wd });
   dbInsert('activities', actToDb(act, 'deal', dealId));
   if (stage && stage.isWon) { addToast('🎉 Deal Won!', 'success'); }
+  // Audit (Brief 2 Phase 2). The Won + Lost transitions write their own
+  // audit entries via _commitWon / confirmLostTransition, so this only fires
+  // for ordinary mid-pipeline stage moves.
+  if (typeof appendAuditEntry === 'function' && !(stage && stage.isWon) && !(stage && stage.isLost)) {
+    appendAuditEntry({
+      entityType:'deal', entityId:dealId, action:'deal.stage_changed',
+      summary:'Stage changed to ' + (stage ? stage.name : stageId),
+      before:{ sid:deal.sid }, after:{ sid:stageId },
+      metadata:{ source: opts.source || 'stage-change' },
+      branch: deal.branch || null,
+    });
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3081,6 +3134,19 @@ function _commitWon(dealId, targetStageId, selectedQuoteId) {
     cad_data: newCadData
   });
   dbInsert('activities', actToDb(act, 'deal', dealId));
+
+  // Audit (Brief 2 Phase 2). Brief 4 Phase 3 will hook in here too to fire
+  // accrueCommission(deal). For now just the audit log.
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'deal', entityId:dealId, action:'deal.won_marked',
+      summary:'Deal won: ' + (deal.title||'') + ' \u2014 $' + Math.round(wonPrice).toLocaleString(),
+      before:{ sid: deal.sid, won: false },
+      after:{ sid: targetStageId, won: true, wonDate: todayStr, wonQuoteId: selectedQuoteId, val: wonPrice },
+      metadata:{ quoteLabel: selectedQuote.label || null, quoteNumber: selectedQuote.quoteNumber || null },
+      branch: deal.branch || null,
+    });
+  }
 
   addToast('\ud83c\udf89 Deal Won!', 'success');
 

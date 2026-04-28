@@ -799,6 +799,13 @@ function smsTemplateSave() {
   next.sort(function(a, b){ return (a.name || '').localeCompare(b.name || ''); });
   setState({ smsTemplates: next });
 
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'settings', action:'settings.template_edited',
+      summary:(found?'Edited':'Created')+' SMS template: '+name,
+      after:{ kind:'sms', id:row.id, name:name, body:body },
+    });
+  }
   smsTemplateEditId = null;
   smsTemplateDraft = { id:'', name:'', body:'' };
   addToast('Template saved', 'success');
@@ -806,9 +813,17 @@ function smsTemplateSave() {
 }
 function smsTemplateDelete(id) {
   if (!confirm('Delete this template?')) return;
+  var prev = (getState().smsTemplates || []).find(function(t){ return t.id === id; });
   if (typeof dbDelete === 'function') dbDelete('sms_templates', id);
   var next = (getState().smsTemplates || []).filter(function(t){ return t.id !== id; });
   setState({ smsTemplates: next });
+  if (typeof appendAuditEntry === 'function' && prev) {
+    appendAuditEntry({
+      entityType:'settings', action:'settings.template_edited',
+      summary:'Deleted SMS template: '+prev.name,
+      before:{ kind:'sms', id:prev.id, name:prev.name, body:prev.body },
+    });
+  }
   addToast('Template deleted', 'warning');
   renderPage();
 }
@@ -898,8 +913,16 @@ function phoneSettingsSave() {
     updated_by: ((getCurrentUser() || {}).id) || null,
   };
 
+  var prevSettings = getState().phoneSettings;
   if (typeof dbUpsert === 'function') dbUpsert('phone_settings', settings);
   setState({ phoneSettings: settings });
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'settings', action:'settings.phone_edited',
+      summary:'Updated Phone & IVR settings (greeting, IVR menu, business hours)',
+      before: prevSettings, after: settings,
+    });
+  }
   addToast('Phone & IVR settings saved — propagates to live calls within 60s', 'success');
   renderPage();
 }

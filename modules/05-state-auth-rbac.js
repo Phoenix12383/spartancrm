@@ -615,6 +615,19 @@ var e=document.getElementById('loginEmail').value.trim().toLowerCase();
 var p=document.getElementById('loginPw').value;
 var u=getUsers().find(function(x){return x.email.toLowerCase()===e&&x.pw===p&&x.active;});
 if(!u){var el=document.getElementById('loginErr');el.textContent='Invalid email/password or account deactivated.';el.style.display='block';return;}
+// Audit successful login. We don't audit failures by design — that would
+// give an attacker an oracle to enumerate valid usernames.
+if (typeof appendAuditEntry === 'function') {
+  appendAuditEntry({
+    entityType: 'user',
+    entityId: u.id,
+    action: 'user.login',
+    summary: u.name + ' signed in',
+    userId: u.id,
+    userName: u.name,
+    branch: u.branch || null,
+  });
+}
 setCurrentUser(u.id);location.reload();
 }
 var adminEditingUser = null;
@@ -696,19 +709,46 @@ function adminSaveUser(){
     if (serviceStates) newUser.serviceStates = serviceStates;
     users.push(newUser);
     saveUsers(users);addToast(name+' added','success');
+    if (typeof appendAuditEntry === 'function') {
+      appendAuditEntry({
+        entityType:'user', entityId:newUser.id, action:'user.created',
+        summary:'Created user: '+name+' ('+role+')',
+        after:{ name:name, email:email, role:role, branch:branch, active:true, customPerms:customPerms, serviceStates:serviceStates },
+        branch:branch,
+      });
+    }
   } else {
     var u = users.find(function(x){return x.id===adminEditingUser;});
     if(!u)return;
+    // Capture before-state for audit. Snapshot the fields that can change.
+    var beforeSnapshot = { name:u.name, email:u.email, role:u.role, branch:u.branch, customPerms:u.customPerms||null, serviceStates:u.serviceStates||null, active:u.active!==false };
+    var roleChanged = u.role !== role;
     u.name=name;u.email=email;u.role=role;u.branch=branch;u.phone=phone;
     u.initials=name.split(' ').map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();
     if (customPerms) u.customPerms = customPerms; else delete u.customPerms;
     if (serviceStates) u.serviceStates = serviceStates; else delete u.serviceStates;
     if (d.pw) u.pw = d.pw;
     saveUsers(users);addToast(name+' updated','success');
+    if (typeof appendAuditEntry === 'function') {
+      var afterSnapshot = { name:u.name, email:u.email, role:u.role, branch:u.branch, customPerms:u.customPerms||null, serviceStates:u.serviceStates||null, active:u.active!==false };
+      // Action key reflects the most significant change. Role change wins
+      // because it has the largest blast radius for permissions.
+      var actionKey = roleChanged ? 'user.role_changed' : 'user.permissions_changed';
+      var summaryParts = [];
+      if (roleChanged) summaryParts.push('role: '+beforeSnapshot.role+' → '+role);
+      if (beforeSnapshot.branch !== branch) summaryParts.push('branch: '+(beforeSnapshot.branch||'—')+' → '+branch);
+      var summary = name + (summaryParts.length ? ' — '+summaryParts.join(', ') : ' updated');
+      appendAuditEntry({
+        entityType:'user', entityId:u.id, action:actionKey,
+        summary:summary,
+        before:beforeSnapshot, after:afterSnapshot,
+        branch:branch,
+      });
+    }
   }
   adminEditingUser=null; adminEditDraft=null; renderPage();
 }
-function adminToggleUser(uid){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;if(u.id===(getCurrentUser()||{}).id){addToast('Cannot deactivate yourself','error');return;}u.active=!u.active;saveUsers(us);addToast(u.name+(u.active?' activated':' deactivated'));renderPage();}
+function adminToggleUser(uid){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;if(u.id===(getCurrentUser()||{}).id){addToast('Cannot deactivate yourself','error');return;}var wasActive=u.active;u.active=!u.active;saveUsers(us);addToast(u.name+(u.active?' activated':' deactivated'));if(typeof appendAuditEntry==='function'){appendAuditEntry({entityType:'user',entityId:u.id,action:u.active?'user.activated':'user.deactivated',summary:(u.active?'Activated':'Deactivated')+' user: '+u.name,before:{active:wasActive},after:{active:u.active},branch:u.branch||null});}renderPage();}
 function adminChangeRole(uid,nr){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;u.role=nr;saveUsers(us);addToast(u.name+' role: '+nr);renderPage();}
 function adminChangeBranch(uid,nb){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;u.branch=nb;saveUsers(us);renderPage();}
 function adminDeleteUser(uid){if(!confirm('Permanently delete this user? This cannot be undone.'))return;saveUsers(getUsers().filter(function(u){return u.id!==uid;}));if(typeof dbDelete==='function')dbDelete('users',uid);addToast('User deleted','warning');adminEditingUser=null;renderPage();}
