@@ -110,10 +110,11 @@ Deno.serve(async (req) => {
     });
   }
 
-  // ── Debug action: list templates in the account ──
-  // POST {action:"list-templates"} returns the templates available so we can
-  // verify the template ID. Remove or gate behind a debug flag for production.
-  if (body.action === 'list-templates') {
+  // ── Debug actions ──
+  // POST {action:"list-templates"}                           → list templates
+  // POST {action:"get-envelope", envelopeId:"..."}           → envelope status
+  // Useful for verifying setup; gate behind a debug flag in production.
+  if (body.action === 'list-templates' || body.action === 'get-envelope') {
     let dbgToken: string;
     try { dbgToken = await getDocuSignAccessToken(); }
     catch (e) {
@@ -121,8 +122,20 @@ Deno.serve(async (req) => {
         status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
-    const tplsUrl = `${getDocuSignApiBase()}/v2.1/accounts/${getDocuSignAccountId()}/templates`;
-    const dr = await fetch(tplsUrl, { headers: { 'Authorization': `Bearer ${dbgToken}` } });
+    const acctBase = `${getDocuSignApiBase()}/v2.1/accounts/${getDocuSignAccountId()}`;
+    let dbgUrl = '';
+    if (body.action === 'list-templates') {
+      dbgUrl = `${acctBase}/templates`;
+    } else {
+      const envId = (body as { envelopeId?: string }).envelopeId;
+      if (!envId) {
+        return new Response(JSON.stringify({ ok: false, error: 'envelopeId required for get-envelope' }), {
+          status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      dbgUrl = `${acctBase}/envelopes/${envId}?include=recipients`;
+    }
+    const dr = await fetch(dbgUrl, { headers: { 'Authorization': `Bearer ${dbgToken}` } });
     const dj = await dr.json();
     return new Response(JSON.stringify(dj, null, 2), {
       status: dr.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
