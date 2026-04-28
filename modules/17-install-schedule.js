@@ -36,6 +36,58 @@ function deleteInstaller(id) {
   }
 }
 
+// Per-installer efficiency % — stored client-side until Supabase has column.
+// Lead installer's efficiency multiplies install duration: 80% → +25% time, 110% → -9% time.
+function getInstallerEfficiency(id) {
+  try { var m = JSON.parse(localStorage.getItem('spartan_installer_eff') || '{}'); return Number(m[id]) || 100; }
+  catch(e) { return 100; }
+}
+function setInstallerEfficiency(id, pct) {
+  try {
+    var m = JSON.parse(localStorage.getItem('spartan_installer_eff') || '{}');
+    m[id] = Number(pct) || 100;
+    localStorage.setItem('spartan_installer_eff', JSON.stringify(m));
+  } catch(e) {}
+}
+window.getInstallerEfficiency = getInstallerEfficiency;
+window.setInstallerEfficiency = setInstallerEfficiency;
+
+// Crew-aware install hours. Applies the lead installer's efficiency to base hours.
+function getCrewEffectiveHours(job, crewIds, fallback) {
+  var base = getEffectiveInstallHours(job, fallback);
+  if (!crewIds || crewIds.length === 0) return base;
+  var pct = getInstallerEfficiency(crewIds[0]);
+  if (pct <= 0 || pct === 100) return base;
+  return Math.ceil((base * 100 / pct) * 4) / 4;
+}
+window.getCrewEffectiveHours = getCrewEffectiveHours;
+
+// Drop handler for the Install Schedule Gantt — places a job at the dropped
+// installer/day/time. If dropped on an installer row not yet in the crew, the
+// installer is added as the new lead.
+window.dropJobOnGantt = function(jobId, ds, rowId, hourWidth, dayStart, offsetX) {
+  if (!jobId) return;
+  var hrFloat = (offsetX / hourWidth) + dayStart;
+  var hh = Math.floor(hrFloat);
+  var min = (hrFloat - hh) >= 0.5 ? '30' : '00';
+  if (hh < 0) hh = 0;
+  if (hh > 23) hh = 23;
+  var t = (hh < 10 ? '0' : '') + hh + ':' + min;
+  scheduleJobToDate(jobId, ds);
+  setTimeout(function() {
+    updateJobField(jobId, 'installTime', t);
+    if (rowId && rowId !== '_none') {
+      var _j = getState().jobs.find(function(x){ return x.id === jobId; });
+      var crew = (_j && _j.installCrew) || [];
+      if (crew.indexOf(rowId) < 0) {
+        assignCrewToJob(jobId, [rowId].concat(crew));
+      }
+    }
+    addToast('Scheduled ' + (jobId.split('_')[0]||'job') + ' at ' + formatTime12(t), 'success');
+    renderPage();
+  }, 50);
+};
+
 function getVehicles() { try { return JSON.parse(localStorage.getItem('spartan_vehicles') || '[]'); } catch(e) { return []; } }
 function saveVehicles(list) { localStorage.setItem('spartan_vehicles', JSON.stringify(list)); }
 function addVehicle(data) { var list = getVehicles(); data.id = 'veh_' + Date.now(); data.active = true; list.push(data); saveVehicles(list); renderPage(); }
@@ -477,7 +529,7 @@ function renderInstallSchedule() {
       if (row.id==='_none') return !(j.installCrew && j.installCrew.length>0);
       return (j.installCrew||[]).indexOf(row.id)>=0;
     });
-    var rh = rj.reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
+    var rh = rj.reduce(function(s,j){return s+(getCrewEffectiveHours(j, j.installCrew, 0));},0);
     var rf = rj.reduce(function(s,j){return s+(j.windows||[]).length;},0);
     var cap = row.max*5; var pct = cap>0?Math.round(rh/cap*100):0;
     var capCol = pct>90?'#ef4444':pct>70?'#f59e0b':'#22c55e';
@@ -497,7 +549,11 @@ function renderInstallSchedule() {
       var ds = isoDate(d); var td = isToday(d); var wk = d.getDay()===0||d.getDay()===6;
       var cellJobs = rj.filter(function(j){return j.installDate===ds;}).sort(function(a,b){return (a.installTime||'99').localeCompare(b.installTime||'99');});
 
-      g += '<div style="width:'+DAY_W+'px;min-width:'+DAY_W+'px;flex-shrink:0;position:relative;border-right:1px solid #e5e7eb;'+(td?'background:#fffbfb':wk?'background:#fafafa':'')+'">';
+      g += '<div style="width:'+DAY_W+'px;min-width:'+DAY_W+'px;flex-shrink:0;position:relative;border-right:1px solid #e5e7eb;'+(td?'background:#fffbfb':wk?'background:#fafafa':'')+'"'
+        +' ondragover="event.preventDefault();this.style.boxShadow=\'inset 0 0 0 2px #3b82f6\';"'
+        +' ondragleave="this.style.boxShadow=\'\';"'
+        +' ondrop="this.style.boxShadow=\'\';var r=this.getBoundingClientRect();dropJobOnGantt(event.dataTransfer.getData(\'text/plain\'),\''+ds+'\',\''+row.id+'\','+HOUR_W+','+DAY_START+',event.clientX-r.left);event.preventDefault();"'
+        +'>';
 
       // Hour gridlines
       for (var h = DAY_START; h < DAY_END; h++) {
@@ -520,7 +576,7 @@ function renderInstallSchedule() {
         var cn = c ? c.fn + ' ' + c.ln : '';
         var fr = (j.windows||[]).length;
         var startT = j.installTime || '';
-        var dur = getEffectiveInstallHours(j, 2);
+        var dur = getCrewEffectiveHours(j, j.installCrew, 2);
         var left = startT ? timeToPx(startT) : (idx * (HOUR_W * 2.2)); // stack if no time
         var width = durationToPx(dur);
         var endT = calcEndTime(startT, dur);
@@ -530,7 +586,7 @@ function renderInstallSchedule() {
         // Ensure bars don't overflow the day
         if (left + width > DAY_W) width = DAY_W - left;
 
-        g += '<div style="position:absolute;left:'+left+'px;top:'+(4 + idx * 0)+'px;width:'+width+'px;height:'+(ROW_H - 8)+'px;z-index:2;cursor:pointer" onclick="setState({crmMode:\'jobs\',page:\'jobs\',jobDetailId:\''+j.id+'\'})">';
+        g += '<div draggable="true" ondragstart="event.dataTransfer.setData(\'text/plain\',\''+j.id+'\');event.dataTransfer.effectAllowed=\'move\';this.style.opacity=\'.5\';" ondragend="this.style.opacity=\'\';" style="position:absolute;left:'+left+'px;top:'+(4 + idx * 0)+'px;width:'+width+'px;height:'+(ROW_H - 8)+'px;z-index:2;cursor:grab" onclick="setState({crmMode:\'jobs\',page:\'jobs\',jobDetailId:\''+j.id+'\'})" title="Drag to reschedule, click to open">';
         g += '<div style="height:100%;border-radius:6px;padding:3px 6px;overflow:hidden;display:flex;flex-direction:column;justify-content:center;'
           +'background:'+barCol+'18;border:1.5px solid '+barCol+'50;'
           +(noTime?'border-style:dashed;':'')
@@ -616,7 +672,7 @@ function renderInstallSchedule() {
       var ds = isoDate(d);
       if (d.getDay()===0||d.getDay()===6) return; // skip weekends
       var dayJobs = weekJobs.filter(function(j){return j.installDate===ds&&(j.installCrew||[]).indexOf(inst.id)>=0;});
-      var dayH = dayJobs.reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
+      var dayH = dayJobs.reduce(function(s,j){return s+(getCrewEffectiveHours(j, j.installCrew, 0));},0);
       var freeH = maxH - dayH;
       if (freeH >= 3) { // 3+ hours free = significant gap
         // Find best-fit unscheduled job for this gap
@@ -644,7 +700,7 @@ function renderInstallSchedule() {
     weekDates.forEach(function(d){
       var ds = isoDate(d);
       var dayJobs = weekJobs.filter(function(j){return j.installDate===ds&&(j.installCrew||[]).indexOf(inst.id)>=0;});
-      var dayH = dayJobs.reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
+      var dayH = dayJobs.reduce(function(s,j){return s+(getCrewEffectiveHours(j, j.installCrew, 0));},0);
       if (dayH > maxH) {
         var overBy = dayH - maxH;
         // Find smallest job to suggest moving
@@ -689,6 +745,45 @@ function renderInstallSchedule() {
       jobs:noTimeJobs
     });
   }
+
+  // 6. Vehicle / capacity validation per scheduled job
+  var allVehicles = (typeof getVehicles === 'function' ? getVehicles() : []).filter(function(v){return v.active;});
+  var SIZE_LIMITS = {small:1500, medium:2400, large:3000, xl:3600};
+  var SIZE_LABEL = {small:'Small', medium:'Medium', large:'Large', xl:'XL'};
+  weekJobs.forEach(function(j){
+    var crew = j.installCrew || [];
+    if (crew.length === 0) return; // separately flagged
+    var crewVehicles = allVehicles.filter(function(v){return crew.indexOf(v.assignedTo)>=0;});
+    var fr = (j.windows||[]).length;
+    var maxDim = (j.windows||[]).reduce(function(s,w){return Math.max(s, w.widthMm||0, w.heightMm||0);}, 0);
+    var jobLabel = (j.jobNumber||'') + (j.suburb?' \u00b7 '+j.suburb:'');
+
+    if (crewVehicles.length === 0) {
+      var heavy = maxDim >= 1800 || fr >= 4;
+      if (heavy) {
+        recs.push({type:'overload',priority:1,icon:'\ud83d\ude90',
+          title:'No vehicle assigned to crew on '+jobLabel,
+          detail:fr+' frames, largest '+(maxDim||'?')+'mm. Lead installer needs an assigned vehicle in Settings \u2192 Vehicles.'
+        });
+      }
+      return;
+    }
+    var bestSize = crewVehicles.reduce(function(s,v){return Math.max(s, SIZE_LIMITS[v.size]||0);}, 0);
+    var bestCap = crewVehicles.reduce(function(s,v){return Math.max(s, v.maxFrames||0);}, 0);
+    if (bestSize > 0 && maxDim > bestSize) {
+      var fitVeh = allVehicles.find(function(v){return (SIZE_LIMITS[v.size]||0) >= maxDim;});
+      recs.push({type:'overload',priority:0,icon:'\u26a0\ufe0f',
+        title:'Vehicle too small for '+jobLabel,
+        detail:'Largest frame is '+maxDim+'mm but assigned vehicle holds up to '+bestSize+'mm.'+(fitVeh?' \u2192 '+fitVeh.name+' ('+(SIZE_LABEL[fitVeh.size]||fitVeh.size)+') would fit.':' Add a larger vehicle in Settings.')
+      });
+    }
+    if (bestCap > 0 && fr > bestCap) {
+      recs.push({type:'overload',priority:0,icon:'\u26a0\ufe0f',
+        title:'Too many frames for vehicle on '+jobLabel,
+        detail:fr+' frames vs vehicle limit of '+bestCap+'. Consider splitting the job across two days or using a larger vehicle.'
+      });
+    }
+  });
 
   // Sort by priority (0=highest)
   recs.sort(function(a,b){return a.priority-b.priority;});
@@ -754,7 +849,8 @@ function renderInstallSchedule() {
     recsHtml += '<table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr><th class="th" style="font-size:10px">Job</th><th class="th" style="font-size:10px">Client</th><th class="th" style="font-size:10px">Suburb</th><th class="th" style="font-size:10px">Fr</th><th class="th" style="font-size:10px">Value</th><th class="th" style="font-size:10px">Schedule</th></tr></thead><tbody>';
     unscheduled.sort(function(a,b){return(b.val||0)-(a.val||0);}).forEach(function(j){
       var c=contacts.find(function(ct){return ct.id===j.contactId;});var cn=c?c.fn+' '+c.ln:'\u2014';
-      recsHtml += '<tr><td class="td" style="font-weight:700;color:#c41230">'+(j.jobNumber||'')+'</td>'
+      recsHtml += '<tr draggable="true" ondragstart="event.dataTransfer.setData(\'text/plain\',\''+j.id+'\');event.dataTransfer.effectAllowed=\'move\';this.style.opacity=\'.5\';" ondragend="this.style.opacity=\'\';" style="cursor:grab" title="Drag to a day/installer cell to schedule">'
+        +'<td class="td" style="font-weight:700;color:#c41230">\u22ee\u22ee '+(j.jobNumber||'')+'</td>'
         +'<td class="td">'+cn+'</td>'
         +'<td class="td">'+(j.suburb||'')+'</td>'
         +'<td class="td">'+(j.windows||[]).length+'</td>'
@@ -772,7 +868,7 @@ function renderInstallSchedule() {
   var crew = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">';
   installers.forEach(function(inst){
     var ij=weekJobs.filter(function(j){return(j.installCrew||[]).indexOf(inst.id)>=0;});
-    var ih=ij.reduce(function(s,j){return s+(getEffectiveInstallHours(j, 0));},0);
+    var ih=ij.reduce(function(s,j){return s+(getCrewEffectiveHours(j, j.installCrew, 0));},0);
     var cap=(inst.maxHoursPerDay||8)*5;var pct=cap>0?Math.round(ih/cap*100):0;
     var capCol=pct>90?'#ef4444':pct>70?'#f59e0b':'#22c55e';
     crew += '<div style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:#fff;border:1px solid #e5e7eb;border-radius:8px">'
