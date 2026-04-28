@@ -77,6 +77,34 @@ Deno.serve(async (req) => {
               'envelopeId=', payload.data?.envelopeId || payload.envelopeId,
               'top-keys=', Object.keys(payload || {}).join(','));
 
+  // Persist the parsed event + payload shape to a Supabase table so we can
+  // SQL-inspect what DocuSign is sending. Survives log rotation and avoids
+  // dashboard log-tab discoverability issues. Best-effort — failures here
+  // don't block the rest of the handler.
+  try {
+    const _supaUrl = Deno.env.get('SUPABASE_URL');
+    const _supaKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    if (_supaUrl && _supaKey) {
+      const _dbg = createClient(_supaUrl, _supaKey);
+      // Strip heavy document bytes so the row stays small
+      const slim = JSON.parse(JSON.stringify(payload));
+      if (slim?.data?.envelopeSummary?.documents) {
+        slim.data.envelopeSummary.documents = slim.data.envelopeSummary.documents.map((d: any) => ({
+          ...d, PDFBytes: d.PDFBytes ? `[${d.PDFBytes.length} bytes]` : null,
+        }));
+      }
+      await _dbg.from('docusign_webhook_events').insert({
+        received_at: new Date().toISOString(),
+        event: payload.event || payload.eventType || null,
+        envelope_id: payload.data?.envelopeId || payload.envelopeId || null,
+        top_keys: Object.keys(payload || {}),
+        payload: slim,
+      });
+    }
+  } catch (logEx) {
+    console.error('debug log table insert failed:', logEx);
+  }
+
   // DocuSign Connect (JSON v2 format) sends:
   //   payload.event            — e.g. "envelope-completed"
   //   payload.data.envelopeId
