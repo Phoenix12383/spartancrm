@@ -25,6 +25,7 @@ export const IVR_MENU = {
   '1': { label: 'Sales',    roles: ['sales_rep', 'sales_manager'] },
   '2': { label: 'Service',  roles: ['service_staff'] },
   '3': { label: 'Accounts', roles: ['accounts'] },
+  '4': { label: 'Admin',    roles: ['admin'] },
 };
 
 // Resolve a caller's phone number to the rep responsible for them.
@@ -82,6 +83,21 @@ export async function findUsersForTeamDigit(supabase, digit) {
     .from('users')
     .select('id, name, email, role')
     .in('role', team.roles)
+    .eq('active', true);
+
+  if (error || !users) return [];
+  return users;
+}
+
+// Ring-everyone fallback — used when the caller doesn't press any digit on
+// the IVR menu (or when no team matches their selection). Returns every
+// active user. The simul-ring then reaches anyone whose Twilio Device is
+// registered (i.e. signed in + connected Gmail), so the call gets answered
+// by whoever's actually at their desk regardless of role.
+export async function findAllActiveUsers(supabase) {
+  const { data: users, error } = await supabase
+    .from('users')
+    .select('id, name, email, role')
     .eq('active', true);
 
   if (error || !users) return [];

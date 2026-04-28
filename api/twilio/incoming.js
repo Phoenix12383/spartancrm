@@ -21,10 +21,10 @@
 import { validateTwilioRequest } from '../_lib/twilioValidate.js';
 import { getServerSupabase } from '../_lib/supabase.js';
 import { findEntityByPhone } from '../_lib/entityLookup.js';
-import { findAssignedRepForCaller, IVR_MENU } from '../_lib/twilioRouting.js';
+import { findAssignedRepForCaller, findAllActiveUsers, IVR_MENU } from '../_lib/twilioRouting.js';
 import { isBusinessHours } from '../_lib/businessHours.js';
 
-const GREETING = 'Welcome to Spartan Double Glazing. Press 1 for Sales, 2 for Service, or 3 for Accounts. To speak with anyone, please hold.';
+const GREETING = 'Welcome to Spartan Double Glazing. Press 1 for Sales, 2 for Service, 3 for Accounts, or 4 for Admin. To speak with anyone, please hold.';
 const VOICEMAIL_GREETING = 'Sorry, you have reached us outside business hours. Please leave a message after the beep and we will return your call.';
 const NO_ANSWER_VOICEMAIL_GREETING = 'Sorry, no one is available to take your call right now. Please leave a message after the beep.';
 
@@ -102,7 +102,24 @@ export default async function handler(req, res) {
   twiml += `
   <Gather numDigits="1" timeout="10" action="/api/twilio/ivr-route" method="POST">
     <Say voice="Polly.Nicole">${escapeXml(GREETING)}</Say>
-  </Gather>
+  </Gather>`;
+
+  // No digit pressed → honour the "or to speak with anyone, please hold" promise
+  // in the greeting by simul-ringing every active user. Anyone with a registered
+  // Twilio Device (i.e. signed in + connected Gmail) will get the banner pop.
+  // Falls through to voicemail if no one picks up in 25s.
+  const allUsers = await findAllActiveUsers(supabase);
+  if (allUsers.length > 0) {
+    const clientsXml = allUsers
+      .map(u => `<Client>spartan_${escapeXml(u.id)}</Client>`)
+      .join('\n    ');
+    twiml += `
+  <Dial timeout="25" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed">
+    ${clientsXml}
+  </Dial>`;
+  }
+
+  twiml += `
   <Say voice="Polly.Nicole">${escapeXml(NO_ANSWER_VOICEMAIL_GREETING)}</Say>
   <Record action="/api/twilio/voicemail" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed"/>
   <Say voice="Polly.Nicole">Thanks. Goodbye.</Say>

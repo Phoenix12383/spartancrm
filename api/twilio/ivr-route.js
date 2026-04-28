@@ -12,10 +12,10 @@
 
 import { validateTwilioRequest } from '../_lib/twilioValidate.js';
 import { getServerSupabase } from '../_lib/supabase.js';
-import { findUsersForTeamDigit, IVR_MENU } from '../_lib/twilioRouting.js';
+import { findUsersForTeamDigit, findAllActiveUsers, IVR_MENU } from '../_lib/twilioRouting.js';
 
 const NO_ANSWER_VOICEMAIL_GREETING = 'Sorry, no one is available to take your call right now. Please leave a message after the beep.';
-const INVALID_DIGIT_GREETING = 'Sorry, that was not a valid option. Please leave a message after the beep.';
+const INVALID_DIGIT_GREETING = 'Sorry, that was not a valid option. Trying to reach anyone available now.';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -31,11 +31,27 @@ export default async function handler(req, res) {
   const body = req.body || {};
   const digit = String(body.Digits || '').trim();
 
-  // Invalid / unknown digit → voicemail directly
+  const supabase = getServerSupabase();
+
+  // Invalid / unknown digit → ring every active user, then voicemail. Same
+  // behaviour as the no-digit path in /incoming so callers who fat-finger
+  // a key still reach a human if anyone's around.
   if (!digit || !IVR_MENU[digit]) {
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+    const allUsers = await findAllActiveUsers(supabase);
+    let twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Nicole">${escapeXml(INVALID_DIGIT_GREETING)}</Say>
+  <Say voice="Polly.Nicole">${escapeXml(INVALID_DIGIT_GREETING)}</Say>`;
+    if (allUsers.length > 0) {
+      const clientsXml = allUsers
+        .map(u => `<Client>spartan_${escapeXml(u.id)}</Client>`)
+        .join('\n    ');
+      twiml += `
+  <Dial timeout="25" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed">
+    ${clientsXml}
+  </Dial>`;
+    }
+    twiml += `
+  <Say voice="Polly.Nicole">${escapeXml(NO_ANSWER_VOICEMAIL_GREETING)}</Say>
   <Record action="/api/twilio/voicemail" maxLength="120" timeout="5" playBeep="true" recordingStatusCallback="/api/twilio/recording" recordingStatusCallbackEvent="completed"/>
   <Say voice="Polly.Nicole">Thanks. Goodbye.</Say>
 </Response>`;
@@ -44,7 +60,6 @@ export default async function handler(req, res) {
     return;
   }
 
-  const supabase = getServerSupabase();
   const teamUsers = await findUsersForTeamDigit(supabase, digit);
 
   // Build simul-ring TwiML. If no users on that team, go straight to voicemail.
