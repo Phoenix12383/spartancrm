@@ -607,15 +607,20 @@ function renderInstallSchedule() {
         g += '</div></div>';
       });
 
-      // Click to schedule on empty area
+      // Empty cell — show dropdown if there are unscheduled jobs, otherwise a drop hint
       if (cellJobs.length === 0) {
-        g += '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:1">'
-          +'<select class="sel" style="font-size:9px;padding:2px 4px;color:#d1d5db;background:transparent;border-color:transparent" onchange="if(this.value){scheduleJobToDate(this.value,\''+ds+'\');'
-          +(row.id!=='_none'?'var _jid=this.value;setTimeout(function(){var _j=getState().jobs.find(function(x){return x.id===_jid;});if(_j&&(_j.installCrew||[]).indexOf(\''+row.id+'\')<0){assignCrewToJob(_jid,(_j.installCrew||[]).concat([\''+row.id+'\']));}renderPage();},50);':'')
-          +'this.value=\'\';}" onclick="event.stopPropagation()" onfocus="this.style.borderColor=\'#e5e7eb\'" onblur="this.style.borderColor=\'transparent\'">'
-          +'<option value="">+ schedule</option>'
-          +unscheduled.map(function(j){return '<option value="'+j.id+'">'+(j.jobNumber||'')+' '+(j.suburb||'')+'</option>';}).join('')
-          +'</select></div>';
+        if (unscheduled.length > 0) {
+          g += '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:1;pointer-events:none">'
+            +'<select class="sel" style="font-size:9px;padding:2px 4px;color:#9ca3af;background:transparent;border-color:transparent;pointer-events:auto" onchange="if(this.value){scheduleJobToDate(this.value,\''+ds+'\');'
+            +(row.id!=='_none'?'var _jid=this.value;setTimeout(function(){var _j=getState().jobs.find(function(x){return x.id===_jid;});if(_j&&(_j.installCrew||[]).indexOf(\''+row.id+'\')<0){assignCrewToJob(_jid,(_j.installCrew||[]).concat([\''+row.id+'\']));}renderPage();},50);':'')
+            +'this.value=\'\';}" onclick="event.stopPropagation()" onfocus="this.style.borderColor=\'#e5e7eb\'" onblur="this.style.borderColor=\'transparent\'">'
+            +'<option value="">+ schedule ('+unscheduled.length+')</option>'
+            +unscheduled.map(function(j){return '<option value="'+j.id+'">'+(j.jobNumber||'')+' '+(j.suburb||'')+'</option>';}).join('')
+            +'</select></div>';
+        } else {
+          g += '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:1;pointer-events:none">'
+            +'<span style="font-size:9px;color:#d1d5db;font-style:italic">drag to schedule</span></div>';
+        }
       }
 
       g += '</div>'; // end day cell
