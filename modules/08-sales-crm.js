@@ -4177,6 +4177,26 @@ function renderNewDealModal() {
       <div style="padding:24px;display:flex;flex-direction:column;gap:14px">
         <div><label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">Deal Title *</label>
           <input class="inp" id="nd_title" placeholder="e.g. Double glazing - Full home"></div>
+        <div>
+          <label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:6px">Deal Type *</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <label class="nd-dealtype-card" data-value="residential" onclick="_ndDealTypeSelect('residential')" style="cursor:pointer;border:2px solid #e5e7eb;border-radius:10px;padding:12px 14px;background:#fff;transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px">
+              <span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#1a1a1a">
+                <input type="radio" name="nd_dealType" value="residential" style="margin:0">
+                Residential
+              </span>
+              <span style="font-size:11px;color:#6b7280;line-height:1.35">Single home, owner-occupied</span>
+            </label>
+            <label class="nd-dealtype-card" data-value="commercial" onclick="_ndDealTypeSelect('commercial')" style="cursor:pointer;border:2px solid #e5e7eb;border-radius:10px;padding:12px 14px;background:#fff;transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px">
+              <span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#1a1a1a">
+                <input type="radio" name="nd_dealType" value="commercial" style="margin:0">
+                Commercial
+              </span>
+              <span style="font-size:11px;color:#6b7280;line-height:1.35">Builder, body corp, rental, retail</span>
+            </label>
+          </div>
+          <div style="font-size:11px;color:#9ca3af;margin-top:6px">Affects commission rules, reports, and routing. You can change it later from Deal Detail.</div>
+        </div>
         <div><label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">Contact *</label>
           <select class="sel" id="nd_cid"><option value="">Select contact…</option>${contacts.map(c => `<option value="${c.id}">${c.fn} ${c.ln}</option>`).join('')}</select></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -4205,17 +4225,39 @@ function renderNewDealModal() {
   </div>`;
 }
 
+// Brief 5: deal-type radio-card UI helper. Highlights the chosen card and
+// checks the underlying radio without re-rendering the whole modal (which
+// would blow away other field values the user has typed).
+function _ndDealTypeSelect(value) {
+  document.querySelectorAll('.nd-dealtype-card').forEach(function (card) {
+    var on = card.getAttribute('data-value') === value;
+    card.style.borderColor = on ? '#c41230' : '#e5e7eb';
+    card.style.background  = on ? '#fff5f6' : '#fff';
+    var radio = card.querySelector('input[type="radio"]');
+    if (radio) radio.checked = on;
+  });
+}
+
 function saveNewDeal() {
   const title = document.getElementById('nd_title').value.trim();
   const cid = document.getElementById('nd_cid').value;
   if (!title || !cid) { addToast('Title and contact are required', 'error'); return; }
+  // Brief 5: deal type must be explicitly chosen at creation — no silent default.
+  // Read from the checked radio inside the card group; null if nothing picked.
+  const dealTypeEl = document.querySelector('input[name="nd_dealType"]:checked');
+  const dealType = dealTypeEl ? dealTypeEl.value : null;
+  if (dealType !== 'residential' && dealType !== 'commercial') {
+    addToast('Confirm whether this is a Residential or Commercial deal', 'error');
+    return;
+  }
   const valEl = document.getElementById('nd_val');
   const valErr = document.getElementById('nd_val_err');
   const valV = validateDealValue(valEl.value);
   if (valErr) { valErr.style.display = valV.ok ? 'none' : 'block'; valErr.textContent = valV.error; }
   if (!valV.ok) { addToast(valV.error, 'error'); return; }
   const pl = PIPELINES.find(p => p.id === dPipeline);
-  const nd = { id: 'd' + Date.now(), title, cid, pid: dPipeline, sid: pl.stages[0].id, val: valV.normalized, rep: (getCurrentUser() || { name: 'Admin' }).name, branch: document.getElementById('nd_branch').value, street: document.getElementById('nd_street')?.value.trim() || '', suburb: document.getElementById('nd_suburb')?.value.trim() || '', state: document.getElementById('nd_state')?.value || 'VIC', postcode: document.getElementById('nd_postcode')?.value.trim() || '', age: 0, won: false, lost: false, wonDate: null, created: new Date().toISOString().slice(0, 10), tags: [], quotes: [], activeQuoteId: null, wonQuoteId: null, activities: [{ id: 'a' + Date.now(), type: 'created', text: 'Deal created.', date: new Date().toISOString().slice(0, 10), by: (getCurrentUser() || { name: 'Admin' }).name, done: false, dueDate: '' }] };
+  const creationActivityText = 'Deal created (' + (dealType === 'commercial' ? 'Commercial' : 'Residential') + ').';
+  const nd = { id: 'd' + Date.now(), title, cid, pid: dPipeline, sid: pl.stages[0].id, val: valV.normalized, rep: (getCurrentUser() || { name: 'Admin' }).name, branch: document.getElementById('nd_branch').value, street: document.getElementById('nd_street')?.value.trim() || '', suburb: document.getElementById('nd_suburb')?.value.trim() || '', state: document.getElementById('nd_state')?.value || 'VIC', postcode: document.getElementById('nd_postcode')?.value.trim() || '', age: 0, won: false, lost: false, wonDate: null, created: new Date().toISOString().slice(0, 10), dealType: dealType, tags: [], quotes: [], activeQuoteId: null, wonQuoteId: null, activities: [{ id: 'a' + Date.now(), type: 'created', text: creationActivityText, date: new Date().toISOString().slice(0, 10), by: (getCurrentUser() || { name: 'Admin' }).name, done: false, dueDate: '' }] };
   setState({ deals: [nd, ...getState().deals], modal: null, page: 'deals', dealDetailId: null });
   dbInsert('deals', dealToDb(nd));
   if (nd.activities && nd.activities[0]) dbInsert('activities', actToDb(nd.activities[0], 'deal', nd.id));
