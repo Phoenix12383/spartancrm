@@ -428,7 +428,7 @@ function renderSidebar(){
     ['email','Email'],['phone','Phone'],['reports','Reports'],['map','Schedule Map'],['settings','Settings'],
   ];
   const jobsNav=[
-    ['jobdashboard','Dashboard'],['jobs','Jobs'],['finalsignoff','Final Sign Off'],['schedule','Install Schedule'],['capacity','Smart Planner'],['cmmap','CM Schedule Map'],['weeklyrev','Weekly Revenue'],['invoicing','Invoicing'],['jobsettings','Settings'],
+    ['jobdashboard','Dashboard'],['jobs','Jobs'],['finalsignoff','Final Sign Off'],['schedule','Install Schedule'],['cmmap','CM Schedule Map'],['weeklyrev','Weekly Revenue'],['invoicing','Invoicing'],['jobsettings','Settings'],
   ];
   const factoryNav=[
     ['factorydash','Dashboard'],['prodqueue','Job Queue'],['prodboard','Production Board'],['factorybom','BOM & Cut Sheets'],['factorycap','Capacity Planner'],['factorydispatch','Dispatch'],

@@ -699,7 +699,8 @@ function renderInstallSchedule() {
     +'<button onclick="setState({scheduleWeekOffset:0})" class="btn-'+(offset===0?'r':'w')+'" style="padding:5px 14px;font-size:12px;font-weight:700">This Week</button>'
     +'<button onclick="setState({scheduleWeekOffset:(getState().scheduleWeekOffset||0)+1})" class="btn-w" style="padding:5px 10px;font-size:12px">\u2192</button>'
     +'<span style="font-family:Syne,sans-serif;font-weight:700;font-size:14px;margin-left:8px">'+fmtShortDate(weekDates[0])+' \u2014 '+fmtShortDate(weekDates[6])+'</span>'
-    +(unscheduled.length>0 ? '<button onclick="runAutoSchedule()" class="btn-r" style="padding:5px 14px;font-size:12px;margin-left:auto;gap:4px">\ud83e\ude84 Auto-Schedule '+unscheduled.length+' job'+(unscheduled.length!==1?'s':'')+'</button>' : '')
+    +'<button onclick="setState({page:\'capacity\'})" class="btn-w" title="Preview a full week plan with per-job reasoning, revenue projection, and per-installer capacity bars" style="padding:5px 14px;font-size:12px;margin-left:auto;gap:4px">\ud83e\udde0 Smart Planner</button>'
+    +(unscheduled.length>0 ? '<button onclick="runAutoSchedule()" class="btn-r" style="padding:5px 14px;font-size:12px;gap:4px">\ud83e\ude84 Auto-Schedule '+unscheduled.length+' job'+(unscheduled.length!==1?'s':'')+'</button>' : '')
     +'</div>';
 
   // Installer rows
@@ -1490,7 +1491,9 @@ function renderCapacityPlanning() {
   capBreak += '</div>';
 
   return '<div>'
-    +'<div style="margin-bottom:12px"><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:22px;margin:0">\ud83e\udde0 Smart Capacity Planning</h2>'
+    +'<div style="margin-bottom:12px">'
+    +'<button onclick="setState({page:\'schedule\'})" class="btn-w" style="padding:4px 10px;font-size:11px;margin-bottom:8px;gap:4px">\u2190 Back to Install Schedule</button>'
+    +'<h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:22px;margin:0">\ud83e\udde0 Smart Capacity Planning</h2>'
     +'<p style="color:#6b7280;font-size:13px;margin:4px 0 0">Automatic scheduling \u2014 oldest jobs first, clustered by area, balanced by installer capacity</p></div>'
     +navH+kpi+actions+table+capBreak
     +'</div>';
