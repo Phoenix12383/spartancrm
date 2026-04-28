@@ -294,7 +294,8 @@ function renderJobDetail() {
   var hist = job.statusHistory || [];
   var enteredAt = hist.length > 0 ? hist[hist.length - 1].at : (job.created || null);
   var daysAtStatus = enteredAt ? Math.floor((new Date() - new Date(enteredAt)) / 86400000) : 0;
-  var STALE = {a_check_measure:7, c_awaiting_2nd_payment:14, c1_final_sign_off:5, b_check_status:2};
+  var _kpi = (typeof getKpiThresholds === 'function') ? getKpiThresholds() : {staleCheckMeasure:7,staleAwaitingPayment:14,staleFinalSignOff:5,staleCheckStatus:2};
+  var STALE = {a_check_measure:_kpi.staleCheckMeasure, c_awaiting_2nd_payment:_kpi.staleAwaitingPayment, c1_final_sign_off:_kpi.staleFinalSignOff, b_check_status:_kpi.staleCheckStatus};
   var threshold = STALE[job.status] || 14;
   var stalenessCol = daysAtStatus > threshold ? '#ef4444' : daysAtStatus > threshold*0.75 ? '#f59e0b' : '#22c55e';
   var stalenessLabel = daysAtStatus > threshold ? 'STUCK' : daysAtStatus > threshold*0.75 ? 'CHECK' : 'ON-TRACK';

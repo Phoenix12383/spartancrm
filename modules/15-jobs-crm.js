@@ -85,13 +85,13 @@ function renderJobDashboard() {
     +'<a href="#" onclick="event.preventDefault();setState({page:\'schedule\'})" class="btn-r" style="flex-shrink:0;text-decoration:none;font-size:12px;padding:8px 16px;gap:6px">'+Icon({n:'schedule',size:14})+' Open Schedule</a>'
     +'</div>';
 
-  // ── Stale Alerts (manual §4.1 thresholds) ─────────────────────────────────
-  // Per the manual, jobs flag amber/red if they sit too long at certain stages.
+  // ── Stale Alerts (manual §4.1 thresholds, admin-configurable in Settings) ─
+  var _kpi = (typeof getKpiThresholds === 'function') ? getKpiThresholds() : {staleCheckMeasure:7,staleAwaitingPayment:14,staleFinalSignOff:5,staleCheckStatus:2,cmFromDeposit:24};
   var STALE_THRESHOLDS = {
-    'a_check_measure':         {days:7,  label:'CM not booked within 7 days of deposit'},
-    'c_awaiting_2nd_payment':  {days:14, label:'Awaiting 45% > 14 days post-CM'},
-    'c1_final_sign_off':       {days:5,  label:'Awaiting customer DocuSign > 5 days'},
-    'b_check_status':          {days:2,  label:'Awaiting bookkeeper triage > 2 days'},
+    'a_check_measure':         {days:_kpi.staleCheckMeasure,    label:'CM not booked within '+_kpi.staleCheckMeasure+' days of deposit'},
+    'c_awaiting_2nd_payment':  {days:_kpi.staleAwaitingPayment, label:'Awaiting 45% > '+_kpi.staleAwaitingPayment+' days post-CM'},
+    'c1_final_sign_off':       {days:_kpi.staleFinalSignOff,    label:'Awaiting customer DocuSign > '+_kpi.staleFinalSignOff+' days'},
+    'b_check_status':          {days:_kpi.staleCheckStatus,     label:'Awaiting bookkeeper triage > '+_kpi.staleCheckStatus+' days'},
   };
   function _enteredStatusAt(j) {
     var hist = j.statusHistory || [];
@@ -102,13 +102,14 @@ function renderJobDashboard() {
     if (!iso) return 0;
     return Math.floor((now - new Date(iso)) / 86400000);
   }
-  // 24-hour CM scheduling KPI: jobs at a_check_measure with deposit paid but not booked > 24h
+  // CM scheduling KPI: jobs at a_check_measure with deposit paid but not booked beyond threshold
+  var cmKpiHours = _kpi.cmFromDeposit;
   var cmKpiOverdue = jobs.filter(function(j){
     if (j.status !== 'a_check_measure' || j.cmBookedDate) return false;
     var dep = (typeof getDepositPaidInfo === 'function') ? getDepositPaidInfo(j.id) : null;
     if (!dep || !dep.paidDate) return false;
     var hours = (now - new Date(dep.paidDate)) / 3600000;
-    return hours > 24;
+    return hours > cmKpiHours;
   });
   // Stale jobs at any of the 4 monitored statuses
   var stale = [];
@@ -132,7 +133,7 @@ function renderJobDashboard() {
       +'</div>';
     if (cmKpiOverdue.length > 0) {
       h += '<div style="padding:10px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;margin-bottom:8px;font-size:12px;color:#92400e">'
-        +'<strong>⏱️ 24h CM Booking KPI Breached:</strong> '+cmKpiOverdue.length+' job'+(cmKpiOverdue.length!==1?'s':'')+' with deposit paid but no Check Measure booked. Manual §3 Step 3 — KPI is 24 hours. '
+        +'<strong>⏱️ '+cmKpiHours+'h CM Booking KPI Breached:</strong> '+cmKpiOverdue.length+' job'+(cmKpiOverdue.length!==1?'s':'')+' with deposit paid but no Check Measure booked. Manual §3 Step 3 — KPI is '+cmKpiHours+' hours. '
         +cmKpiOverdue.slice(0,4).map(function(j){return '<a href="#" onclick="event.preventDefault();setState({crmMode:\'jobs\',page:\'jobs\',jobDetailId:\''+j.id+'\'})" style="color:#c41230;font-weight:600;text-decoration:none">'+(j.jobNumber||j.id)+'</a>';}).join(' · ')
         +(cmKpiOverdue.length>4?' · +'+(cmKpiOverdue.length-4)+' more':'')
         +'</div>';

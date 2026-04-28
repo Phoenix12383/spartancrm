@@ -20,6 +20,7 @@ function renderJobSettings() {
     ['vehicles','Vehicles'],
     ['tools','Tools'],
     ['capacity','Capacity'],
+    ['kpi','KPI Thresholds'],
     ['targets','Weekly Targets'],
     ['jobfields','Job Custom Fields'],
     ['jobnumbers','Job Numbers & Entities'],
@@ -330,6 +331,48 @@ function renderJobSettings() {
     }
 
   // ── WEEKLY TARGETS ────────────────────────────────────────────────────────
+  // ── KPI THRESHOLDS ────────────────────────────────────────────────────────
+  } else if (jobSettTab === 'kpi') {
+    var isAdmin = ((getCurrentUser()||{role:''}).role === 'admin');
+    var k = (typeof getKpiThresholds === 'function') ? getKpiThresholds() : {};
+    var defaults = (typeof DEFAULT_KPI_THRESHOLDS === 'object') ? DEFAULT_KPI_THRESHOLDS : {};
+    var FIELDS = [
+      {key:'cmFromDeposit',        label:'CM Booking KPI',                   unit:'hours', desc:'Flag jobs amber if Check Measure not booked within this many hours of deposit clearing.', section:'CM Stage'},
+      {key:'staleCheckMeasure',    label:'Stale at Check Measure',           unit:'days',  desc:'Job sits at "a. Check Measure" longer than this → red flag on dashboard.', section:'Status Staleness'},
+      {key:'staleAwaitingPayment', label:'Stale Awaiting 45%',               unit:'days',  desc:'Job at "c. Awaiting Second Payment" longer than this → red flag.', section:'Status Staleness'},
+      {key:'staleFinalSignOff',    label:'Stale Final Sign Off',             unit:'days',  desc:'Job at "d. Final Sign Off" awaiting customer DocuSign longer than this → red flag.', section:'Status Staleness'},
+      {key:'staleCheckStatus',     label:'Stale Check Status / Triage',      unit:'days',  desc:'Job at "b. Check Status / Book Service" awaiting bookkeeper triage longer than this → red flag.', section:'Status Staleness'},
+      {key:'installOverrunPct',    label:'Install Time Overrun',             unit:'%',     desc:'Alert install manager when on-site time exceeds CAD forecast by this percentage. Manual §7.10.', section:'Install Day'},
+    ];
+    content = '<div style="font-size:13px;color:#6b7280;margin-bottom:16px">KPI thresholds drive the amber/red flags on the Job Dashboard, the staleness colour-coding on the Status card, and the install-overrun alerts in the Smart Recommendations panel. Defaults match the manual; tune them to your operating tempo.</div>';
+    var sections = ['CM Stage','Status Staleness','Install Day'];
+    sections.forEach(function(sec){
+      content += '<div style="margin-bottom:16px"><div style="font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">'+sec+'</div>'
+        +'<div style="display:flex;flex-direction:column;gap:8px">';
+      FIELDS.filter(function(f){return f.section===sec;}).forEach(function(f){
+        var cur = (typeof k[f.key] === 'number') ? k[f.key] : defaults[f.key];
+        var def = defaults[f.key];
+        var changed = cur !== def;
+        content += '<div class="card" style="padding:14px;display:grid;grid-template-columns:1fr 200px;gap:14px;align-items:center">'
+          +'<div><div style="font-size:13px;font-weight:600;color:#111;margin-bottom:2px">'+f.label+(changed?' <span style="font-size:9px;background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;margin-left:6px;font-weight:700">CUSTOM</span>':'')+'</div>'
+          +'<div style="font-size:11px;color:#6b7280;line-height:1.5">'+f.desc+'</div>'
+          +'<div style="font-size:10px;color:#9ca3af;margin-top:3px">Default: '+def+' '+f.unit+'</div></div>'
+          +'<div style="display:flex;align-items:center;gap:6px">'
+          +(isAdmin?'<input type="number" id="kpi_'+f.key+'" value="'+cur+'" min="1" style="font-size:14px;padding:8px 10px;width:80px;border:1px solid #e5e7eb;border-radius:6px;text-align:right;font-weight:700">':'<span style="font-size:14px;font-weight:700">'+cur+'</span>')
+          +'<span style="font-size:12px;color:#6b7280">'+f.unit+'</span>'
+          +'</div></div>';
+      });
+      content += '</div></div>';
+    });
+    if (isAdmin) {
+      content += '<div style="display:flex;gap:8px;margin-top:14px;padding-top:14px;border-top:1px solid #f0f0f0">'
+        +'<button onclick="var t={};'+FIELDS.map(function(f){return 't.'+f.key+'=parseInt(document.getElementById(\'kpi_'+f.key+'\').value)||'+defaults[f.key]+';';}).join('')+'saveKpiThresholds(t);addToast(\'KPI thresholds saved\',\'success\');renderPage();" class="btn-r" style="font-size:13px;padding:8px 24px">Save Thresholds</button>'
+        +'<button onclick="if(confirm(\'Reset all KPI thresholds to manual defaults?\')){resetKpiThresholds();addToast(\'Reset to defaults\',\'success\');renderPage();}" class="btn-w" style="font-size:13px">Reset to Manual Defaults</button>'
+        +'</div>';
+    } else {
+      content += '<div style="margin-top:14px;font-size:11px;color:#9ca3af;padding:10px 14px;background:#f9fafb;border-radius:8px">Only admins can edit KPI thresholds.</div>';
+    }
+
   } else if (jobSettTab === 'targets') {
     var t = getState().weeklyTargets || {};
     content = '<div style="font-size:13px;color:#6b7280;margin-bottom:16px">Set weekly installation revenue targets per branch. These drive the KPI bars on the Install Schedule and Smart Planner.</div>';

@@ -60,6 +60,34 @@ const JOB_STATUS_GROUPS = [
   {key:'complete',   label:'Complete',    col:'#16a34a'},
 ];
 
+// ── KPI Thresholds (manual §4.10) ──────────────────────────────────────────
+// Editable in Settings → KPI Thresholds. Admin-tunable so each branch can match
+// their actual operating tempo without a code change.
+var DEFAULT_KPI_THRESHOLDS = {
+  cmFromDeposit:        24,  // hours — deposit cleared but CM not booked → amber on dashboard (manual §3 Step 3)
+  staleCheckMeasure:    7,   // days at a_check_measure (manual §4.1)
+  staleAwaitingPayment: 14,  // days at c_awaiting_2nd_payment (manual §4.1)
+  staleFinalSignOff:    5,   // days at c1_final_sign_off awaiting customer DocuSign (manual §4.1)
+  staleCheckStatus:     2,   // days at b_check_status awaiting bookkeeper triage (manual §4.1)
+  installOverrunPct:    20,  // % over CAD forecast time → time-overrun alert (manual §7.10)
+};
+function getKpiThresholds() {
+  try {
+    var saved = JSON.parse(localStorage.getItem('spartan_kpi_thresholds') || '{}');
+    return Object.assign({}, DEFAULT_KPI_THRESHOLDS, saved);
+  } catch(e) { return Object.assign({}, DEFAULT_KPI_THRESHOLDS); }
+}
+function saveKpiThresholds(thresholds) {
+  try { localStorage.setItem('spartan_kpi_thresholds', JSON.stringify(thresholds)); } catch(e) {}
+}
+function resetKpiThresholds() {
+  try { localStorage.removeItem('spartan_kpi_thresholds'); } catch(e) {}
+}
+window.getKpiThresholds = getKpiThresholds;
+window.saveKpiThresholds = saveKpiThresholds;
+window.resetKpiThresholds = resetKpiThresholds;
+window.DEFAULT_KPI_THRESHOLDS = DEFAULT_KPI_THRESHOLDS;
+
 // Legacy status keys that have been renamed. Display the new label and let
 // callers know the canonical key so any pending writes can migrate the data.
 var LEGACY_STATUS_ALIASES = {

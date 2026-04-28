@@ -1000,7 +1000,8 @@ function renderInstallSchedule() {
   });
 
   // 8. Time-overrun alert (TESTING \u2014 uses install progress side store)
-  // Manual \u00a77.10: alert when a crew is running >20% over forecast time.
+  // Manual \u00a77.10: alert when a crew is running >X% over forecast time (configurable in Settings).
+  var overrunPct = ((typeof getKpiThresholds === 'function') ? getKpiThresholds().installOverrunPct : 20) / 100;
   weekJobs.forEach(function(j){
     var p = (typeof getInstallProgress === 'function') ? getInstallProgress(j.id) : null;
     if (!p || !p.arrivedAt) return;
@@ -1008,10 +1009,10 @@ function renderInstallSchedule() {
     if (pct >= 100) return; // already done
     var actualH = (new Date() - new Date(p.arrivedAt)) / 3600000;
     var forecastH = getCrewEffectiveHours(j, j.installCrew, 4);
-    if (forecastH > 0 && actualH > forecastH * 1.2) {
-      var overPct = Math.round((actualH/forecastH - 1) * 100);
+    if (forecastH > 0 && actualH > forecastH * (1 + overrunPct)) {
+      var overPctActual = Math.round((actualH/forecastH - 1) * 100);
       recs.push({type:'overload',priority:0,icon:'\u23f1\ufe0f',
-        title:(j.jobNumber||'') + ' running ' + overPct + '% over forecast',
+        title:(j.jobNumber||'') + ' running ' + overPctActual + '% over forecast',
         detail:'On site for ' + actualH.toFixed(1) + 'h vs forecast ' + forecastH + 'h. Currently ' + pct + '% installed. Check in with the crew lead.'
       });
     }
