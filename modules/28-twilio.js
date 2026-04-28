@@ -150,7 +150,7 @@ var _twilioCallTimerId = null;
 // Place an outbound call. `phone` should be in any AU format (we trust Twilio
 // to handle the dialing); entityId/entityType attach the call to a specific
 // CRM record so the activity timeline gets the right entry.
-function twilioCall(phone, entityId, entityType) {
+async function twilioCall(phone, entityId, entityType) {
   if (!window._twilioReady || !_twilioDevice) {
     if (typeof addToast === 'function') addToast('Phone not connected — check Settings', 'warning');
     return;
@@ -164,9 +164,15 @@ function twilioCall(phone, entityId, entityType) {
     return;
   }
 
-  var call;
+  // Voice SDK v2 changed Device.connect() to return Promise<Call> rather
+  // than Call directly. Without awaiting, every subsequent .on() / .mute() /
+  // .disconnect() call ran against the Promise object — silently no-op for
+  // .on() (Promise has no such method, but assigning to it does nothing
+  // visible) and a TypeError for .disconnect(). Detect and unwrap defensively
+  // in case future SDK versions change the contract again.
+  var connectResult;
   try {
-    call = _twilioDevice.connect({
+    connectResult = _twilioDevice.connect({
       params: {
         To: phone,
         entityId: entityId || '',
@@ -176,6 +182,24 @@ function twilioCall(phone, entityId, entityType) {
   } catch (e) {
     console.error('[Spartan] twilioDevice.connect() threw:', e);
     if (typeof addToast === 'function') addToast('Failed to start call: ' + e.message, 'error');
+    return;
+  }
+
+  var call;
+  if (connectResult && typeof connectResult.then === 'function') {
+    try {
+      call = await connectResult;
+    } catch (e) {
+      console.error('[Spartan] twilioDevice.connect() promise rejected:', e);
+      if (typeof addToast === 'function') addToast('Failed to start call: ' + (e && e.message ? e.message : 'unknown'), 'error');
+      return;
+    }
+  } else {
+    call = connectResult;
+  }
+  if (!call || typeof call.on !== 'function') {
+    console.error('[Spartan] connect() returned an unexpected shape:', call);
+    if (typeof addToast === 'function') addToast('Failed to start call: SDK error', 'error');
     return;
   }
 
