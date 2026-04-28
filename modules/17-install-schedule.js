@@ -36,6 +36,28 @@ function deleteInstaller(id) {
   }
 }
 
+// Setup / teardown overhead (manual §8 demand factors): every install adds a
+// fixed 30 min for unloading tools, briefing the customer, packing up, etc.
+var INSTALL_OVERHEAD_HOURS = 0.5;
+
+// Australian public holidays per state (2026). Auto-blocked from scheduling.
+// Add more years as needed; format YYYY-MM-DD. Common = applies to all states.
+var AU_PUBLIC_HOLIDAYS = {
+  common: ['2026-01-01','2026-01-26','2026-04-03','2026-04-04','2026-04-05','2026-04-06','2026-04-25','2026-12-25','2026-12-26','2026-12-28'],
+  VIC: ['2026-03-09','2026-06-08','2026-09-25','2026-11-03'],
+  ACT: ['2026-03-09','2026-05-25','2026-06-08','2026-10-05'],
+  SA:  ['2026-03-09','2026-06-08','2026-10-05','2026-12-24'],
+  TAS: ['2026-02-09','2026-03-09','2026-04-07','2026-06-08','2026-11-02']
+};
+function isPublicHoliday(dateStr, branch) {
+  if (!dateStr) return false;
+  if (AU_PUBLIC_HOLIDAYS.common.indexOf(dateStr) >= 0) return true;
+  var stateList = AU_PUBLIC_HOLIDAYS[branch || 'VIC'] || [];
+  return stateList.indexOf(dateStr) >= 0;
+}
+window.isPublicHoliday = isPublicHoliday;
+window.AU_PUBLIC_HOLIDAYS = AU_PUBLIC_HOLIDAYS;
+
 // Per-installer efficiency % — stored client-side until Supabase has column.
 // Lead installer's efficiency multiplies install duration: 80% → +25% time, 110% → -9% time.
 function getInstallerEfficiency(id) {
@@ -52,15 +74,38 @@ function setInstallerEfficiency(id, pct) {
 window.getInstallerEfficiency = getInstallerEfficiency;
 window.setInstallerEfficiency = setInstallerEfficiency;
 
-// Crew-aware install hours. Applies the lead installer's efficiency to base hours.
+// Crew-aware install hours. Applies the lead installer's efficiency to base
+// hours, plus a fixed setup/teardown overhead per install day.
 function getCrewEffectiveHours(job, crewIds, fallback) {
   var base = getEffectiveInstallHours(job, fallback);
-  if (!crewIds || crewIds.length === 0) return base;
-  var pct = getInstallerEfficiency(crewIds[0]);
-  if (pct <= 0 || pct === 100) return base;
-  return Math.ceil((base * 100 / pct) * 4) / 4;
+  if (base <= 0) return base; // 0 fallback stays 0 (used in capacity sums when no time)
+  var pct = (crewIds && crewIds.length) ? getInstallerEfficiency(crewIds[0]) : 100;
+  var hours = (pct > 0 && pct !== 100) ? base * 100 / pct : base;
+  return Math.ceil((hours + INSTALL_OVERHEAD_HOURS) * 4) / 4;
 }
 window.getCrewEffectiveHours = getCrewEffectiveHours;
+
+// Auto-schedule entry point — called from the "🪄 Auto-Schedule" button.
+window.runAutoSchedule = function() {
+  var jobs = getState().jobs || [];
+  var branch = getState().branch || 'all';
+  var offset = getState().scheduleWeekOffset || 0;
+  var weekDates = getWeekDates(offset);
+  var ws = isoDate(weekDates[0]); var we = isoDate(weekDates[6]);
+  var scoped = branch !== 'all' ? jobs.filter(function(j){return j.branch===branch;}) : jobs;
+  var weekJobs = scoped.filter(function(j){return j.installDate && j.installDate>=ws && j.installDate<=we;});
+  var ready = ['e_dispatch_standard','e1_dispatch_service','c2_order_schedule_standard','c3_order_schedule_service','d5_hardware_revealing'];
+  var unscheduled = scoped.filter(function(j){return !j.installDate && ready.indexOf(j.status)>=0;});
+  if (unscheduled.length === 0) { addToast('Nothing to auto-schedule', 'info'); return; }
+  var installers = getInstallers().filter(function(i){return i.active;});
+  if (installers.length === 0) { addToast('No active installers', 'error'); return; }
+  var targets = getState().weeklyTargets || {};
+  var targetVal = branch !== 'all' ? (targets[branch]||175000) : Object.values(targets).reduce(function(s,v){return s+v;}, 0);
+  if (!confirm('Auto-schedule ' + unscheduled.length + ' unscheduled job' + (unscheduled.length!==1?'s':'') + ' across this week? Existing schedules are preserved.')) return;
+  var plan = autoScheduleJobs(weekDates, weekJobs, unscheduled, installers, targetVal);
+  if (!plan || plan.length === 0) { addToast('No feasible slots found — capacity may be full', 'warning'); return; }
+  applyPlan(plan);
+};
 
 // Drop handler for the Install Schedule Gantt — places a job at the dropped
 // installer/day/time. If dropped on an installer row not yet in the crew, the
@@ -476,11 +521,13 @@ function renderInstallSchedule() {
     +'<div class="card" style="flex:1;min-width:120px;padding:12px 16px;border-left:3px solid '+(function(){var zj=weekJobs.filter(function(j){return j.paymentMethod==="zip"});var zv=zj.reduce(function(s,j){return s+(j.val||0)},0);return zv>20000?"#ef4444":zv>16000?"#f59e0b":"#a855f7"})()+'"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">\ud83d\udcb3 Zip Money</div><div style="font-size:18px;font-weight:800;font-family:Syne,sans-serif;color:#7c3aed;margin-top:2px">$'+Math.round(weekJobs.filter(function(j){return j.paymentMethod==="zip"}).reduce(function(s,j){return s+(j.val||0)},0)/1000)+'k<span style="font-size:11px;color:#9ca3af;font-weight:500"> / $20k</span></div></div></div>';
 
   // Week nav
-  var navH = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:14px">'
+  var navH = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:14px;flex-wrap:wrap">'
     +'<button onclick="setState({scheduleWeekOffset:(getState().scheduleWeekOffset||0)-1})" class="btn-w" style="padding:5px 10px;font-size:12px">\u2190</button>'
     +'<button onclick="setState({scheduleWeekOffset:0})" class="btn-'+(offset===0?'r':'w')+'" style="padding:5px 14px;font-size:12px;font-weight:700">This Week</button>'
     +'<button onclick="setState({scheduleWeekOffset:(getState().scheduleWeekOffset||0)+1})" class="btn-w" style="padding:5px 10px;font-size:12px">\u2192</button>'
-    +'<span style="font-family:Syne,sans-serif;font-weight:700;font-size:14px;margin-left:8px">'+fmtShortDate(weekDates[0])+' \u2014 '+fmtShortDate(weekDates[6])+'</span></div>';
+    +'<span style="font-family:Syne,sans-serif;font-weight:700;font-size:14px;margin-left:8px">'+fmtShortDate(weekDates[0])+' \u2014 '+fmtShortDate(weekDates[6])+'</span>'
+    +(unscheduled.length>0 ? '<button onclick="runAutoSchedule()" class="btn-r" style="padding:5px 14px;font-size:12px;margin-left:auto;gap:4px">\ud83e\ude84 Auto-Schedule '+unscheduled.length+' job'+(unscheduled.length!==1?'s':'')+'</button>' : '')
+    +'</div>';
 
   // Installer rows
   var rows = installers.map(function(inst){return {id:inst.id,name:inst.name,colour:inst.colour,max:(inst.maxHoursPerDay||8),status:''};});
@@ -509,10 +556,11 @@ function renderInstallSchedule() {
   // Day headers with hour ticks
   weekDates.forEach(function(d) {
     var td = isToday(d); var wk = d.getDay()===0||d.getDay()===6;
+    var ph = isPublicHoliday(isoDate(d), branch);
     g += '<div style="width:'+DAY_W+'px;min-width:'+DAY_W+'px;flex-shrink:0;border-right:1px solid #e5e7eb">';
     // Day label
-    g += '<div style="padding:4px 8px;text-align:center;'+(td?'background:#fef2f2;':'background:'+(wk?'#fafafa':'#fff')+';')+';border-bottom:1px solid #f3f4f6">'
-      +'<span style="font-size:12px;font-weight:700;'+(td?'color:#c41230':'color:#374151')+'">'+fmtShortDate(d)+(td?' \u00b7 Today':'')+'</span></div>';
+    g += '<div style="padding:4px 8px;text-align:center;'+(td?'background:#fef2f2;':ph?'background:#fef3c7;':'background:'+(wk?'#fafafa':'#fff')+';')+';border-bottom:1px solid #f3f4f6">'
+      +'<span style="font-size:12px;font-weight:700;'+(td?'color:#c41230':ph?'color:#92400e':'color:#374151')+'">'+fmtShortDate(d)+(td?' \u00b7 Today':ph?' \u00b7 Holiday':'')+'</span></div>';
     // Hour tick marks
     g += '<div style="display:flex;height:20px;border-bottom:1px solid #f0f0f0">';
     for (var h = DAY_START; h < DAY_END; h++) {
@@ -547,9 +595,10 @@ function renderInstallSchedule() {
     // Day cells with Gantt bars
     weekDates.forEach(function(d) {
       var ds = isoDate(d); var td = isToday(d); var wk = d.getDay()===0||d.getDay()===6;
+      var ph = isPublicHoliday(ds, branch);
       var cellJobs = rj.filter(function(j){return j.installDate===ds;}).sort(function(a,b){return (a.installTime||'99').localeCompare(b.installTime||'99');});
 
-      g += '<div style="width:'+DAY_W+'px;min-width:'+DAY_W+'px;flex-shrink:0;position:relative;border-right:1px solid #e5e7eb;'+(td?'background:#fffbfb':wk?'background:#fafafa':'')+'"'
+      g += '<div style="width:'+DAY_W+'px;min-width:'+DAY_W+'px;flex-shrink:0;position:relative;border-right:1px solid #e5e7eb;'+(ph?'background:repeating-linear-gradient(45deg,#fef3c7,#fef3c7 6px,#fde68a 6px,#fde68a 12px);':td?'background:#fffbfb':wk?'background:#fafafa':'')+'"'
         +' ondragover="event.preventDefault();this.style.boxShadow=\'inset 0 0 0 2px #3b82f6\';"'
         +' ondragleave="this.style.boxShadow=\'\';"'
         +' ondrop="this.style.boxShadow=\'\';var r=this.getBoundingClientRect();dropJobOnGantt(event.dataTransfer.getData(\'text/plain\'),\''+ds+'\',\''+row.id+'\','+HOUR_W+','+DAY_START+',event.clientX-r.left);event.preventDefault();"'
@@ -943,6 +992,7 @@ function autoScheduleJobs(weekDates, weekJobs, unscheduled, installers, targetVa
     weekDates.forEach(function(d, di) {
       if (d.getDay() === 0 || d.getDay() === 6) return; // skip weekends
       var ds = isoDate(d);
+      if (isPublicHoliday(ds, job.branch)) return; // skip public holidays
 
       installers.forEach(function(inst) {
         var maxH = inst.maxHoursPerDay || 8;
