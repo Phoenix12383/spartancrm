@@ -4084,7 +4084,7 @@ function renderLeadDetail() {
     entityType: 'lead', entityId: lead.id,
     title: lead.fn + ' ' + lead.ln, owner: lead.owner,
     stageBarHtml: null,
-    wonLostHtml: (canEditLead(lead) ? `<button onclick="openLeadEditDrawer('${lead.id}')" class="btn-w" style="font-size:12px;padding:6px 14px;margin-right:6px">${Icon({ n: 'edit', size: 12 })} Edit</button>` : '') + (!lead.converted ? `<button onclick="directConvertLead('${lead.id}')" class="btn-r" style="font-size:12px;padding:6px 14px">Convert to Deal →</button>` : Badge('Converted', 'teal')),
+    wonLostHtml: (canEditLead(lead) ? `<button onclick="openLeadEditDrawer('${lead.id}')" class="btn-w" style="font-size:12px;padding:6px 14px;margin-right:6px">${Icon({ n: 'edit', size: 12 })} Edit</button>` : '') + (!lead.converted ? `<button onclick="openConvertLeadModal('${lead.id}')" class="btn-r" style="font-size:12px;padding:6px 14px">Convert to Deal →</button>` : Badge('Converted', 'teal')),
     leftSidebarHtml: leftSidebar,
     backOnclick: "setState({leadDetailId:null})",
     backLabel: "Leads",
