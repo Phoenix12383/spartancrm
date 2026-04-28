@@ -1012,7 +1012,7 @@ function renderJobDetail() {
     tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
       +'<h5 style="font-size:13px;font-weight:700;margin:0">Scheduling</h5>'
-      +'<button onclick="setState({page:\'schedule\',jobDetailId:null})" class="btn-r" style="font-size:12px;padding:6px 14px;gap:4px">📅 Open in Install Schedule →</button>'
+      +'<button onclick="setState({page:\'schedule\',jobDetailId:null})" class="btn-r" style="font-size:12px;padding:6px 14px;gap:4px">📅 Open in Installation Schedule →</button>'
       +'</div>'
       +'<div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:12px;font-size:12px">'
       +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:3px">Install Date</div>'
@@ -1024,7 +1024,7 @@ function renderJobDetail() {
       +(crewIds.length===0?'<span style="color:#9ca3af;font-weight:400">— no crew assigned —</span>':crewIds.map(function(cid,idx){var inst=installerById[cid]||{name:'Unknown',colour:'#9ca3af'};return '<span style="display:inline-flex;align-items:center;gap:4px;background:'+inst.colour+'18;border:1px solid '+inst.colour+'66;color:'+inst.colour+';padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">'+(idx===0?'👑 ':'')+inst.name+'</span>';}).join(''))
       +'</div></div>'
       +'</div>'
-      +'<div style="font-size:10px;color:#9ca3af;margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6">ℹ️ Date, time and crew are set via the Smart Install Scheduler — the Install Schedule page runs capacity, vehicle and glass-timing checks.</div>'
+      +'<div style="font-size:10px;color:#9ca3af;margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6">ℹ️ Date, time and crew are set via the Smart Install Scheduler — the Installation Schedule page runs capacity, vehicle and glass-timing checks.</div>'
       +'</div>';
 
     // Site Conditions

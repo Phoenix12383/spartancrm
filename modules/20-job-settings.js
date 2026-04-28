@@ -375,7 +375,7 @@ function renderJobSettings() {
 
   } else if (jobSettTab === 'targets') {
     var t = getState().weeklyTargets || {};
-    content = '<div style="font-size:13px;color:#6b7280;margin-bottom:16px">Set weekly installation revenue targets per branch. These drive the KPI bars on the Install Schedule and Smart Planner.</div>';
+    content = '<div style="font-size:13px;color:#6b7280;margin-bottom:16px">Set weekly installation revenue targets per branch. These drive the KPI bars on the Installation Schedule and Smart Planner.</div>';
     content += '<div style="display:flex;flex-direction:column;gap:12px;max-width:400px">';
     ['VIC','ACT','SA','TAS'].forEach(function(b){
       content += '<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:#f9fafb;border-radius:10px">'

@@ -1492,7 +1492,7 @@ function renderCapacityPlanning() {
 
   return '<div>'
     +'<div style="margin-bottom:12px">'
-    +'<button onclick="setState({page:\'schedule\'})" class="btn-w" style="padding:4px 10px;font-size:11px;margin-bottom:8px;gap:4px">\u2190 Back to Install Schedule</button>'
+    +'<button onclick="setState({page:\'schedule\'})" class="btn-w" style="padding:4px 10px;font-size:11px;margin-bottom:8px;gap:4px">\u2190 Back to Installation Schedule</button>'
     +'<h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:22px;margin:0">\ud83e\udde0 Smart Capacity Planning</h2>'
     +'<p style="color:#6b7280;font-size:13px;margin:4px 0 0">Automatic scheduling \u2014 oldest jobs first, clustered by area, balanced by installer capacity</p></div>'
     +navH+kpi+actions+table+capBreak

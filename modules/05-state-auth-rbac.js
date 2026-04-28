@@ -255,7 +255,7 @@ var ALL_PERMISSIONS = [
   {key:'jobs.dashboard',label:'Job Dashboard',module:'Job CRM',group:'jobs'},
   {key:'jobs.list',label:'Jobs List',module:'Job CRM',group:'jobs'},
   {key:'jobs.signoff',label:'Final Sign Off',module:'Job CRM',group:'jobs'},
-  {key:'jobs.schedule',label:'Install Schedule',module:'Job CRM',group:'jobs'},
+  {key:'jobs.schedule',label:'Installation Schedule',module:'Job CRM',group:'jobs'},
   {key:'jobs.planner',label:'Smart Planner',module:'Job CRM',group:'jobs'},
   {key:'jobs.cmmap',label:'CM Schedule Map',module:'Job CRM',group:'jobs'},
   {key:'jobs.revenue',label:'Weekly Revenue',module:'Job CRM',group:'jobs'},
