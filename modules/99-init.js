@@ -74,6 +74,7 @@ function renderPage(){
   const fn=pageRenderers[effectivePage]||renderDashboard;
 
   document.getElementById('app').innerHTML=`
+    ${typeof renderIncomingCallBanner === 'function' ? renderIncomingCallBanner() : ''}
     ${typeof renderActiveCallPanel === 'function' ? renderActiveCallPanel() : ''}
     ${renderModuleBar()}
     ${renderSidebar()}

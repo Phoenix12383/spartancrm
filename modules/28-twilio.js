@@ -100,6 +100,14 @@ async function twilioInit(forceReload) {
     window._twilioReady = true;
     console.log('[Spartan] Twilio Device registered as ' + identity);
     if (typeof addToast === 'function') addToast('Phone connected', 'success');
+    // Ask once for browser-notification permission so we can surface incoming
+    // calls when the CRM tab is in the background. Silently no-op if already
+    // decided either way.
+    try {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+    } catch(e) {}
   });
 
   _twilioDevice.on('error', function(err) {
@@ -118,11 +126,7 @@ async function twilioInit(forceReload) {
   });
 
   _twilioDevice.on('incoming', function(call) {
-    // Stage 3 (B4-B6) wires up the incoming-call banner. Until then, reject
-    // the call so the customer falls through to the IVR voicemail path
-    // instead of being silently held by an idle browser.
-    console.log('[Spartan] Incoming call (handler not yet implemented):', call.parameters && call.parameters.From);
-    try { call.reject(); } catch(e) {}
+    _twilioOnIncoming(call);
   });
 
   try {
@@ -340,9 +344,231 @@ function renderActiveCallPanel() {
     + '</div>';
 }
 
+// ───────────────────── Stage 3: inbound calling ────────────────────────────
+
+// Browser-side caller-ID lookup against in-memory CRM state. Mirrors the
+// backend findEntityByPhone() in api/_lib/entityLookup.js, but reads from
+// getState() rather than Supabase so the banner renders instantly without
+// a network round-trip.
+//
+// Match key is the last 9 digits — handles +61 / 04 / no-prefix / spaces /
+// brackets variations Australians put in contact records. Search order
+// matches signal strength: contact > lead > deal > job.
+function findCrmEntityByPhone(rawPhone) {
+  if (!rawPhone) return null;
+  var key = String(rawPhone).replace(/\D/g, '').slice(-9);
+  if (key.length < 9) return null;
+
+  var s = (typeof getState === 'function') ? getState() : {};
+
+  function matchKey(p) {
+    if (!p) return null;
+    var d = String(p).replace(/\D/g, '');
+    return d.length >= 9 ? d.slice(-9) : null;
+  }
+
+  var contacts = s.contacts || [];
+  for (var i = 0; i < contacts.length; i++) {
+    if (matchKey(contacts[i].phone) === key) {
+      return { type: 'contact', id: contacts[i].id, name: ((contacts[i].fn || '') + ' ' + (contacts[i].ln || '')).trim() };
+    }
+  }
+  var leads = s.leads || [];
+  for (var j = 0; j < leads.length; j++) {
+    if (matchKey(leads[j].phone) === key) {
+      return { type: 'lead', id: leads[j].id, name: ((leads[j].fn || '') + ' ' + (leads[j].ln || '')).trim() };
+    }
+  }
+  return null;
+}
+
+// Tracks the in-flight incoming call (rep hasn't picked up yet). Once they
+// click Answer this becomes _twilioActiveCall and the active-call banner
+// takes over.
+var _twilioIncoming = null;       // { call, from, matched, autoDeclineTimerId }
+
+// Twilio fires this when a customer's call is routed to this rep's browser
+// (either via smart-routing in /incoming or via a simul-ring from /ivr-route).
+function _twilioOnIncoming(call) {
+  // Concurrent-call guard — if the rep is already on a call, decline politely
+  // so the customer falls through to whoever else is in the simul-ring.
+  if (_twilioActiveCall) {
+    console.log('[Spartan] Already on a call, declining incoming');
+    try { call.reject(); } catch(e) {}
+    return;
+  }
+  // If a previous incoming call is still ringing (e.g. fast double-ring), drop it.
+  if (_twilioIncoming) {
+    try { _twilioIncoming.call.reject(); } catch(e) {}
+    _clearIncoming();
+  }
+
+  var from = (call.parameters && call.parameters.From) || '';
+  // call.parameters.From for inbound from /incoming is the customer's number.
+  // For simul-ring it's still the customer (Twilio preserves it).
+
+  // Match against local CRM state for caller-ID enrichment. Backend already
+  // wrote the call_logs row with entity context — this is just for the banner.
+  var matched = (typeof findCrmEntityByPhone === 'function')
+    ? findCrmEntityByPhone(from)
+    : null;
+
+  _twilioIncoming = { call: call, from: from, matched: matched };
+
+  // Reflect in state so the incoming-call banner renders
+  if (typeof setState === 'function') {
+    setState({
+      incomingCall: {
+        from: from,
+        matched: matched,
+        ringingSince: Date.now(),
+      }
+    });
+  }
+
+  // Auto-decline after 30s if neither button is pressed — without this, missed
+  // calls leave the banner stuck on screen.
+  _twilioIncoming.autoDeclineTimerId = setTimeout(function() {
+    if (_twilioIncoming && _twilioIncoming.call === call) {
+      console.log('[Spartan] Incoming call auto-declined after 30s');
+      twilioDeclineIncoming();
+    }
+  }, 30000);
+
+  // Browser notification when CRM tab is in the background. Doesn't auto-prompt
+  // for permission — that's a one-time admin-friendly thing the rep grants
+  // explicitly via Settings (or browser asks on first call). Silently no-ops
+  // if permission was denied / not yet granted.
+  try {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
+      var notifTitle = matched ? ('Incoming call from ' + matched.name) : 'Incoming call';
+      var notifBody = from + (matched ? (' · ' + matched.type) : ' · Unknown caller');
+      new Notification(notifTitle, { body: notifBody, tag: 'spartan-incoming-call' });
+    }
+  } catch(e) {}
+
+  // Wire up the call's lifecycle events so the banner clears if the customer
+  // hangs up before the rep picks up.
+  call.on('cancel',    function() { console.log('[Spartan] Incoming call cancelled by caller'); _clearIncoming(); });
+  call.on('disconnect', function() { _clearIncoming(); });
+  call.on('reject',    function() { _clearIncoming(); });
+  call.on('error',     function(err) { console.warn('[Spartan] Incoming call error:', err); _clearIncoming(); });
+}
+
+function _clearIncoming() {
+  if (_twilioIncoming && _twilioIncoming.autoDeclineTimerId) {
+    clearTimeout(_twilioIncoming.autoDeclineTimerId);
+  }
+  _twilioIncoming = null;
+  if (typeof setState === 'function') setState({ incomingCall: null });
+}
+
+// Rep clicked Answer on the incoming-call banner.
+function twilioAnswerIncoming() {
+  if (!_twilioIncoming) return;
+  var inc = _twilioIncoming;
+  // Stop the auto-decline timer — rep took the call.
+  if (inc.autoDeclineTimerId) clearTimeout(inc.autoDeclineTimerId);
+
+  try { inc.call.accept(); }
+  catch (e) {
+    console.error('[Spartan] call.accept() threw:', e);
+    if (typeof addToast === 'function') addToast('Failed to answer call: ' + e.message, 'error');
+    return;
+  }
+
+  // Promote incoming → active. Wire up the same event handlers an outbound
+  // call would have so hangup, mute, DTMF, and timer all work identically.
+  _twilioActiveCall = {
+    callObject: inc.call,
+    phone: inc.from,
+    entityId: inc.matched ? inc.matched.id : null,
+    entityType: inc.matched ? inc.matched.type : null,
+    startedAt: Date.now(),
+    status: 'in-call',
+    muted: false,
+    notes: '',
+    direction: 'inbound',
+  };
+
+  if (typeof setState === 'function') {
+    setState({
+      incomingCall: null,
+      activeCall: {
+        phone: inc.from,
+        entityId: _twilioActiveCall.entityId,
+        entityType: _twilioActiveCall.entityType,
+        startedAt: _twilioActiveCall.startedAt,
+        status: 'in-call',
+        muted: false,
+      }
+    });
+  }
+
+  // Auto-navigate to the matched entity for instant context — saves the rep
+  // hunting for the record while the customer's already talking.
+  if (inc.matched && typeof setState === 'function') {
+    if (inc.matched.type === 'contact') setState({ contactDetailId: inc.matched.id, page: 'contacts' });
+    else if (inc.matched.type === 'lead')  setState({ leadDetailId: inc.matched.id,  page: 'leads' });
+    else if (inc.matched.type === 'deal')  setState({ dealDetailId: inc.matched.id,  page: 'deals' });
+  }
+
+  // Start the duration timer (same approach as outbound).
+  _twilioCallTimerId = setInterval(function() {
+    if (!_twilioActiveCall) { clearInterval(_twilioCallTimerId); _twilioCallTimerId = null; return; }
+    var t = document.getElementById('callTimer');
+    if (t) t.textContent = _twilioFmtDuration(Math.floor((Date.now() - _twilioActiveCall.startedAt) / 1000));
+  }, 1000);
+
+  // Wire disconnect → activity write. The cancel/reject/error handlers wired
+  // in _twilioOnIncoming already point at _clearIncoming, but once accepted,
+  // disconnect should write the activity row instead.
+  inc.call.on('disconnect', function() { _twilioOnDisconnect(); });
+
+  _twilioIncoming = null;
+}
+
+// Rep clicked Decline (or auto-decline timer fired).
+function twilioDeclineIncoming() {
+  if (!_twilioIncoming) return;
+  try { _twilioIncoming.call.reject(); } catch(e) {}
+  _clearIncoming();
+}
+
+// Render the incoming-call banner. Called from renderPage() in 99-init.js
+// so it sits at fixed position above all pages while ringing.
+function renderIncomingCallBanner() {
+  var ic = (typeof getState === 'function') ? getState().incomingCall : null;
+  if (!ic) return '';
+
+  var displayName = ic.matched
+    ? (ic.matched.name || ic.matched.type)
+    : 'Unknown caller';
+  var subtitle = ic.matched
+    ? ((ic.matched.type.charAt(0).toUpperCase() + ic.matched.type.slice(1)) + ' · ' + (ic.from || ''))
+    : (ic.from || 'No number');
+
+  return ''
+    + '<div id="incomingCallBanner" style="position:fixed;top:0;left:0;right:0;z-index:301;background:linear-gradient(180deg,#1e40af,#1e3a8a);color:#fff;padding:12px 20px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 12px rgba(0,0,0,.2);font-family:inherit;animation:spartanIncomingPulse 1.5s ease-in-out infinite alternate">'
+    +   '<div style="font-size:24px">📲</div>'
+    +   '<div style="flex:1;min-width:0">'
+    +     '<div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;opacity:.85;margin-bottom:2px">Incoming call</div>'
+    +     '<div style="font-size:16px;font-weight:700;line-height:1.2">' + displayName + '</div>'
+    +     '<div style="font-size:12px;opacity:.85;line-height:1.3">' + subtitle + '</div>'
+    +   '</div>'
+    +   '<button onclick="twilioDeclineIncoming()" style="background:#dc2626;border:none;color:#fff;padding:10px 22px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;min-height:44px">✕ Decline</button>'
+    +   '<button onclick="twilioAnswerIncoming()" style="background:#16a34a;border:none;color:#fff;padding:10px 26px;border-radius:8px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;min-height:44px;box-shadow:0 0 0 0 rgba(22,163,74,.6);animation:spartanAnswerPulse 1.2s ease-out infinite">📞 Answer</button>'
+    + '</div>'
+    + '<style>@keyframes spartanIncomingPulse{from{box-shadow:0 2px 12px rgba(30,64,175,.5)}to{box-shadow:0 2px 24px rgba(30,64,175,.9)}}@keyframes spartanAnswerPulse{0%{box-shadow:0 0 0 0 rgba(22,163,74,.6)}70%{box-shadow:0 0 0 14px rgba(22,163,74,0)}100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}}</style>';
+}
+
 // Tear down the Twilio Device — called on logout to release the JWT slot
 // and disconnect any active WebRTC peer connection.
 function twilioDestroy() {
+  if (_twilioIncoming) {
+    try { _twilioIncoming.call.reject(); } catch(e) {}
+    _clearIncoming();
+  }
   if (_twilioActiveCall) {
     try { _twilioActiveCall.callObject && _twilioActiveCall.callObject.disconnect(); } catch(e) {}
     _twilioActiveCall = null;
