@@ -229,6 +229,242 @@ function getAuditForEntity(entityType, entityId) {
   return getAuditLog({ entityType: entityType, entityId: entityId });
 }
 
+// ── Audit page UI (Brief 2 Phase 3) ─────────────────────────────────────────
+// Module-local filter + pagination state. Lives outside _state because audit
+// browsing is a transient admin activity — survives renderPage rebuilds via
+// the input-id focus-restoration mechanism in 99-init.js.
+var auditPageFilter = { entityType: '', userId: '', action: '', dateFrom: '', dateTo: '', search: '' };
+var auditPageNum = 0;
+var auditPageExpanded = {};
+var _auditSearchTimer = null;
+
+var AUDIT_ENTITY_TYPES = ['deal', 'contact', 'lead', 'job', 'invoice', 'user', 'settings', 'commission', 'integration', 'system'];
+var AUDIT_PAGE_SIZE = 50;
+
+function setAuditFilter(field, value) {
+  auditPageFilter[field] = value;
+  auditPageNum = 0; // any filter change resets pagination
+  if (field === 'search') {
+    // Debounce keystrokes — full-page rerender on every char is wasteful.
+    if (_auditSearchTimer) clearTimeout(_auditSearchTimer);
+    _auditSearchTimer = setTimeout(function () { renderPage(); }, 300);
+  } else {
+    renderPage();
+  }
+}
+function clearAuditFilters() {
+  auditPageFilter = { entityType: '', userId: '', action: '', dateFrom: '', dateTo: '', search: '' };
+  auditPageNum = 0;
+  renderPage();
+}
+function setAuditPage(n) {
+  auditPageNum = Math.max(0, n);
+  renderPage();
+}
+function toggleAuditExpand(entryId) {
+  auditPageExpanded[entryId] = !auditPageExpanded[entryId];
+  renderPage();
+}
+
+// CSV export — matches the columns the table renders. Quotes/escapes per RFC 4180.
+function exportAuditCsv() {
+  var entries = _filteredAuditEntries();
+  var rows = [['Timestamp','User','Entity Type','Entity ID','Action','Summary','Branch','Before','After','Metadata']];
+  entries.forEach(function (e) {
+    rows.push([
+      e.timestamp || '',
+      e.userName || '',
+      e.entityType || '',
+      e.entityId || '',
+      AUDIT_ACTIONS[e.action] || e.action || '',
+      e.summary || '',
+      e.branch || '',
+      e.before == null ? '' : JSON.stringify(e.before),
+      e.after == null ? '' : JSON.stringify(e.after),
+      e.metadata == null ? '' : JSON.stringify(e.metadata),
+    ]);
+  });
+  var csv = rows.map(function (r) {
+    return r.map(function (cell) {
+      var s = String(cell == null ? '' : cell);
+      if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    }).join(',');
+  }).join('\n');
+  var blob = new Blob([csv], { type: 'text/csv' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'spartan-audit-' + new Date().toISOString().slice(0, 10) + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  if (typeof addToast === 'function') addToast('Audit log exported (' + entries.length + ' rows)', 'success');
+}
+
+// Internal — apply current filters to the audit log. Used by both the table
+// and the CSV export so they always agree.
+function _filteredAuditEntries() {
+  var f = auditPageFilter;
+  var q = (f.search || '').toLowerCase().trim();
+  return getAuditLog({
+    entityType: f.entityType || undefined,
+    userId: f.userId || undefined,
+    action: f.action || undefined,
+    from: f.dateFrom || undefined,
+    to: f.dateTo ? (f.dateTo + 'T23:59:59.999Z') : undefined,
+  }).filter(function (e) {
+    if (!q) return true;
+    var hay = ((e.summary || '') + ' ' + (e.entityId || '') + ' ' + (e.userName || '')).toLowerCase();
+    return hay.indexOf(q) >= 0;
+  });
+}
+
+// Resolve an entity reference to a click-through URL. Returns an onclick
+// string or '' if the entity type doesn't have a detail page.
+function _auditEntityNav(entityType, entityId) {
+  if (!entityType || !entityId) return '';
+  if (entityType === 'deal') return "setState({dealDetailId:'" + entityId + "',page:'deals'})";
+  if (entityType === 'lead') return "setState({leadDetailId:'" + entityId + "',page:'leads'})";
+  if (entityType === 'contact') return "setState({contactDetailId:'" + entityId + "',page:'contacts'})";
+  if (entityType === 'job') return "setState({jobDetailId:'" + entityId + "',page:'jobs'})";
+  return '';
+}
+
+function renderAuditPage() {
+  if (!hasPermission('system.audit_log')) {
+    return '<div style="max-width:540px;margin:80px auto;text-align:center"><div style="font-size:42px;margin-bottom:8px">🔒</div><h2 style="font-size:18px;font-weight:700;margin:0 0 8px">No audit access</h2><p style="font-size:13px;color:#6b7280;margin:0">Ask an admin to grant the <code>system.audit_log</code> permission to your role.</p></div>';
+  }
+
+  var allFiltered = _filteredAuditEntries();
+  var totalEntries = allFiltered.length;
+  var totalPages = Math.max(1, Math.ceil(totalEntries / AUDIT_PAGE_SIZE));
+  if (auditPageNum >= totalPages) auditPageNum = totalPages - 1;
+  var pageStart = auditPageNum * AUDIT_PAGE_SIZE;
+  var pageEntries = allFiltered.slice(pageStart, pageStart + AUDIT_PAGE_SIZE);
+
+  // Distinct user list for the filter dropdown — pulled from the log itself
+  // so deactivated/deleted users still show up if they have historical entries.
+  var userOpts = {};
+  getAuditLog().forEach(function (e) {
+    if (e.userId) userOpts[e.userId] = e.userName || e.userId;
+  });
+  var users = Object.keys(userOpts).map(function (id) { return { id: id, name: userOpts[id] }; })
+    .sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
+
+  var hasFilters = !!(auditPageFilter.entityType || auditPageFilter.userId || auditPageFilter.action || auditPageFilter.dateFrom || auditPageFilter.dateTo || auditPageFilter.search);
+
+  var filterBar = ''
+    + '<div class="card" style="padding:14px 16px;margin-bottom:14px">'
+    +   '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:10px">'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Entity type</label>'
+    +       '<select class="sel" id="audit_entity_type" onchange="setAuditFilter(\'entityType\',this.value)">'
+    +         '<option value="">All</option>'
+    +         AUDIT_ENTITY_TYPES.map(function (t) { return '<option value="' + t + '"' + (auditPageFilter.entityType === t ? ' selected' : '') + '>' + t + '</option>'; }).join('')
+    +       '</select></div>'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">User</label>'
+    +       '<select class="sel" id="audit_user" onchange="setAuditFilter(\'userId\',this.value)">'
+    +         '<option value="">All</option>'
+    +         users.map(function (u) { return '<option value="' + u.id + '"' + (auditPageFilter.userId === u.id ? ' selected' : '') + '>' + (u.name || u.id) + '</option>'; }).join('')
+    +       '</select></div>'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Action</label>'
+    +       '<select class="sel" id="audit_action" onchange="setAuditFilter(\'action\',this.value)">'
+    +         '<option value="">All</option>'
+    +         Object.keys(AUDIT_ACTIONS).sort().map(function (k) { return '<option value="' + k + '"' + (auditPageFilter.action === k ? ' selected' : '') + '>' + AUDIT_ACTIONS[k] + ' (' + k + ')</option>'; }).join('')
+    +       '</select></div>'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">From</label>'
+    +       '<input class="inp" id="audit_from" type="date" value="' + (auditPageFilter.dateFrom || '') + '" onchange="setAuditFilter(\'dateFrom\',this.value)"></div>'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">To</label>'
+    +       '<input class="inp" id="audit_to" type="date" value="' + (auditPageFilter.dateTo || '') + '" onchange="setAuditFilter(\'dateTo\',this.value)"></div>'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Search summary</label>'
+    +       '<input class="inp" id="audit_search" type="search" placeholder="Free text…" value="' + (auditPageFilter.search || '').replace(/"/g, '&quot;') + '" oninput="setAuditFilter(\'search\',this.value)"></div>'
+    +   '</div>'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#6b7280">'
+    +     '<div>' + totalEntries + ' entr' + (totalEntries === 1 ? 'y' : 'ies') + (hasFilters ? ' (filtered)' : '') + '</div>'
+    +     '<div style="display:flex;gap:8px">'
+    +       (hasFilters ? '<button class="btn-w" onclick="clearAuditFilters()" style="font-size:12px">Clear filters</button>' : '')
+    +       '<button class="btn-w" onclick="exportAuditCsv()" style="font-size:12px">⬇ Export CSV</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+
+  // Table
+  var rows = pageEntries.map(function (e) {
+    var nav = _auditEntityNav(e.entityType, e.entityId);
+    var entityCell = e.entityType
+      ? (nav ? '<a href="javascript:void(0)" onclick="' + nav + '" style="color:#c41230;text-decoration:none;font-weight:500">' + e.entityType + (e.entityId ? '/' + e.entityId.slice(0, 12) : '') + '</a>'
+              : '<span style="color:#6b7280">' + e.entityType + (e.entityId ? '/' + e.entityId.slice(0, 12) : '') + '</span>')
+      : '<span style="color:#9ca3af">—</span>';
+    var actionLabel = AUDIT_ACTIONS[e.action] || e.action;
+    var ts = (e.timestamp || '').replace('T', ' ').slice(0, 19);
+    var hasDiff = e.before != null || e.after != null;
+    var expanded = auditPageExpanded[e.id];
+    var diffRow = (hasDiff && expanded) ? ''
+      + '<tr><td colspan="6" style="padding:0;background:#f9fafb;border-bottom:1px solid #e5e7eb">'
+      +   '<div style="padding:14px 18px;display:grid;grid-template-columns:1fr 1fr;gap:14px;font-size:11px">'
+      +     '<div><div style="font-weight:700;color:#b91c1c;margin-bottom:4px">BEFORE</div><pre style="background:#fff;padding:10px;border-radius:6px;border:1px solid #e5e7eb;overflow-x:auto;margin:0;font-family:monospace;font-size:11px;max-height:200px;overflow-y:auto">' + (e.before == null ? '(none)' : _escTextForAudit(JSON.stringify(e.before, null, 2))) + '</pre></div>'
+      +     '<div><div style="font-weight:700;color:#15803d;margin-bottom:4px">AFTER</div><pre style="background:#fff;padding:10px;border-radius:6px;border:1px solid #e5e7eb;overflow-x:auto;margin:0;font-family:monospace;font-size:11px;max-height:200px;overflow-y:auto">' + (e.after == null ? '(none)' : _escTextForAudit(JSON.stringify(e.after, null, 2))) + '</pre></div>'
+      +   '</div>'
+      +   (e.metadata ? '<div style="padding:0 18px 14px;font-size:11px;color:#6b7280">Metadata: <code style="background:#fff;padding:2px 6px;border-radius:4px;border:1px solid #e5e7eb">' + _escTextForAudit(JSON.stringify(e.metadata)) + '</code></div>' : '')
+      + '</td></tr>'
+      : '';
+    return ''
+      + '<tr style="border-bottom:1px solid #f0f0f0">'
+      +   '<td class="td" style="font-family:monospace;font-size:11px;white-space:nowrap;color:#6b7280">' + ts + '</td>'
+      +   '<td class="td" style="font-size:12px">' + (e.userName || '—') + '</td>'
+      +   '<td class="td" style="font-size:12px">' + entityCell + '</td>'
+      +   '<td class="td" style="font-size:12px;font-weight:500">' + actionLabel + '</td>'
+      +   '<td class="td" style="font-size:12px;color:#1a1a1a">' + (e.summary || '').replace(/</g, '&lt;') + '</td>'
+      +   '<td class="td" style="text-align:right">' + (hasDiff
+            ? '<button onclick="toggleAuditExpand(\'' + e.id + '\')" class="btn-g" style="font-size:11px;padding:3px 8px">' + (expanded ? '▾ Hide' : '▸ Show') + '</button>'
+            : '<span style="color:#9ca3af;font-size:11px">—</span>') + '</td>'
+      + '</tr>'
+      + diffRow;
+  }).join('');
+
+  var emptyState = pageEntries.length === 0
+    ? '<tr><td colspan="6" style="padding:60px 20px;text-align:center;color:#9ca3af;font-size:13px">No entries' + (hasFilters ? ' match the current filters' : ' yet') + '.</td></tr>'
+    : '';
+
+  // Pagination
+  var paginator = ''
+    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-top:1px solid #f0f0f0;font-size:12px;color:#6b7280">'
+    +   '<div>Showing ' + (pageEntries.length === 0 ? 0 : (pageStart + 1)) + '–' + (pageStart + pageEntries.length) + ' of ' + totalEntries + '</div>'
+    +   '<div style="display:flex;align-items:center;gap:8px">'
+    +     '<button class="btn-w" onclick="setAuditPage(' + (auditPageNum - 1) + ')" ' + (auditPageNum === 0 ? 'disabled' : '') + ' style="font-size:11px;padding:4px 10px">← Prev</button>'
+    +     '<span>Page ' + (auditPageNum + 1) + ' of ' + totalPages + '</span>'
+    +     '<button class="btn-w" onclick="setAuditPage(' + (auditPageNum + 1) + ')" ' + (auditPageNum >= totalPages - 1 ? 'disabled' : '') + ' style="font-size:11px;padding:4px 10px">Next →</button>'
+    +   '</div>'
+    + '</div>';
+
+  return ''
+    + '<div style="margin-bottom:18px"><h1 style="font-size:24px;font-weight:800;margin:0;font-family:Syne,sans-serif">📋 Audit Log</h1>'
+    +   '<p style="font-size:13px;color:#6b7280;margin:2px 0 0">Forensic record of every state change. Most recent first.</p></div>'
+    + filterBar
+    + '<div class="card" style="overflow:hidden">'
+    +   '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:900px">'
+    +     '<thead><tr>'
+    +       '<th class="th">Timestamp</th>'
+    +       '<th class="th">User</th>'
+    +       '<th class="th">Entity</th>'
+    +       '<th class="th">Action</th>'
+    +       '<th class="th">Summary</th>'
+    +       '<th class="th" style="text-align:right">Diff</th>'
+    +     '</tr></thead>'
+    +     '<tbody>' + (rows || emptyState) + '</tbody>'
+    +   '</table></div>'
+    +   paginator
+    + '</div>';
+}
+
+function _escTextForAudit(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // END Unified Audit Log
 // ══════════════════════════════════════════════════════════════════════════════
@@ -516,6 +752,8 @@ var ALL_PERMISSIONS = [
   {key:'phone.recordings.team',label:'Listen to team call recordings',module:'Phone',group:'phone'},
   {key:'phone.recordings.all',label:'Listen to all call recordings',module:'Phone',group:'phone'},
   {key:'phone.admin',label:'Manage phone & IVR settings',module:'Phone',group:'phone'},
+  // System
+  {key:'system.audit_log',label:'View global audit log',module:'System',group:'system'},
   // Data visibility
   {key:'data.view_values',label:'See job values & pricing',module:'Data Access',group:'data'},
   {key:'data.view_margins',label:'See profit margins & costs',module:'Data Access',group:'data'},
@@ -568,6 +806,7 @@ var PAGE_PERM_MAP = {
   accweekly:'accounts.weekly',acccashflow:'accounts.cashflow',accrecon:'accounts.recon',
   accbranch:'accounts.branch',accxero:'accounts.xero',
   servicelist:'service.list',servicemap:'service.map',svcschedule:'service.openings',
+  audit:'system.audit_log',
 };
 
 function getUserPerms(user) {
