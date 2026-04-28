@@ -109,7 +109,7 @@ function renderProfilePage() {
     </div>
 
     <!-- Gmail Connection -->
-    <div class="card" style="padding:0;overflow:hidden">
+    <div class="card" style="padding:0;overflow:hidden;margin-bottom:18px">
       <div style="padding:16px 20px;border-bottom:1px solid #f0f0f0">
         <h3 style="font-size:15px;font-weight:700;margin:0">Gmail Connection</h3>
       </div>
@@ -119,7 +119,62 @@ function renderProfilePage() {
           :'<div style="display:flex;align-items:center;gap:12px"><div style="width:36px;height:36px;background:#f3f4f6;border-radius:50%;color:#9ca3af;font-size:16px;display:flex;align-items:center;justify-content:center">G</div><div style="flex:1"><div style="font-size:13px;font-weight:600;color:#374151">Not connected</div><div style="font-size:12px;color:#9ca3af">Connect Gmail to send emails from within the CRM</div></div><button onclick="gmailConnect()" class="btn-r" style="font-size:12px">Connect Gmail</button></div>'}
       </div>
     </div>
+
+    <!-- Brief 6 Phase 3: Email Signatures. One editor per state the user
+         services + a Default fallback. Each editor uses the shared
+         RteToolbar pattern from 11-email-page.js. The Default scope is
+         used when the deal has no state or the user has no matching
+         per-state signature. -->
+    ${_renderProfileSignaturesSection(myUser)}
   </div>`;
+}
+
+// Brief 6 Phase 3: render the per-state signature editors block. Each
+// scope (Default + every state in getUserStates) gets its own RteToolbar
+// + contenteditable + save button. Reads via getRawSignature so each
+// editor shows what's actually stored for THAT scope (vs the chained
+// fallback value getSignature returns for use in the composer).
+function _renderProfileSignaturesSection(myUser) {
+  if (typeof RteToolbar !== 'function' || typeof getRawSignature !== 'function') {
+    return ''; // 11-email-page.js not loaded yet (module order paranoia)
+  }
+  var states = (typeof getUserStates === 'function') ? getUserStates(myUser) : [];
+  var scopes = [{ key: 'default', label: 'Default', sub: 'Used when no state-specific signature matches' }];
+  states.forEach(function (st) {
+    scopes.push({ key: st, label: 'For ' + st, sub: 'Used on deals in ' + st });
+  });
+
+  var editors = scopes.map(function (sc) {
+    var initial = getRawSignature(sc.key === 'default' ? '' : sc.key);
+    var elId = 'sig_' + sc.key;
+    return ''
+      + '<div style="border-top:1px solid #f0f0f0">'
+      +   '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 20px 0">'
+      +     '<div>'
+      +       '<div style="font-size:13px;font-weight:600;color:#374151">' + sc.label + '</div>'
+      +       '<div style="font-size:11px;color:#9ca3af;margin-top:2px">' + sc.sub + '</div>'
+      +     '</div>'
+      +     '<button onclick="profileSaveSignature(\'' + sc.key + '\')" class="btn-r" style="font-size:11px;padding:4px 12px">Save</button>'
+      +   '</div>'
+      +   RteToolbar(elId)
+      +   '<div id="' + elId + '" class="rte-editable" contenteditable="true" '
+      +     'data-placeholder="Type your ' + (sc.key === 'default' ? 'default' : sc.key) + ' signature here…" '
+      +     'style="padding:14px 20px;border:none;outline:none;font-size:13px;font-family:inherit;line-height:1.6;color:#1a1a1a;background:#fff;min-height:120px;overflow-y:auto;word-break:break-word">'
+      +     initial
+      +   '</div>'
+      + '</div>';
+  }).join('');
+
+  return ''
+    + '<div class="card" style="padding:0;overflow:hidden">'
+    +   '<div style="padding:16px 20px;border-bottom:1px solid #f0f0f0">'
+    +     '<h3 style="font-size:15px;font-weight:700;margin:0">Email Signatures</h3>'
+    +     '<p style="font-size:12px;color:#6b7280;margin:4px 0 0;line-height:1.5">'
+    +       'One signature per state, plus a default. The composer auto-picks the right one based on the linked deal\'s state. Use the toolbar above each editor to format text and insert images (1MB max each).'
+    +     '</p>'
+    +   '</div>'
+    +   editors
+    + '</div>';
 }
 
 function profileSaveDetails() {

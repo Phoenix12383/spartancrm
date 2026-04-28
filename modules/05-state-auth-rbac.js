@@ -70,6 +70,7 @@ var AUDIT_ACTIONS = Object.freeze({
   'rbac.role_changed':        'Role permissions changed',
   // Settings
   'settings.template_edited': 'Email/SMS template edited',
+  'settings.signature_edited': 'Email signature edited',
   'settings.status_edited':   'Custom status edited',
   'settings.field_edited':    'Custom field edited',
   'settings.tag_edited':      'Tag edited',
