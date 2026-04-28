@@ -68,6 +68,9 @@ function autoRestoreGmail() {
   }).then(function(p){
     setState({ gmailConnected: true, gmailToken: token, gmailUser: p });
     setTimeout(gmailSyncEmails, 1000);
+    // Now that gmailToken is in state, kick off Twilio device registration.
+    // Safe to call even if twilio module isn't loaded — typeof guard.
+    if (typeof twilioInit === 'function') twilioInit();
   }).catch(function(){
     // Token expired — clear stored credentials and prompt silently
     localStorage.removeItem('spartan_gmail_token_'+cu.id);
@@ -154,6 +157,9 @@ function gmailHandleToken(resp) {
     }
     addToast('Gmail connected: ' + profile.email, 'success');
     setTimeout(gmailSyncEmails, 500);
+    // Connect-Gmail also unlocks the phone module — kick off device registration
+    // so the rep doesn't have to refresh after granting OAuth permission.
+    if (typeof twilioInit === 'function') twilioInit();
   }).catch(() => {
     var gmailUser = { email: 'Connected', name: 'Gmail User', picture: '' };
     setState({ gmailConnected: true, gmailToken: resp.access_token, gmailUser: gmailUser });
@@ -165,6 +171,7 @@ function gmailHandleToken(resp) {
     }
     addToast('Gmail connected!', 'success');
     setTimeout(gmailSyncEmails, 500);
+    if (typeof twilioInit === 'function') twilioInit();
   });
 }
 
