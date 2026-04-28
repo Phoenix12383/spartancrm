@@ -19,6 +19,30 @@ function _captureFocus(){
       sel = { start: a.selectionStart, end: a.selectionEnd, dir: a.selectionDirection };
     }
   } catch(e) {}
+  // Brief 6 Phase 2: contenteditable elements (the email composer) have no
+  // selectionStart/End — caret position is tracked via Selection/Range. We
+  // capture an absolute character offset from the start of the editor so it
+  // survives the innerHTML rerender. Restored by _restoreFocus walking text
+  // nodes until it finds the matching offset. Multi-character selections
+  // record both ends; collapsed cursors record one offset.
+  var ceOffset = null;
+  if (a.isContentEditable && a.id) {
+    try {
+      var winSel = window.getSelection();
+      if (winSel && winSel.rangeCount > 0) {
+        var range = winSel.getRangeAt(0);
+        // Snapshot start + end as character offsets from the editor root.
+        var startRange = range.cloneRange();
+        startRange.setStart(a, 0);
+        var endRange = range.cloneRange();
+        endRange.setStart(a, 0);
+        ceOffset = {
+          start: startRange.toString().length - (range.toString().length),
+          end:   endRange.toString().length,
+        };
+      }
+    } catch(e) {}
+  }
   return {
     id: a.id || null,
     name: a.getAttribute ? a.getAttribute('name') : null,
@@ -26,6 +50,7 @@ function _captureFocus(){
     type: a.type || null,
     placeholder: a.getAttribute ? a.getAttribute('placeholder') : null,
     sel: sel,
+    ceOffset: ceOffset,
     scrollTop: a.scrollTop,
     scrollLeft: a.scrollLeft,
   };
@@ -57,6 +82,46 @@ function _restoreFocus(snap){
   try { el.focus({preventScroll:true}); } catch(e) { try { el.focus(); } catch(e2){} }
   if (snap.sel && typeof el.setSelectionRange === 'function') {
     try { el.setSelectionRange(snap.sel.start, snap.sel.end, snap.sel.dir || 'none'); } catch(e){}
+  }
+  // Brief 6 Phase 2: restore contenteditable caret by walking text nodes to
+  // locate the saved character offsets. Walks once for both endpoints.
+  if (snap.ceOffset && el.isContentEditable) {
+    try {
+      var startOff = Math.max(0, snap.ceOffset.start | 0);
+      var endOff   = Math.max(startOff, snap.ceOffset.end | 0);
+      var range = document.createRange();
+      var startNode = null, startNodeOff = 0;
+      var endNode = null, endNodeOff = 0;
+      var consumed = 0;
+      var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+      while (walker.nextNode()) {
+        var node = walker.currentNode;
+        var len = node.nodeValue ? node.nodeValue.length : 0;
+        if (!startNode && consumed + len >= startOff) {
+          startNode = node;
+          startNodeOff = startOff - consumed;
+        }
+        if (!endNode && consumed + len >= endOff) {
+          endNode = node;
+          endNodeOff = endOff - consumed;
+          break;
+        }
+        consumed += len;
+      }
+      // Fallback: saved offsets are past the current text length (rare —
+      // usually means the editor contents shrank between capture and
+      // restore, e.g. setState replaced body with shorter content). Land
+      // the caret at the END so the user can keep typing without jumping
+      // back to the start.
+      if (!startNode) { range.selectNodeContents(el); range.collapse(false); }
+      else {
+        range.setStart(startNode, startNodeOff);
+        range.setEnd(endNode || startNode, endNode ? endNodeOff : startNodeOff);
+      }
+      var winSel = window.getSelection();
+      winSel.removeAllRanges();
+      winSel.addRange(range);
+    } catch(e) {}
   }
   if (typeof snap.scrollTop === 'number') el.scrollTop = snap.scrollTop;
   if (typeof snap.scrollLeft === 'number') el.scrollLeft = snap.scrollLeft;
