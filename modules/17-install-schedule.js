@@ -179,7 +179,9 @@ window.dropJobOnGantt = function(jobId, ds, rowId, hourWidth, dayStart, offsetX)
       var crew = (_j && _j.installCrew) || [];
       // Make the dropped-on installer the lead. If already in crew, move to front; else replace lead.
       var others = crew.filter(function(c){ return c !== rowId; });
-      assignCrewToJob(jobId, [rowId].concat(others.slice(0, Math.max(0, others.length - 0))));
+      // Gated: validates tools/size/availability and prompts for override
+      // reason if anything is off. Silent when all green.
+      confirmAssignment(jobId, [rowId].concat(others.slice(0, Math.max(0, others.length - 0))), {installDate: ds});
       // If the previous lead was the only one, drop them so the job moves cleanly:
       if (crew.length > 0 && crew[0] !== rowId) {
         // Reassign — keep helpers but drop the previous lead from the front.
@@ -1117,6 +1119,98 @@ function assignCrewToJob(jobId, crewIds) {
   setState({jobs: jobs.map(function(j){ return j.id===jobId ? Object.assign({},j,{installCrew:crewIds}) : j; })});
   dbUpdate('jobs', jobId, {install_crew:crewIds});
 }
+
+// ── Assignment validator (Capacity Planner spec §5.3 / acceptance #5) ───────
+// Checks a prospective crew + date for missing tools, understaffing, and
+// availability conflicts. Caller decides whether to block, warn, or override.
+function validateAssignment(jobId, crewIds, installDate) {
+  var out = { warnings: [] };
+  var jobs = getState().jobs || [];
+  var job = jobs.find(function(j){ return j.id === jobId; });
+  if (!job) return out;
+  var ds = installDate || job.installDate;
+  crewIds = crewIds || [];
+
+  // 1. Required-tool coverage — every required tool must be owned by at least
+  //    one assigned installer.
+  if (crewIds.length > 0 && typeof getJobToolCoverage === 'function') {
+    try {
+      var cov = getJobToolCoverage(jobId, crewIds);
+      if (cov && cov.missing && cov.missing.length > 0) {
+        out.warnings.push({
+          kind: 'missing_tools',
+          msg: 'Missing tool' + (cov.missing.length !== 1 ? 's' : '') + ': ' + cov.missing.map(function(t){ return t.name; }).join(', ')
+        });
+      }
+    } catch(e) { /* tolerant */ }
+  }
+
+  // 2. Crew size vs CAD's crewSizeRequired (when CAD emits it).
+  var cs = job.cadSurveyData || job.cad_survey_data || {};
+  var requiredSize = +cs.crewSizeRequired || (cs.totals ? +cs.totals.crewSizeRequired : 0) || 0;
+  if (requiredSize > 0 && crewIds.length > 0 && crewIds.length < requiredSize) {
+    out.warnings.push({
+      kind: 'understaffed',
+      msg: 'CAD requires ' + requiredSize + '-person crew — only ' + crewIds.length + ' assigned'
+    });
+  }
+
+  // 3. Availability — anyone on leave / half-day on the install date.
+  if (ds && crewIds.length > 0 && typeof availabilityFraction === 'function') {
+    var byId = {};
+    (typeof getInstallers === 'function' ? getInstallers() : []).forEach(function(i){ byId[i.id] = i; });
+    var conflicts = [];
+    crewIds.forEach(function(cid){
+      var frac = availabilityFraction(cid, ds);
+      if (frac < 1) {
+        var inst = byId[cid] || { name: cid };
+        conflicts.push(inst.name + (frac === 0 ? ' (off)' : ' (half day)'));
+      }
+    });
+    if (conflicts.length > 0) {
+      out.warnings.push({
+        kind: 'availability',
+        msg: 'Availability conflict: ' + conflicts.join(', ')
+      });
+    }
+  }
+  return out;
+}
+window.validateAssignment = validateAssignment;
+
+// Gated assignment with override-with-reason. Wraps assignCrewToJob: when
+// validation is clean, assigns silently. When warnings exist, prompts the
+// operator for a reason — empty / cancel aborts. Override reason is logged
+// to job audit and persisted on the job for follow-up visibility.
+function confirmAssignment(jobId, crewIds, opts) {
+  opts = opts || {};
+  var v = validateAssignment(jobId, crewIds, opts.installDate);
+  if (v.warnings.length === 0) {
+    assignCrewToJob(jobId, crewIds);
+    return true;
+  }
+  var lines = v.warnings.map(function(w){ return '• ' + w.msg; }).join('\n');
+  var reason = prompt(
+    '⚠ Assignment has issues:\n\n' + lines + '\n\nType a reason to override and proceed, or Cancel to abort.',
+    ''
+  );
+  if (reason === null) { addToast('Assignment cancelled', 'warning'); return false; }
+  if (!reason.trim())  { addToast('Override reason required', 'error'); return false; }
+  assignCrewToJob(jobId, crewIds);
+  if (typeof logJobAudit === 'function') {
+    logJobAudit(jobId, 'Assignment Override',
+      v.warnings.map(function(w){ return w.msg; }).join(' | ') + ' — Reason: ' + reason.trim());
+  }
+  setState({jobs: (getState().jobs||[]).map(function(j){
+    return j.id === jobId ? Object.assign({}, j, {
+      assignmentOverrideReason: reason.trim(),
+      assignmentOverrideAt: new Date().toISOString(),
+    }) : j;
+  })});
+  addToast('Assignment overridden — reason logged', 'warning');
+  return true;
+}
+window.confirmAssignment = confirmAssignment;
 function setJobDuration(jobId, hours) {
   var jobs = getState().jobs || [];
   setState({jobs: jobs.map(function(j){ return j.id===jobId ? Object.assign({},j,{installDurationHours:hours}) : j; })});
@@ -1335,7 +1429,7 @@ function renderInstallSchedule() {
         if (unscheduled.length > 0) {
           g += '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:1;pointer-events:none">'
             +'<select class="sel" style="font-size:9px;padding:2px 4px;color:#9ca3af;background:transparent;border-color:transparent;pointer-events:auto" onchange="if(this.value){scheduleJobToDate(this.value,\''+ds+'\');'
-            +(row.id!=='_none'?'var _jid=this.value;setTimeout(function(){var _j=getState().jobs.find(function(x){return x.id===_jid;});if(_j&&(_j.installCrew||[]).indexOf(\''+row.id+'\')<0){assignCrewToJob(_jid,(_j.installCrew||[]).concat([\''+row.id+'\']));}renderPage();},50);':'')
+            +(row.id!=='_none'?'var _jid=this.value;setTimeout(function(){var _j=getState().jobs.find(function(x){return x.id===_jid;});if(_j&&(_j.installCrew||[]).indexOf(\''+row.id+'\')<0){confirmAssignment(_jid,(_j.installCrew||[]).concat([\''+row.id+'\']));}renderPage();},50);':'')
             +'this.value=\'\';}" onclick="event.stopPropagation()" onfocus="this.style.borderColor=\'#e5e7eb\'" onblur="this.style.borderColor=\'transparent\'">'
             +'<option value="">+ schedule ('+unscheduled.length+')</option>'
             +unscheduled.map(function(j){return '<option value="'+j.id+'">'+(j.jobNumber||'')+' '+(j.suburb||'')+'</option>';}).join('')
@@ -1603,7 +1697,7 @@ function renderInstallSchedule() {
         recsHtml += '</div>';
       }
       if (r.type==='capacity' && r.actionJob) {
-        recsHtml += '<div style="margin-top:6px"><button onclick="scheduleJobToDate(\''+r.actionJob+'\',\''+r.actionDate+'\');var _j=getState().jobs.find(function(x){return x.id===\''+r.actionJob+'\'});if(_j&&(_j.installCrew||[]).indexOf(\''+r.actionInst+'\')<0){assignCrewToJob(\''+r.actionJob+'\',(_j.installCrew||[]).concat([\''+r.actionInst+'\']));}" class="btn-r" style="font-size:11px;padding:4px 12px">Schedule this job \u2192</button></div>';
+        recsHtml += '<div style="margin-top:6px"><button onclick="scheduleJobToDate(\''+r.actionJob+'\',\''+r.actionDate+'\');var _j=getState().jobs.find(function(x){return x.id===\''+r.actionJob+'\'});if(_j&&(_j.installCrew||[]).indexOf(\''+r.actionInst+'\')<0){confirmAssignment(\''+r.actionJob+'\',(_j.installCrew||[]).concat([\''+r.actionInst+'\']),{installDate:\''+r.actionDate+'\'});}" class="btn-r" style="font-size:11px;padding:4px 12px">Schedule this job \u2192</button></div>';
       }
       if (r.type==='overload' && r.moveJob && r.moveDate) {
         recsHtml += '<div style="margin-top:6px"><button onclick="scheduleJobToDate(\''+r.moveJob+'\',\''+r.moveDate+'\')" class="btn-w" style="font-size:11px;padding:4px 12px;border-color:#fca5a5;color:#b91c1c">Move job to suggested day \u2192</button></div>';
