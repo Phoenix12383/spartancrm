@@ -736,6 +736,7 @@ var ALL_PERMISSIONS = [
   {key:'jobs.schedule',label:'Installation Schedule',module:'Job CRM',group:'jobs'},
   {key:'jobs.planner',label:'Smart Planner',module:'Job CRM',group:'jobs'},
   {key:'jobs.capplan',label:'Capacity Planner',module:'Job CRM',group:'jobs'},
+  {key:'jobs.fleet',label:'Fleet & Delivery',module:'Job CRM',group:'jobs'},
   {key:'jobs.cmmap',label:'CM Schedule Map',module:'Job CRM',group:'jobs'},
   {key:'jobs.revenue',label:'Weekly Revenue',module:'Job CRM',group:'jobs'},
   {key:'jobs.checkmeasure',label:'Perform Check Measure',module:'Job CRM',group:'jobs'},
@@ -780,7 +781,7 @@ var ALL_PERMISSIONS = [
 var DEFAULT_ROLE_PERMS = {
   admin: ALL_PERMISSIONS.map(function(p){return p.key;}), // everything
   sales_manager: ['sales.dashboard','sales.contacts','sales.leads','sales.deals','sales.calendar','sales.invoicing','sales.commission','sales.reports','sales.settings',
-    'jobs.dashboard','jobs.list','jobs.signoff','jobs.schedule','jobs.planner','jobs.capplan','jobs.cmmap','jobs.revenue',
+    'jobs.dashboard','jobs.list','jobs.signoff','jobs.schedule','jobs.planner','jobs.capplan','jobs.fleet','jobs.cmmap','jobs.revenue',
     'accounts.dashboard','accounts.outstanding',
     'service.list',
     'phone.access','phone.sms','phone.recordings.team','phone.recordings.own',
@@ -813,7 +814,7 @@ var PAGE_PERM_MAP = {
   won:'sales.deals',calendar:'sales.calendar',invoicing:'sales.invoicing',commission:'sales.commission',
   reports:'sales.reports',settings:'sales.settings',email:'sales.deals',phone:'phone.access',map:'sales.deals',profile:'sales.dashboard',
   jobdashboard:'jobs.dashboard',jobs:'jobs.list',finalsignoff:'jobs.signoff',schedule:'jobs.schedule',
-  capacity:'jobs.planner',capplan:'jobs.capplan',cmmap:'jobs.cmmap',weeklyrev:'jobs.revenue',jobsettings:'sales.settings',
+  capacity:'jobs.planner',capplan:'jobs.capplan',fleet:'jobs.fleet',cmmap:'jobs.cmmap',weeklyrev:'jobs.revenue',jobsettings:'sales.settings',
   factorydash:'factory.dashboard',prodqueue:'factory.queue',prodboard:'factory.board',
   factorybom:'factory.bom',factorycap:'factory.capacity',factorydispatch:'factory.dispatch',
   accdash:'accounts.dashboard',accoutstanding:'accounts.outstanding',accbills:'accounts.bills',

@@ -37,7 +37,7 @@
         console.log('Spartan CRM - Loading Logical Modules');
         console.log('========================================\n');
         
-        const BUILD_VERSION = '20260430y';
+        const BUILD_VERSION = '20260430z';
 
         // Logical loading order based on dependencies
         const modules = [
@@ -99,6 +99,8 @@
 
             // Layer 11c: Capacity Planner (uses readJobInstallMinutes/crewEffectiveMinutes from 17)
             '30-capacity-planner.js',
+            // Layer 11d: Fleet & Delivery (uses recommendVehicleForJob from 17)
+            '31-fleet-page.js',
 
             // Layer 12: Initialization (MUST BE LAST)
             '99-init.js'
