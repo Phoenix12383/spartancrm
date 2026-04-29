@@ -838,7 +838,13 @@ function dbSyncFactoryItems() {
 // -- Realtime subscriptions --
 function setupRealtime() {
   if (!_sb) return;
-  var channel = _sb.channel('spartan-realtime')
+  // Split across two channels because Supabase Realtime has a per-channel
+  // limit on postgres_changes subscriptions (~10). Putting all 14 on a
+  // single channel silently drops the trailing subscriptions — confirmed
+  // empirically by manually-attached test channels receiving events that
+  // a 14-listener app channel didn't.
+  // Channel A: high-cardinality entity tables.
+  var channelA = _sb.channel('spartan-realtime-entities')
     .on('postgres_changes', {event:'*', schema:'public', table:'contacts'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'leads'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'deals'}, function(){ dbLoadAll(); })
@@ -846,18 +852,17 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'invoices'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'factory_orders'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'users'}, function(){ dbLoadAll(); })
+    .subscribe(function(status){ console.log('[Spartan] Realtime A:', status); });
+  // Channel B: communication + activity + file tables.
+  var channelB = _sb.channel('spartan-realtime-comms')
     .on('postgres_changes', {event:'*', schema:'public', table:'call_logs'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'sms_logs'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'sms_templates'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'phone_settings'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'installers'}, function(){ dbLoadAll(); })
-    // activities + entity_files weren't here originally — without them
-    // mobile-side notes/photos/file-uploads land in Supabase but the desktop
-    // doesn't refresh until the user reloads the page (or some other table
-    // change happens to trigger dbLoadAll). Subscribing here closes that gap.
     .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
-    .subscribe(function(status){ console.log('[Spartan] Realtime:', status); });
+    .subscribe(function(status){ console.log('[Spartan] Realtime B:', status); });
 }
 
 // ── MOCK DATA ──────────────────────────────────────────────────────────────
