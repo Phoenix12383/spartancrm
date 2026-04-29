@@ -49,21 +49,25 @@
     return p;
   }
 
-  // Count this installer's working days that fall in the given week. The week
-  // is an array of 7 Date objects (Mon..Sun) from getWeekDates().
-  function countWorkingDays(ins, weekDates) {
+  // Sum of availability fractions across this installer's working days in the
+  // week. A 5-day worker with no exceptions returns 5; one day off → 4; one
+  // half-day → 4.5. Replaces a plain count so leave/sick reduces capacity.
+  function workingDayFraction(ins, weekDates) {
     var days = installerWorkDays(ins);
-    var count = 0;
+    var sum = 0;
     weekDates.forEach(function(d){
       var key = DAY_KEYS[d.getDay()];
-      if (days.indexOf(key) >= 0) count++;
+      if (days.indexOf(key) < 0) return;
+      var ds = (typeof isoDate === 'function') ? isoDate(d) : d.toISOString().slice(0,10);
+      var frac = (typeof availabilityFraction === 'function') ? availabilityFraction(ins.id, ds) : 1;
+      sum += (typeof frac === 'number' ? frac : 1);
     });
-    return count;
+    return sum;
   }
 
   // Capacity in minutes for one installer over the given week.
   function installerCapacityMinutes(ins, weekDates) {
-    var raw = countWorkingDays(ins, weekDates) * installerMinutesPerDay(ins);
+    var raw = workingDayFraction(ins, weekDates) * installerMinutesPerDay(ins);
     return Math.round(raw * (installerProductivity(ins) / 100));
   }
 

@@ -346,6 +346,58 @@ function recommendVehicleForJob(job) {
 }
 window.recommendVehicleForJob = recommendVehicleForJob;
 
+// ── Installer availability exceptions (Capacity Planner spec §4.5) ──────────
+// Side-store in localStorage. Each entry shape:
+//   { id, installerId, date:'YYYY-MM-DD', type:'unavailable|half_day_am|half_day_pm|leave', reason }
+// Standard work week is implicit from installer.workDays — this table only
+// stores exceptions. Capacity calcs multiply each day by availabilityFraction
+// so leave/sick days reduce the planner's capacity number honestly.
+function getAvailability() {
+  try { return JSON.parse(localStorage.getItem('spartan_installer_availability') || '[]'); }
+  catch(e) { return []; }
+}
+function saveAvailability(list) {
+  try { localStorage.setItem('spartan_installer_availability', JSON.stringify(list || [])); }
+  catch(e) { console.warn('[availability] save failed', e); }
+}
+function getInstallerAvailability(installerId) {
+  return getAvailability().filter(function(a){ return a.installerId === installerId; });
+}
+function addAvailabilityEntry(entry) {
+  if (!entry || !entry.installerId || !entry.date) return null;
+  var list = getAvailability();
+  entry.id = entry.id || ('av_' + Date.now() + '_' + Math.random().toString(36).slice(2,6));
+  entry.type = entry.type || 'unavailable';
+  list.push(entry);
+  saveAvailability(list);
+  addToast('Availability entry saved', 'success');
+  return entry;
+}
+function removeAvailabilityEntry(id) {
+  var list = getAvailability().filter(function(a){ return a.id !== id; });
+  saveAvailability(list);
+  addToast('Availability entry removed', 'warning');
+}
+// Returns 0..1 — fraction of the day the installer is available.
+//   unavailable / leave → 0
+//   half_day_am / half_day_pm → 0.5
+//   no exception → 1
+function availabilityFraction(installerId, dateStr) {
+  var entries = getInstallerAvailability(installerId).filter(function(a){ return a.date === dateStr; });
+  if (entries.length === 0) return 1;
+  var fraction = 1;
+  entries.forEach(function(a){
+    if (a.type === 'unavailable' || a.type === 'leave') fraction = 0;
+    else if (a.type === 'half_day_am' || a.type === 'half_day_pm') fraction = Math.min(fraction, 0.5);
+  });
+  return fraction;
+}
+window.getAvailability = getAvailability;
+window.getInstallerAvailability = getInstallerAvailability;
+window.addAvailabilityEntry = addAvailabilityEntry;
+window.removeAvailabilityEntry = removeAvailabilityEntry;
+window.availabilityFraction = availabilityFraction;
+
 // ── Install Progress Tracking (TESTING — pre-mobile app stand-in) ───────────
 // Per the manual §7.5: each frame moves through 7 stages on install day:
 //   0=Not Started · 1=Demo'd · 2=Fitted · 3=Foamed · 4=Trimmed

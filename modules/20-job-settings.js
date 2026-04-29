@@ -118,6 +118,43 @@ function renderJobSettings() {
       }
       content += '</div>';
 
+      // ── Availability Exceptions (Capacity Planner spec §4.5) ──────────────
+      // Records leave / sick / half-day exceptions. Standard work week comes
+      // from installer.workDays (defaults Mon–Fri); this list only stores
+      // deviations. Capacity Planner subtracts these days when projecting.
+      var avail = (editingInstallerId && editingInstallerId !== '_new' && typeof getInstallerAvailability === 'function')
+        ? getInstallerAvailability(editingInstallerId).slice().sort(function(a,b){return (a.date||'').localeCompare(b.date||'');})
+        : [];
+      var AV_TYPES = {unavailable:'Unavailable',leave:'Leave',half_day_am:'Half Day (AM)',half_day_pm:'Half Day (PM)'};
+      content += '<div class="card" style="padding:16px;margin-top:14px">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
+        +'<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9ca3af">📅 Availability Exceptions <span style="font-weight:400">('+avail.length+')</span></div>'
+        +(editingInstallerId && editingInstallerId !== '_new'
+          ? '<button onclick="var d=prompt(\'Date (YYYY-MM-DD):\',new Date().toISOString().slice(0,10));if(!d||!/^\\d{4}-\\d{2}-\\d{2}$/.test(d)){addToast(\'Invalid date\',\'error\');return;}var t=prompt(\'Type — unavailable / leave / half_day_am / half_day_pm:\',\'leave\');if(!t)return;var r=prompt(\'Reason (optional):\',\'\')||\'\';addAvailabilityEntry({installerId:\''+editingInstallerId+'\',date:d,type:t,reason:r});renderPage();" class="btn-w" style="font-size:11px;padding:4px 10px">+ Add Exception</button>'
+          : '<span style="font-size:10px;color:#9ca3af;font-style:italic">Save the installer first to add exceptions</span>')
+        +'</div>';
+      if (avail.length === 0) {
+        content += '<div style="color:#9ca3af;font-size:12px;text-align:center;padding:12px">No availability exceptions — using standard work week</div>';
+      } else {
+        content += '<div style="display:flex;flex-direction:column;gap:4px">';
+        avail.forEach(function(a){
+          var typeCol = a.type === 'unavailable' || a.type === 'leave' ? '#dc2626' : '#d97706';
+          var typeBg  = a.type === 'unavailable' || a.type === 'leave' ? '#fef2f2' : '#fffbeb';
+          var typeLabel = AV_TYPES[a.type] || a.type;
+          var dateLabel = (function(){ try { var d=new Date(a.date+'T12:00'); return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()] + ' ' + a.date; } catch(e){ return a.date; } })();
+          var inPast = a.date < new Date().toISOString().slice(0,10);
+          content += '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:'+typeBg+';border-radius:6px;border-left:3px solid '+typeCol+';opacity:'+(inPast?'.55':'1')+'">'
+            +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:12px;font-weight:600;color:#374151">'+dateLabel+(inPast?' <span style="font-size:10px;color:#9ca3af">· past</span>':'')+'</div>'
+            +'<div style="font-size:11px;color:'+typeCol+';font-weight:600;margin-top:1px">'+typeLabel+(a.reason?' <span style="color:#6b7280;font-weight:400">· '+a.reason+'</span>':'')+'</div>'
+            +'</div>'
+            +'<button onclick="if(confirm(\'Remove this exception?\')){removeAvailabilityEntry(\''+a.id+'\');renderPage();}" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:13px">✕</button>'
+            +'</div>';
+        });
+        content += '</div>';
+      }
+      content += '</div>';
+
       // Save button
       content += '<div style="display:flex;gap:8px;margin-top:14px">'
         +'<button onclick="var fn=document.getElementById(\'inst_fn\').value.trim();var ln=document.getElementById(\'inst_ln\').value.trim();if(!fn){addToast(\'First name required\',\'error\');return;}'
