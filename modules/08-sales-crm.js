@@ -2715,23 +2715,44 @@ async function takeMobilePhoto(entityId, entityType) {
     var publicUrl = pub && pub.data && pub.data.publicUrl;
     if (!publicUrl) { addToast('Could not resolve photo URL', 'error'); return; }
     var fileName = 'photo-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + ts + '.' + ext;
-    if (typeof addEntityFile === 'function') {
-      // addEntityFile handles localStorage + entity_files row + 'file' activity.
-      // Passing a URL as the dataUrl works because rendering treats both
-      // data:base64 and http(s) URLs as valid <img>/iframe srcs.
-      addEntityFile(entityType, entityId, fileName, publicUrl);
-    } else {
-      // Defensive fallback if addEntityFile isn't loaded — write a 'file'
-      // activity directly so the photo at least appears in the timeline.
-      if (typeof saveActivityToEntity === 'function') {
-        saveActivityToEntity(entityId, entityType, {
-          id: 'a' + ts, type: 'file',
-          text: 'File uploaded: ' + fileName,
-          date: new Date().toISOString().slice(0,10),
-          time: new Date().toTimeString().slice(0,5),
-          by: cu.name || 'Admin',
+    var fileId = 'file_' + ts;
+    var byName = cu.name || 'Admin';
+    // Replicate addEntityFile's storage writes — we don't call addEntityFile
+    // directly because it logs a generic "File uploaded: foo.jpg" activity;
+    // for a camera capture we want a richer "📸 Photo captured" entry
+    // with the URL as text (so the timeline can render the photo inline).
+    //   1) localStorage so desktop Files tab sees the photo without a reload
+    if (typeof getEntityFiles === 'function' && typeof saveEntityFiles === 'function') {
+      var files = getEntityFiles(entityType, entityId);
+      files.push({
+        id: fileId, name: fileName, dataUrl: publicUrl,
+        size: (blob && blob.size) || 0,
+        uploadedBy: byName, uploadedAt: new Date().toISOString(),
+      });
+      saveEntityFiles(entityType, entityId, files);
+    }
+    //   2) entity_files row mirrors what desktop's addEntityFile writes
+    if (typeof dbInsert === 'function') {
+      try {
+        dbInsert('entity_files', {
+          id: fileId, entity_type: entityType, entity_id: entityId,
+          name: fileName, data_url: publicUrl, uploaded_by: byName,
         });
-      }
+      } catch (e) { /* swallow — same pattern as desktop addEntityFile */ }
+    }
+    //   3) Photo activity. type='file' to satisfy the existing activities-
+    //   table constraint; subject lifts the "Photo captured" caption to the
+    //   row header so the body can be just the URL — which the timeline
+    //   detects and renders as an inline <img>.
+    if (typeof saveActivityToEntity === 'function') {
+      saveActivityToEntity(entityId, entityType, {
+        id: 'a' + ts, type: 'file',
+        subject: '📸 Photo captured',
+        text: publicUrl,
+        date: new Date().toISOString().slice(0,10),
+        time: new Date().toTimeString().slice(0,5),
+        by: byName,
+      });
     }
     addToast('Photo saved ✓', 'success');
     renderPage();
@@ -3099,7 +3120,11 @@ function renderEntityDetail({
                    render — their text is plain and includes intentional
                    newlines from edit/note/call activities. -->
               ${act.text && act.type !== 'stage' ? (
-                act.type === 'photo'
+                // Image-URL → render inline <img>. Catches the mobile camera
+                // capture flow (type='file', text=publicUrl) AND the older
+                // type='photo' shape if any of those rows exist. Anything
+                // else falls through to the existing text/email rendering.
+                /^https?:\/\/.+\.(jpe?g|png|gif|webp|heic)(\?.*)?$/i.test(act.text)
                   ? `<a href="${String(act.text).replace(/"/g,'&quot;')}" target="_blank" rel="noopener" style="display:inline-block;margin-top:4px;border-radius:8px;overflow:hidden;border:1px solid #f3f4f6;max-width:280px;box-shadow:0 1px 3px rgba(0,0,0,.06)"><img src="${String(act.text).replace(/"/g,'&quot;')}" loading="lazy" style="display:block;max-width:280px;max-height:280px;object-fit:cover" alt="Photo"></a>`
                   : (act.type === 'email' && typeof _sanitizeEmailBody === 'function'
                     ? `<div style="font-size:13px;color:#374151;line-height:1.6;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'};overflow:hidden">${_sanitizeEmailBody(act.text)}</div>`
