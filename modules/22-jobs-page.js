@@ -1132,8 +1132,14 @@ function renderJobDetail() {
         +'<span style="font-size:10px;color:#9ca3af">Adjusted for installer productivity %</span>'
         +'</div>';
       if (baselineMin <= 0) {
-        tabContent += '<div style="font-size:12px;color:#6b7280;padding:10px 12px;background:#f9fafb;border-radius:6px">'
-          +'No install duration yet. Complete the Check Measure in CAD or set <strong>Install Duration (hours)</strong> on the job to see effective times per installer.'
+        tabContent += '<div style="font-size:12px;color:#6b7280;padding:10px 12px;background:#f9fafb;border-radius:6px;margin-bottom:10px">'
+          +'No install duration yet. Either complete the Check Measure in CAD (it writes the minutes automatically) or set the hours manually below.'
+          +'</div>'
+          +'<div style="display:flex;align-items:center;gap:10px;font-size:12px">'
+          +'<label style="font-size:11px;font-weight:600;color:#374151">Install Duration (hours):</label>'
+          +'<input type="number" class="inp" min="0" step="0.25" value="'+(job.installDurationHours||'')+'" placeholder="e.g. 4" style="font-size:13px;padding:6px 10px;width:120px" '
+          +'onblur="var v=parseFloat(this.value)||0;updateJobField(\''+job.id+'\',\'installDurationHours\',v>0?v:null);renderPage()">'
+          +'<span style="font-size:11px;color:#9ca3af">Stored on the job; CAD will overwrite if a future Check Measure is saved.</span>'
           +'</div>';
       } else {
         tabContent += '<div style="display:grid;grid-template-columns:140px 1fr;gap:16px;font-size:12px;align-items:start">'
@@ -1167,6 +1173,13 @@ function renderJobDetail() {
           }
         }
         tabContent += '</div></div>';
+        // Editable override — lets ops change the duration without going through CAD again.
+        tabContent += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6;display:flex;align-items:center;gap:10px;font-size:11px">'
+          +'<label style="font-size:11px;font-weight:600;color:#6b7280">Override (hours):</label>'
+          +'<input type="number" class="inp" min="0" step="0.25" value="'+(job.installDurationHours||'')+'" placeholder="auto" style="font-size:12px;padding:5px 8px;width:90px" '
+          +'onblur="var v=parseFloat(this.value)||0;updateJobField(\''+job.id+'\',\'installDurationHours\',v>0?v:null);renderPage()">'
+          +'<span style="font-size:10px;color:#9ca3af">Leave blank to use CAD\'s value.</span>'
+          +'</div>';
       }
       tabContent += '</div>';
     }
