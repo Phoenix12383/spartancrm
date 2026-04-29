@@ -81,6 +81,85 @@
 
   function fmtHM(min) { var h = Math.floor(min/60); var m = min % 60; return h + 'h ' + (m<10?'0'+m:m) + 'm'; }
 
+  // Build move-suggestions for any overloaded week. Picks the job most worth
+  // moving (latest installDate within the week, then largest minutes), then
+  // walks forward to the first future week with enough headroom for it.
+  function computeSuggestions(weeks) {
+    var out = [];
+    weeks.forEach(function(wk, idx){
+      if (wk.util <= 1.0) return; // not overloaded
+      // Rank candidates: latest installDate first, then largest minutes desc.
+      var candidates = wk.jobs.slice()
+        .map(function(j){ return { job: j, mins: readJobInstallMinutes(j) || 0 }; })
+        .filter(function(c){ return c.mins > 0; })
+        .sort(function(a,b){
+          var d = (b.job.installDate || '').localeCompare(a.job.installDate || '');
+          if (d !== 0) return d;
+          return b.mins - a.mins;
+        });
+      // Try each candidate; return the first that has a viable target week.
+      for (var ci = 0; ci < candidates.length; ci++) {
+        var cand = candidates[ci];
+        // Find a future week with headroom (capacity - demand) >= cand.mins.
+        // Limit search to the visible window so the suggestion stays in view.
+        for (var ti = idx + 1; ti < weeks.length; ti++) {
+          var target = weeks[ti];
+          var headroom = target.capacity - target.demand;
+          if (headroom >= cand.mins) {
+            out.push({
+              id: 'mv_' + cand.job.id + '_' + target.weekStart,
+              jobId: cand.job.id,
+              jobNumber: cand.job.jobNumber || cand.job.id,
+              jobMinutes: cand.mins,
+              fromWeekStart: wk.weekStart,
+              fromWeekLabel: fmtShortDate(wk.dates[0]) + ' – ' + fmtShortDate(wk.dates[6]),
+              toWeekStart: target.weekStart,
+              toWeekLabel: fmtShortDate(target.dates[0]) + ' – ' + fmtShortDate(target.dates[6]),
+              targetWeekday: cand.job.installDate || target.weekStart,
+              overflowMins: wk.demand - wk.capacity,
+            });
+            return; // one suggestion per overloaded week is enough
+          }
+        }
+      }
+    });
+    return out;
+  }
+
+  // Move a job to the same weekday in the target week, or the week's Monday
+  // if the original date can't be mapped. Updates state + writes to Supabase.
+  window.capPlanMoveJob = function(jobId, fromWeekStart, toWeekStart) {
+    var jobs = getState().jobs || [];
+    var job = jobs.find(function(j){ return j.id === jobId; });
+    if (!job) { addToast('Job not found','error'); return; }
+    if (!job.installDate) { addToast('Job has no install date','error'); return; }
+    // Same-weekday-as-original mapping: original day-of-week → target week's that weekday.
+    var origDate = new Date(job.installDate + 'T12:00:00');
+    var origDow  = origDate.getDay(); // 0=Sun..6=Sat
+    var targetMonday = new Date(toWeekStart + 'T12:00:00');
+    var dayOffset = origDow === 0 ? 6 : (origDow - 1); // Mon=0..Sun=6
+    var newDate = new Date(targetMonday);
+    newDate.setDate(targetMonday.getDate() + dayOffset);
+    var newDateStr = newDate.toISOString().slice(0,10);
+    if (!confirm('Move ' + (job.jobNumber || jobId) + ' from ' + job.installDate + ' to ' + newDateStr + '?')) return;
+    setState({jobs: (getState().jobs||[]).map(function(j){ return j.id===jobId ? Object.assign({}, j, {installDate: newDateStr}) : j; })});
+    if (typeof dbUpdate === 'function') {
+      try { dbUpdate('jobs', jobId, { install_date: newDateStr }); } catch(e) { console.warn('[capplan] dbUpdate failed', e); }
+    }
+    if (typeof logJobAudit === 'function') logJobAudit(jobId, 'Schedule Moved', 'Capacity Planner: ' + job.installDate + ' → ' + newDateStr);
+    addToast('Moved ' + (job.jobNumber||jobId) + ' to ' + newDateStr, 'success');
+  };
+
+  window.capPlanDismissSuggestion = function(suggestionId) {
+    var dismissed = getState().capPlanDismissedSuggestions || {};
+    dismissed = Object.assign({}, dismissed); dismissed[suggestionId] = true;
+    setState({capPlanDismissedSuggestions: dismissed});
+  };
+  window.capPlanResetDismissed = function() {
+    setState({capPlanDismissedSuggestions: {}});
+    addToast('Dismissed suggestions restored','info');
+  };
+
   function renderCapacityPlanner() {
     var jobs = (getState().jobs || []);
     var contacts = getState().contacts || [];
@@ -106,6 +185,14 @@
       var util = capacity > 0 ? demand / capacity : (demand > 0 ? 99 : 0);
       weeks.push({offset: startOffset + w, dates:dates, weekStart:ws, weekEnd:we, jobs:weekJobs, demand:demand, capacity:capacity, util:util});
     }
+
+    // ── Suggestions (Capacity Planner spec §6.3) ─────────────────────────────
+    // For each overloaded week, propose moving its latest-scheduled / largest
+    // job to the next week with headroom. Operators see them as suggestions —
+    // a Move button shifts the job, no auto-execute.
+    var suggestions = computeSuggestions(weeks);
+    var dismissed = getState().capPlanDismissedSuggestions || {};
+    suggestions = suggestions.filter(function(s){ return !dismissed[s.id]; }).slice(0, 6);
 
     // ── Header / week-window nav ─────────────────────────────────────────────
     var header = '<div class="card" style="padding:18px 22px;margin-bottom:14px">'
@@ -135,6 +222,35 @@
       +'<div class="card" style="padding:14px 18px;border:1px solid '+bandOverall.col+'33;background:'+bandOverall.bg+'"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Overall Utilisation</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px;color:'+bandOverall.col+'">'+Math.round(overallUtil*100)+'%</div><div style="font-size:10px;color:'+bandOverall.col+';margin-top:2px;font-weight:600">'+bandOverall.label+'</div></div>'
       +'<div class="card" style="padding:14px 18px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Hot Weeks</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px"><span style="color:#7f1d1d">'+overloadedWeeks+'</span> <span style="color:#9ca3af;font-size:14px">over</span> · <span style="color:#d97706">'+tightWeeks+'</span> <span style="color:#9ca3af;font-size:14px">tight</span></div><div style="font-size:10px;color:#9ca3af;margin-top:2px">>100% / 80–100%</div></div>'
       +'</div>';
+
+    // ── Suggestions panel (Capacity Planner spec §6.3) ───────────────────────
+    var suggestionsHtml = '';
+    var dismissedCount = Object.keys(dismissed).length;
+    if (suggestions.length > 0 || (overloadedWeeks > 0 && dismissedCount > 0)) {
+      suggestionsHtml = '<div class="card" style="padding:18px 22px;margin-bottom:14px;border:1px solid #fde68a;background:#fffbeb">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+        +'<div><h3 style="font-family:Syne,sans-serif;font-size:15px;font-weight:800;margin:0;color:#92400e">💡 Suggestions</h3>'
+        +'<div style="font-size:11px;color:#92400e;margin-top:2px">Move jobs from overloaded weeks into open capacity. These are recommendations — review before applying.</div></div>'
+        +(dismissedCount > 0 ? '<button onclick="capPlanResetDismissed()" class="btn-w" style="font-size:11px;padding:5px 10px">Restore '+dismissedCount+' dismissed</button>' : '')
+        +'</div>';
+      if (suggestions.length === 0) {
+        suggestionsHtml += '<div style="font-size:12px;color:#92400e;font-style:italic">All current suggestions have been dismissed for now.</div>';
+      } else {
+        suggestionsHtml += '<div style="display:flex;flex-direction:column;gap:8px">';
+        suggestions.forEach(function(s){
+          suggestionsHtml += '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border:1px solid #fde68a;border-radius:8px">'
+            +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:13px;font-weight:700;color:#374151"><a href="#" onclick="event.preventDefault();setState({page:\'jobs\',jobDetailId:\''+s.jobId+'\'})" style="color:#3b82f6;text-decoration:none">'+s.jobNumber+'</a> · '+fmtHM(s.jobMinutes)+'</div>'
+            +'<div style="font-size:11px;color:#6b7280;margin-top:2px">Move from <strong style="color:#7f1d1d">'+s.fromWeekLabel+'</strong> (over by '+fmtHM(s.overflowMins)+') → <strong style="color:#15803d">'+s.toWeekLabel+'</strong></div>'
+            +'</div>'
+            +'<button onclick="capPlanMoveJob(\''+s.jobId+'\',\''+s.fromWeekStart+'\',\''+s.toWeekStart+'\')" class="btn-r" style="font-size:11px;padding:5px 12px;white-space:nowrap">Move →</button>'
+            +'<button onclick="capPlanDismissSuggestion(\''+s.id+'\')" title="Dismiss this suggestion" style="background:none;border:none;color:#9ca3af;cursor:pointer;font-size:14px;padding:4px 6px">✕</button>'
+            +'</div>';
+        });
+        suggestionsHtml += '</div>';
+      }
+      suggestionsHtml += '</div>';
+    }
 
     // ── Bars per week ────────────────────────────────────────────────────────
     var bars = '<div class="card" style="padding:18px 22px">';
@@ -238,7 +354,7 @@
     });
     bars += '</div>';
 
-    return header + tiles + bars;
+    return header + tiles + suggestionsHtml + bars;
   }
 
   window.renderCapacityPlanner = renderCapacityPlanner;
