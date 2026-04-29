@@ -2668,11 +2668,15 @@ function advanceDealStageMobile(dealId) {
 }
 
 // ── MOBILE: camera capture ───────────────────────────────────────────────────
-// Uses @capacitor/camera (installed in the wrapper). Plugin does the on-device
-// resize to 1024px-wide, JPEG quality 80 → typical capture lands at 100-200KB.
-// We upload as a binary blob to Supabase Storage (bucket: crm-photos) and log
-// the photo as an activity with type='photo' so it appears in both the
-// desktop activity timeline and the mobile detail's Photos section.
+// Uses @capacitor/camera (installed in the wrapper). The plugin resizes
+// on-device to 1024px wide @ JPEG 80 — typical capture lands at 100-200KB.
+// We upload the binary blob to Supabase Storage (bucket: crm-photos), then
+// route the resulting public URL through addEntityFile() — the same helper
+// the desktop Files tab uses. That way:
+//   • the photo appears in the desktop "Files" tab on the deal/lead
+//   • a 'file' activity is logged (existing allowed type, no schema risk)
+//   • the entity_files table gets a row alongside spartan_files_X_Y in
+//     localStorage so dbLoadAll on other devices picks it up
 async function takeMobilePhoto(entityId, entityType) {
   var Camera = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Camera;
   if (!Camera) {
@@ -2690,7 +2694,6 @@ async function takeMobilePhoto(entityId, entityType) {
     });
     if (!photo || !photo.base64String) return;
     addToast('Uploading…', 'info');
-    // Decode base64 → binary → Blob.
     var binary = atob(photo.base64String);
     var bytes = new Uint8Array(binary.length);
     for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -2698,7 +2701,8 @@ async function takeMobilePhoto(entityId, entityType) {
     var mime = 'image/' + (ext === 'jpg' ? 'jpeg' : ext);
     var blob = new Blob([bytes], { type: mime });
     var cu = getCurrentUser() || {};
-    var path = (cu.id || 'anon') + '/' + entityType + '-' + entityId + '/' + Date.now() + '.' + ext;
+    var ts = Date.now();
+    var path = (cu.id || 'anon') + '/' + entityType + '-' + entityId + '/' + ts + '.' + ext;
     var up = await _sb.storage.from('crm-photos').upload(path, blob, {
       cacheControl: '3600', upsert: false, contentType: mime,
     });
@@ -2710,19 +2714,29 @@ async function takeMobilePhoto(entityId, entityType) {
     var pub = _sb.storage.from('crm-photos').getPublicUrl(path);
     var publicUrl = pub && pub.data && pub.data.publicUrl;
     if (!publicUrl) { addToast('Could not resolve photo URL', 'error'); return; }
-    if (typeof saveActivityToEntity === 'function') {
-      saveActivityToEntity(entityId, entityType, {
-        id: 'a' + Date.now(), type: 'photo', text: publicUrl,
-        date: new Date().toISOString().slice(0,10),
-        time: new Date().toTimeString().slice(0,5),
-        by: cu.name || 'Admin',
-      });
+    var fileName = 'photo-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + ts + '.' + ext;
+    if (typeof addEntityFile === 'function') {
+      // addEntityFile handles localStorage + entity_files row + 'file' activity.
+      // Passing a URL as the dataUrl works because rendering treats both
+      // data:base64 and http(s) URLs as valid <img>/iframe srcs.
+      addEntityFile(entityType, entityId, fileName, publicUrl);
+    } else {
+      // Defensive fallback if addEntityFile isn't loaded — write a 'file'
+      // activity directly so the photo at least appears in the timeline.
+      if (typeof saveActivityToEntity === 'function') {
+        saveActivityToEntity(entityId, entityType, {
+          id: 'a' + ts, type: 'file',
+          text: 'File uploaded: ' + fileName,
+          date: new Date().toISOString().slice(0,10),
+          time: new Date().toTimeString().slice(0,5),
+          by: cu.name || 'Admin',
+        });
+      }
     }
-    addToast('Photo uploaded ✓', 'success');
+    addToast('Photo saved ✓', 'success');
     renderPage();
   } catch (e) {
     var msg = (e && e.message) || String(e);
-    // Capacitor cancel paths — silent.
     if (msg.indexOf('cancel') >= 0 || msg.indexOf('Cancel') >= 0) return;
     console.error('[Spartan] camera error:', e);
     addToast('Camera error: ' + msg, 'error');
@@ -2871,18 +2885,42 @@ function _renderEntityDetailMobile(opts) {
     actionBar = '<div style="margin-top:-10px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);display:grid;grid-template-columns:repeat(' + cells.length + ',1fr);margin-bottom:14px">' + cells.join('') + '</div>';
   }
 
-  // Recent photos section — pulls type='photo' activities from the entity and
-  // renders thumbnails. Tap opens full-size in the system browser. Hidden
-  // when the entity has no photos yet.
+  // Files section — reads from the same getEntityFiles() store the desktop
+  // Files tab uses. Image-extension entries render as 84px thumbnails (tap
+  // → full-size in system browser). Non-image entries render as a single
+  // row with the filename and uploader. Hidden when the entity has none.
   var photosHtml = '';
-  var photoActs = (entity.activities || []).filter(function(a){ return a.type === 'photo' && a.text; });
-  if (photoActs.length) {
-    var thumbs = photoActs.slice(0, 12).map(function(a){
-      var safeUrl = String(a.text || '').replace(/"/g, '&quot;');
-      return '<a href="' + safeUrl + '" target="_blank" rel="noopener" style="flex-shrink:0;width:84px;height:84px;border-radius:8px;overflow:hidden;display:block;box-shadow:0 1px 3px rgba(0,0,0,.06);background:#f3f4f6"><img src="' + safeUrl + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block" alt=""></a>';
-    }).join('');
-    photosHtml = '<h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin:18px 4px 8px">Photos <span style="color:#9ca3af;font-weight:600">' + photoActs.length + '</span></h2>' +
-      '<div style="display:flex;gap:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px">' + thumbs + '</div>';
+  var entFiles = (typeof getEntityFiles === 'function') ? getEntityFiles(entityType, entity.id) : [];
+  if (entFiles && entFiles.length) {
+    var imgRe = /\.(jpe?g|png|gif|webp|heic)$/i;
+    var imgs = entFiles.filter(function(f){ return f && f.dataUrl && imgRe.test(f.name || ''); });
+    var others = entFiles.filter(function(f){ return f && f.dataUrl && !imgRe.test(f.name || ''); });
+    var blocks = [];
+    if (imgs.length) {
+      var thumbs = imgs.slice(0, 12).map(function(f){
+        var safeUrl = String(f.dataUrl || '').replace(/"/g, '&quot;');
+        return '<a href="' + safeUrl + '" target="_blank" rel="noopener" style="flex-shrink:0;width:84px;height:84px;border-radius:8px;overflow:hidden;display:block;box-shadow:0 1px 3px rgba(0,0,0,.06);background:#f3f4f6"><img src="' + safeUrl + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block" alt=""></a>';
+      }).join('');
+      blocks.push('<div style="display:flex;gap:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px">' + thumbs + '</div>');
+    }
+    if (others.length) {
+      blocks.push('<div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-top:' + (imgs.length ? '8px' : '0') + '">' +
+        others.slice(0, 8).map(function(f, i){
+          var safeUrl = String(f.dataUrl || '').replace(/"/g, '&quot;');
+          var name = String(f.name || 'File').replace(/</g, '&lt;');
+          return '<a href="' + safeUrl + '" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:11px 14px;text-decoration:none;color:#374151;' + (i > 0 ? 'border-top:1px solid #f3f4f6;' : '') + '">' +
+            '<span style="font-size:18px;flex-shrink:0">📎</span>' +
+            '<div style="flex:1;min-width:0">' +
+              '<div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
+              (f.uploadedBy ? '<div style="font-size:10px;color:#9ca3af;margin-top:1px">Uploaded by ' + f.uploadedBy + '</div>' : '') +
+            '</div>' +
+            '<span style="color:#9ca3af;font-size:14px">›</span>' +
+          '</a>';
+        }).join('') +
+      '</div>');
+    }
+    photosHtml = '<h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin:18px 4px 8px">Files <span style="color:#9ca3af;font-weight:600">' + entFiles.length + '</span></h2>' +
+      blocks.join('');
   }
 
   // Details rows (skip empties so the card never has dashes).
