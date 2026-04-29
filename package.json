@@ -13,7 +13,8 @@
     "test:commission-calc": "node tests/commission-calc.test.cjs",
     "test:commission-state": "node tests/commission-state.test.cjs",
     "test:commission-settings": "node tests/commission-settings.test.cjs",
-    "test:commission-payruns": "node tests/commission-payruns.test.cjs"
+    "test:commission-payruns": "node tests/commission-payruns.test.cjs",
+    "test:commission-dashboard": "node tests/commission-dashboard.test.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
