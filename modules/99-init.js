@@ -186,6 +186,16 @@ function renderPage(){
     ${typeof _pendingMobileNote !== 'undefined' && _pendingMobileNote ? renderMobileNoteModal() : ''}
   `;
   _restoreFocus(_focusSnap);
+  // Restore the Gantt's horizontal scroll position after innerHTML rebuilds
+  // the DOM. Without this, every Supabase realtime echo / setState call
+  // bounces the user back to Monday morning mid-scroll.
+  if (window._ganttScroll) {
+    var _gs = document.getElementById('gantt_scroll');
+    if (_gs) {
+      _gs.scrollLeft = window._ganttScroll.left || 0;
+      _gs.scrollTop  = window._ganttScroll.top  || 0;
+    }
+  }
   renderToasts();
   // Lock body scroll while any modal is open so the background page doesn't
   // scroll behind the modal. Re-evaluated every render — closing a modal (next

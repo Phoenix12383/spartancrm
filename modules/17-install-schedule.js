@@ -1306,7 +1306,7 @@ function renderInstallSchedule() {
 
   // ── Gantt grid ────────────────────────────────────────────────────────────
   var totalW = NAME_W + weekDates.length * DAY_W;
-  var g = '<div class="card" style="overflow:auto;padding:0;max-height:calc(100vh - 320px)">';
+  var g = '<div id="gantt_scroll" class="card" style="overflow:auto;padding:0;max-height:calc(100vh - 320px)" onscroll="window._ganttScroll={left:this.scrollLeft,top:this.scrollTop}">';
   g += '<div style="position:relative;min-width:'+totalW+'px">';
 
   // ── Sticky header row: day names + hour ticks ─────────────────────────────
