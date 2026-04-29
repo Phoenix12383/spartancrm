@@ -48,6 +48,112 @@ function mountLeadsGoogleMap() {
   }
 }
 
+// ── MOBILE: LEADS — vertical card list ────────────────────────────────────────
+// Header (title + count + Add button) → search → status filter pills →
+// vertical card list. No map panel (desktop's 480px column doesn't fit on
+// a phone). Cards reuse the same visual language as the deals/today screens.
+function renderLeadsMobile() {
+  var st = getState();
+  var leads = st.leads || [];
+  var emailSent = st.emailSent || [];
+  var statusColors = { New:'#3b82f6', Contacted:'#f59e0b', Qualified:'#22c55e', Unqualified:'#9ca3af', Archived:'#6b7280' };
+  var statuses = ['All','New','Contacted','Qualified','Unqualified','Archived'];
+
+  var branchFilter = st.branch || 'all';
+  var leadsForBranch = leads.filter(function(l){ return branchFilter === 'all' || l.branch === branchFilter; });
+
+  var q = (leadSearch || '').toLowerCase();
+  var filtered = leadsForBranch.filter(function(l){
+    var matchStatus = leadFilter === 'All' ? !l.converted : l.status === leadFilter;
+    if (!matchStatus) return false;
+    if (!q) return true;
+    return ((l.fn || '') + ' ' + (l.ln || '')).toLowerCase().indexOf(q) >= 0
+        || (l.email || '').toLowerCase().indexOf(q) >= 0
+        || (l.suburb || '').toLowerCase().indexOf(q) >= 0;
+  });
+
+  var statusCounts = {
+    All: leadsForBranch.filter(function(l){ return !l.converted && l.status !== 'Archived'; }).length
+  };
+  leadsForBranch.forEach(function(l){ statusCounts[l.status] = (statusCounts[l.status] || 0) + 1; });
+
+  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+  function _attrEsc(s) { return String(s||'').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+  function fmtK(n) {
+    var v = Number(n) || 0;
+    if (v >= 1000000) return '$' + (v/1000000).toFixed(1) + 'M';
+    if (v >= 1000) return '$' + Math.round(v/1000) + 'k';
+    return '$' + v.toFixed(0);
+  }
+  function _initials(name) {
+    return (name || '').split(' ').map(function(w){ return (w[0] || '').toUpperCase(); }).join('').slice(0,2);
+  }
+
+  function leadCard(l) {
+    var col = statusColors[l.status] || '#9ca3af';
+    var fullName = ((l.fn || '') + ' ' + (l.ln || '')).trim() || '—';
+    var addr = (l.suburb || '') + (l.state ? ' · ' + l.state : '') + (l.postcode ? ' ' + l.postcode : '');
+    var sent = emailSent.filter(function(m){ return m.leadId === l.id || (l.email && m.to === l.email); });
+    return '<button onclick="setState({leadDetailId:\'' + _esc(l.id) + '\',page:\'leads\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px">' +
+      // Top row — avatar / name+addr / value+status
+      '<div style="display:flex;align-items:center;gap:10px">' +
+        '<div style="width:36px;height:36px;border-radius:50%;background:#c41230;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;flex-shrink:0">' + _initials(fullName) + '</div>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:14px;font-weight:700;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + fullName + '</div>' +
+          '<div style="font-size:11px;color:#6b7280;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (addr || '—') + '</div>' +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0">' +
+          (l.val ? '<div style="font-size:13px;font-weight:800;font-family:Syne,sans-serif;color:#0a0a0a">' + fmtK(l.val) + '</div>' : '') +
+          '<span style="display:inline-block;font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;background:' + col + '20;color:' + col + ';border:1px solid ' + col + '40;margin-top:3px">' + (l.status || '—') + '</span>' +
+        '</div>' +
+      '</div>' +
+      // Bottom row — owner / source / email count
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:10px;color:#6b7280;border-top:1px solid #f3f4f6;padding-top:8px;margin-top:8px">' +
+        '<div style="display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden">' +
+          (l.owner
+            ? '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">👤 ' + l.owner + '</span>'
+            : '<span style="background:#fef3c7;color:#92400e;padding:2px 7px;border-radius:8px;font-weight:700;border:1px solid #fde68a">Unassigned</span>') +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0">' +
+          (l.source ? '<span>' + l.source + '</span>' : '') +
+          (sent.length > 0 ? '<span title="emails sent">✉ ' + sent.length + '</span>' : '') +
+          (l.converted ? '<span style="color:#15803d;font-weight:700">✓ Converted</span>' : '') +
+        '</div>' +
+      '</div>' +
+    '</button>';
+  }
+
+  return '' +
+    // Header chrome — pulled to edges with negative margin so it sits flush
+    // against the topbar (matches the Today screen and Deals page patterns).
+    '<div style="margin:-12px -12px 12px;background:#fff;padding:12px 16px;border-bottom:1px solid #f0f0f0">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">' +
+        '<div>' +
+          '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">Leads</h1>' +
+          '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + statusCounts.All + ' active</div>' +
+        '</div>' +
+        '<button onclick="openAddLeadDrawer()" style="padding:6px 12px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">+ Add</button>' +
+      '</div>' +
+      // Search
+      '<input id="leadSearchInput" value="' + _attrEsc(leadSearch) + '" oninput="leadSearch=this.value;renderPage()" placeholder="Search name, email, suburb…" style="width:100%;padding:8px 12px;background:#f3f4f6;border:none;border-radius:8px;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box;margin-bottom:8px" />' +
+      // Status filter pills — horizontal scroll so they all fit on narrow screens
+      '<div style="display:flex;gap:4px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px">' +
+        statuses.map(function(s){
+          var c = statusColors[s] || '#9ca3af';
+          var active = leadFilter === s;
+          var count = statusCounts[s] || 0;
+          return '<button onclick="leadFilter=\'' + _esc(s) + '\';renderPage()" style="flex-shrink:0;padding:5px 12px;border-radius:14px;border:1px solid ' + (active ? c : '#e5e7eb') + ';background:' + (active ? c + '20' : '#fff') + ';color:' + (active ? c : '#6b7280') + ';font-size:11px;font-weight:' + (active ? 700 : 600) + ';cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:5px;white-space:nowrap">' + s + '<span style="font-size:9px;background:' + (active ? c : '#e5e7eb') + ';color:' + (active ? '#fff' : '#6b7280') + ';border-radius:8px;padding:1px 5px;font-weight:700">' + count + '</span></button>';
+        }).join('') +
+      '</div>' +
+    '</div>' +
+    // Cards
+    (filtered.length === 0
+      ? '<div style="padding:30px 20px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:13px;font-style:italic">No leads found</div>'
+      : filtered.map(leadCard).join('')) +
+    // Add-lead drawer reuses the existing component
+    (getState().panel && getState().panel.type === 'addLead' ? renderAddLeadDrawer() : '');
+}
+
 function renderLeads(){
   const {leads,leadDetailId,emailSent}=getState();
   const statusColors={New:'#3b82f6',Contacted:'#f59e0b',Qualified:'#22c55e',Unqualified:'#9ca3af',Archived:'#6b7280'};
@@ -63,6 +169,13 @@ function renderLeads(){
     return renderLeadDetail()
       + (getState().editingLeadId ? renderEditLeadDrawer() : '')
       + (_modal && _modal.type === 'convertLead' && _detailLead ? renderConvertLeadModal(_detailLead) : '');
+  }
+
+  // Native wrapper: mobile-specific card list. The desktop layout uses a
+  // grid-template-columns:1fr 480px with a hard-coded 480px map panel,
+  // which can't fit on a phone — render a vertical card list instead.
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) {
+    return renderLeadsMobile();
   }
 
   const statuses=['All','Unassigned','New','Contacted','Qualified','Unqualified','Archived'];

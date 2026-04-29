@@ -181,7 +181,11 @@ function renderMore() {
     return typeof canAccessPage !== 'function' || canAccessPage(it.id);
   });
   return '' +
-    '<h1 style="font-size:22px;font-weight:800;margin:4px 4px 14px;font-family:Syne,sans-serif">More</h1>' +
+    // Header strip flush to the edges — same pattern as Deals / Leads.
+    '<div style="margin:-12px -12px 12px;background:#fff;padding:12px 16px;border-bottom:1px solid #f0f0f0">' +
+      '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">More</h1>' +
+      '<div style="font-size:11px;color:#6b7280;margin-top:2px">Settings, profile, and other tools</div>' +
+    '</div>' +
     '<div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)">' +
       items.map(function(it, i){
         return '<button onclick="setState({page:\'' + it.id + '\',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null})" style="width:100%;text-align:left;padding:14px 16px;background:#fff;border:none;' + (i>0?'border-top:1px solid #f3f4f6;':'') + 'cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:12px;font-size:14px;font-weight:600;color:#1a1a1a">' +
