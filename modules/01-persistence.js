@@ -851,6 +851,12 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'sms_templates'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'phone_settings'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'installers'}, function(){ dbLoadAll(); })
+    // activities + entity_files weren't here originally — without them
+    // mobile-side notes/photos/file-uploads land in Supabase but the desktop
+    // doesn't refresh until the user reloads the page (or some other table
+    // change happens to trigger dbLoadAll). Subscribing here closes that gap.
+    .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
     .subscribe(function(status){ console.log('[Spartan] Realtime:', status); });
 }
 
