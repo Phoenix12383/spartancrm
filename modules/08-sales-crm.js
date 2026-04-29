@@ -91,6 +91,10 @@ function renderTodayMobile() {
     var nameLine = a.client || a.subject || 'Appointment';
     var navUrl = addr ? 'https://maps.google.com/?q=' + encodeURIComponent(addr) : '';
     var phone = a.phone || '';
+    var startIso = String(a.date || todayStr).slice(0,10) + 'T' + (a.time || '09:00') + ':00';
+    var dur = Number(a.duration) || 60;
+    var notesText = ((a.type || '') + (a.subject && a.subject !== nameLine ? ' · ' + a.subject : '')).trim();
+    var addCalArgs = "{title:'" + _esc(nameLine) + "',location:'" + _esc(addr) + "',notes:'" + _esc(notesText) + "',startIso:'" + startIso + "',durationMinutes:" + dur + "}";
     return '<div style="background:#fff;border-radius:12px;overflow:hidden;margin-bottom:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);display:flex">' +
       '<div style="width:5px;background:#c41230;flex-shrink:0"></div>' +
       '<div style="flex:1;padding:12px">' +
@@ -100,10 +104,11 @@ function renderTodayMobile() {
         '</div>' +
         '<div style="font-size:14px;font-weight:700;color:#1a1a1a;margin-bottom:2px">' + nameLine + '</div>' +
         (addr ? '<div style="font-size:11px;color:#6b7280;margin-bottom:8px;display:flex;align-items:center;gap:4px">📍 ' + addr + '</div>' : '<div style="margin-bottom:8px"></div>') +
-        '<div style="display:flex;gap:6px">' +
-          (navUrl ? '<a href="' + navUrl + '" target="_blank" rel="noopener" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#0a0a0a;color:#fff;font-size:11px;font-weight:700;text-decoration:none">↗ Navigate</a>' : '') +
-          (phone ? '<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#22c55e;color:#fff;font-size:11px;font-weight:700;text-decoration:none">☎ Call</a>' : '') +
-          (phone ? '<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#3b82f6;color:#fff;font-size:11px;font-weight:700;text-decoration:none">💬 SMS</a>' : '') +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+          (navUrl ? '<a href="' + navUrl + '" target="_blank" rel="noopener" style="flex:1;min-width:62px;text-align:center;padding:7px;border-radius:8px;background:#0a0a0a;color:#fff;font-size:11px;font-weight:700;text-decoration:none">↗ Navigate</a>' : '') +
+          (phone ? '<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;min-width:55px;text-align:center;padding:7px;border-radius:8px;background:#22c55e;color:#fff;font-size:11px;font-weight:700;text-decoration:none">☎ Call</a>' : '') +
+          (phone ? '<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;min-width:55px;text-align:center;padding:7px;border-radius:8px;background:#3b82f6;color:#fff;font-size:11px;font-weight:700;text-decoration:none">💬 SMS</a>' : '') +
+          '<button onclick="addToDeviceCalendar(' + addCalArgs + ')" title="Add to phone calendar" style="flex:1;min-width:55px;text-align:center;padding:7px;border-radius:8px;background:#ede9fe;color:#6d28d9;font-size:11px;font-weight:700;border:none;cursor:pointer;font-family:inherit">+📅 Sync</button>' +
         '</div>' +
       '</div>' +
     '</div>';
