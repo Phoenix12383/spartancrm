@@ -1111,6 +1111,30 @@ function renderJobDetail() {
       +(job.installTime?'<div style="font-size:11px;color:#9ca3af">'+formatTime12(job.installTime)+'</div>':'')
       +'</div></div>';
 
+    // Dev-mode skip when the job's status is too early to appear on the
+    // Install Schedule. Surfaces the actual transition the user would normally
+    // wait for (DocuSign sign event, etc.) so testing doesn't require chasing
+    // the Workflow Test Buttons card at the top of the page.
+    if (jobDetailDevMode) {
+      var skipMap = {
+        'a_check_measure':       { to: 'c2_order_schedule_standard', label: 'Mark as Order & Schedule (skip CM payment + sign-off)' },
+        'c_awaiting_2nd_payment':{ to: 'c2_order_schedule_standard', label: 'Mark 45% paid + signed → Order & Schedule' },
+        'c1_final_sign_off':     { to: 'c2_order_schedule_standard', label: 'Mark client-signed → Order & Schedule' },
+      };
+      var skip = skipMap[job.status];
+      if (skip) {
+        tabContent += '<div class="card" style="padding:14px 18px;margin-bottom:14px;border:2px dashed #c4b5fd;background:linear-gradient(180deg,#faf5ff,#fff)">'
+          +'<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
+          +'<span style="font-size:22px">🧪</span>'
+          +'<div style="flex:1;min-width:200px">'
+          +'<div style="font-size:13px;font-weight:700;color:#374151">Job is at <strong>'+(job.status||'?')+'</strong> — Install Schedule only shows jobs from <strong>Order &amp; Schedule</strong> onward.</div>'
+          +'<div style="font-size:11px;color:#6d28d9;margin-top:2px">Dev shortcut: skip the upstream step that hasn\'t fired yet (e.g. DocuSign webhook, accounts payment).</div>'
+          +'</div>'
+          +'<button onclick="transitionJobStatus(\''+job.id+'\',\''+skip.to+'\',\'Dev skip — '+skip.to+'\');renderPage()" class="btn-r" style="font-size:12px;padding:8px 16px;font-weight:600;white-space:nowrap">'+skip.label+' →</button>'
+          +'</div></div>';
+      }
+    }
+
     // Scheduling — read-only summary, edit via Install Schedule page
     tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
