@@ -185,6 +185,29 @@
     addToast('Dismissed suggestions restored','info');
   };
 
+  // Whether an installer owns a specific tool. Honours both shapes used in
+  // the codebase: Phoenix's spec installer.toolIds[] and the existing
+  // installer.tools[] = [{id,...}]. Same matching logic getJobToolCoverage uses.
+  function _installerOwnsTool(installer, toolId) {
+    if (!installer || !toolId) return false;
+    if (Array.isArray(installer.toolIds) && installer.toolIds.indexOf(toolId) >= 0) return true;
+    if (Array.isArray(installer.tools)) {
+      for (var i = 0; i < installer.tools.length; i++) {
+        if (installer.tools[i] && installer.tools[i].id === toolId) return true;
+      }
+    }
+    return false;
+  }
+
+  // Whether a job's required-tool list includes the given tool. Reads the
+  // side-store getJobTools (registry IDs) populated from the job's Tools tab.
+  function _jobRequiresTool(jobId, toolId) {
+    if (!jobId || !toolId) return false;
+    if (typeof getJobTools !== 'function') return false;
+    var ids = getJobTools(jobId) || [];
+    return ids.indexOf(toolId) >= 0;
+  }
+
   function renderCapacityPlanner() {
     var jobs = (getState().jobs || []);
     var contacts = getState().contacts || [];
@@ -199,14 +222,24 @@
     var expandedWeek = getState().capPlanExpandedWeek;
     if (expandedWeek === undefined) expandedWeek = null;
 
+    // ── Tool-requirement filter (spec §6.3 acceptance #8) ────────────────────
+    // When set, capacity counts only installers who own the tool, and demand
+    // counts only jobs that require it. Lets the dispatcher answer "do we have
+    // enough <tool> capacity this week?" without changing the underlying data.
+    var filterToolId = getState().capPlanFilterToolId || '';
+    var registryTools = (typeof getTools === 'function') ? (getTools() || []).filter(function(t){return t.active!==false;}) : [];
+    var filterTool = filterToolId ? registryTools.find(function(t){return t.id===filterToolId;}) : null;
+    var filteredInstallers = filterToolId ? installers.filter(function(ins){ return _installerOwnsTool(ins, filterToolId); }) : installers;
+
     var weeks = [];
     for (var w = 0; w < weekCount; w++) {
       var dates = getWeekDates(startOffset + w);
       var ws = isoDate(dates[0]);
       var we = isoDate(dates[6]);
       var weekJobs = jobs.filter(function(j){ return j.installDate && j.installDate >= ws && j.installDate <= we; });
+      if (filterToolId) weekJobs = weekJobs.filter(function(j){ return _jobRequiresTool(j.id, filterToolId); });
       var demand = weekJobs.reduce(function(s,j){ return s + (typeof readJobInstallMinutes === 'function' ? readJobInstallMinutes(j) : 0); }, 0);
-      var capacity = installers.reduce(function(s,ins){ return s + installerCapacityMinutes(ins, dates); }, 0);
+      var capacity = filteredInstallers.reduce(function(s,ins){ return s + installerCapacityMinutes(ins, dates); }, 0);
       var util = capacity > 0 ? demand / capacity : (demand > 0 ? 99 : 0);
       weeks.push({offset: startOffset + w, dates:dates, weekStart:ws, weekEnd:we, jobs:weekJobs, demand:demand, capacity:capacity, util:util});
     }
@@ -220,18 +253,25 @@
     suggestions = suggestions.filter(function(s){ return !dismissed[s.id]; }).slice(0, 6);
 
     // ── Header / week-window nav ─────────────────────────────────────────────
+    var toolOpts = '<option value="">Show all (no tool filter)</option>'
+      + registryTools.map(function(t){return '<option value="'+t.id+'"'+(filterToolId===t.id?' selected':'')+'>'+t.name+'</option>';}).join('');
     var header = '<div class="card" style="padding:18px 22px;margin-bottom:14px">'
       +'<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
       +'<div><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:22px;margin:0">📊 Capacity Planner</h2>'
       +'<div style="font-size:12px;color:#6b7280;margin-top:2px">Demand vs capacity per week — can we hit our scheduled install dates?</div></div>'
-      +'<div style="margin-left:auto;display:flex;align-items:center;gap:6px">'
+      +'<div style="margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+      +'<select class="sel" title="Slice capacity by which crews own a specific tool" style="font-size:12px;padding:6px 10px;max-width:220px" onchange="setState({capPlanFilterToolId:this.value,capPlanExpandedWeek:null})">'
+      +toolOpts
+      +'</select>'
       +'<button onclick="setState({capPlanOffset:(getState().capPlanOffset||0)-'+weekCount+'})" class="btn-w" style="padding:6px 12px;font-size:12px">← Prev '+weekCount+'w</button>'
       +'<button onclick="setState({capPlanOffset:0,capPlanExpandedWeek:null})" class="btn-'+(startOffset===0?'r':'w')+'" style="padding:6px 14px;font-size:12px;font-weight:700">Reset</button>'
       +'<button onclick="setState({capPlanOffset:(getState().capPlanOffset||0)+'+weekCount+'})" class="btn-w" style="padding:6px 12px;font-size:12px">Next '+weekCount+'w →</button>'
       +'<select class="sel" style="font-size:12px;padding:6px 10px" onchange="setState({capPlanWeeks:+this.value,capPlanExpandedWeek:null})">'
       +[4,8,12,16].map(function(n){return '<option value="'+n+'"'+(weekCount===n?' selected':'')+'>'+n+' weeks</option>';}).join('')
       +'</select>'
-      +'</div></div></div>';
+      +'</div>'
+      +(filterTool ? '<div style="margin-top:10px;padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;font-size:12px;color:#1d4ed8;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span>🔍 Filtering by <strong>'+filterTool.name+'</strong> — '+filteredInstallers.length+'/'+installers.length+' installer'+(installers.length!==1?'s':'')+' own this tool. Demand only counts jobs that require it.</span><button onclick="setState({capPlanFilterToolId:\'\',capPlanExpandedWeek:null})" class="btn-w" style="font-size:11px;padding:3px 10px">Clear filter</button></div>' : '')
+      +'</div></div>';
 
     // ── Summary tiles (overall picture) ──────────────────────────────────────
     var totalDemand = weeks.reduce(function(s,w){return s+w.demand;}, 0);
@@ -243,7 +283,7 @@
 
     var tiles = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">'
       +'<div class="card" style="padding:14px 18px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Window Demand</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px">'+fmtHM(totalDemand)+'</div><div style="font-size:10px;color:#9ca3af;margin-top:2px">across '+weekCount+' weeks · '+weeks.reduce(function(s,w){return s+w.jobs.length;},0)+' jobs</div></div>'
-      +'<div class="card" style="padding:14px 18px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Window Capacity</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px">'+fmtHM(totalCapacity)+'</div><div style="font-size:10px;color:#9ca3af;margin-top:2px">'+installers.length+' active installer'+(installers.length!==1?'s':'')+' · productivity-adj.</div></div>'
+      +'<div class="card" style="padding:14px 18px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Window Capacity</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px">'+fmtHM(totalCapacity)+'</div><div style="font-size:10px;color:#9ca3af;margin-top:2px">'+filteredInstallers.length+(filterTool?'/'+installers.length:'')+' active installer'+(filteredInstallers.length!==1?'s':'')+' · productivity-adj.'+(filterTool?' · with '+filterTool.name:'')+'</div></div>'
       +'<div class="card" style="padding:14px 18px;border:1px solid '+bandOverall.col+'33;background:'+bandOverall.bg+'"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Overall Utilisation</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px;color:'+bandOverall.col+'">'+Math.round(overallUtil*100)+'%</div><div style="font-size:10px;color:'+bandOverall.col+';margin-top:2px;font-weight:600">'+bandOverall.label+'</div></div>'
       +'<div class="card" style="padding:14px 18px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Hot Weeks</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px"><span style="color:#7f1d1d">'+overloadedWeeks+'</span> <span style="color:#9ca3af;font-size:14px">over</span> · <span style="color:#d97706">'+tightWeeks+'</span> <span style="color:#9ca3af;font-size:14px">tight</span></div><div style="font-size:10px;color:#9ca3af;margin-top:2px">>100% / 80–100%</div></div>'
       +'</div>';
