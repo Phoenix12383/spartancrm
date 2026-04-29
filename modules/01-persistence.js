@@ -496,6 +496,7 @@ async function dbLoadAll() {
       _sb.from('sms_templates').select('*').order('name', { ascending: true }),                            // index 16
       _sb.from('phone_settings').select('*').eq('id', 'singleton').maybeSingle(),                          // index 17
       _sb.from('installers').select('*'),                                                                  // index 18
+      _sb.from('entity_files').select('*'),                                                                // index 19
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -669,6 +670,32 @@ async function dbLoadAll() {
       localStorage.setItem('spartan_installers', JSON.stringify(installers));
       setState({installers: installers}, {skipSync: true});
     }
+    // entity_files (deals/leads/contacts file uploads — written by
+    // 08-sales-crm.js addEntityFile and the mobile camera capture). Mirrors
+    // the job_files pattern: bucket by entity_type+entity_id, keep the
+    // dataUrl in localStorage so the desktop Files tab and mobile Files
+    // section see uploads from any device. Errors load benignly via the
+    // existing error-collection at line 500 — if the table doesn't exist,
+    // results[19] will have an .error and .data === null, which is handled.
+    var entFilesRows = (results[19] && results[19].data) || [];
+    if (entFilesRows.length > 0) {
+      var byEnt = {};
+      entFilesRows.forEach(function(f) {
+        var key = f.entity_type + '_' + f.entity_id;
+        if (!byEnt[key]) byEnt[key] = [];
+        byEnt[key].push({
+          id: f.id,
+          name: f.name,
+          dataUrl: f.data_url,         // For Storage URLs this is the public URL
+          size: 0,
+          uploadedBy: f.uploaded_by,
+          uploadedAt: f.created_at || f.uploaded_at || new Date().toISOString()
+        });
+      });
+      Object.keys(byEnt).forEach(function(key) {
+        localStorage.setItem('spartan_files_' + key, JSON.stringify(byEnt[key]));
+      });
+    }
     if (dbUsers.length > 0) {
       dbUsers = dbUsers.map(function(u) {
         return { id:u.id, name:u.name, email:u.email, role:u.role, branch:u.branch,
@@ -811,7 +838,13 @@ function dbSyncFactoryItems() {
 // -- Realtime subscriptions --
 function setupRealtime() {
   if (!_sb) return;
-  var channel = _sb.channel('spartan-realtime')
+  // Split across two channels because Supabase Realtime has a per-channel
+  // limit on postgres_changes subscriptions (~10). Putting all 14 on a
+  // single channel silently drops the trailing subscriptions — confirmed
+  // empirically by manually-attached test channels receiving events that
+  // a 14-listener app channel didn't.
+  // Channel A: high-cardinality entity tables.
+  var channelA = _sb.channel('spartan-realtime-entities')
     .on('postgres_changes', {event:'*', schema:'public', table:'contacts'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'leads'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'deals'}, function(){ dbLoadAll(); })
@@ -819,12 +852,17 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'invoices'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'factory_orders'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'users'}, function(){ dbLoadAll(); })
+    .subscribe(function(status){ console.log('[Spartan] Realtime A:', status); });
+  // Channel B: communication + activity + file tables.
+  var channelB = _sb.channel('spartan-realtime-comms')
     .on('postgres_changes', {event:'*', schema:'public', table:'call_logs'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'sms_logs'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'sms_templates'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'phone_settings'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'installers'}, function(){ dbLoadAll(); })
-    .subscribe(function(status){ console.log('[Spartan] Realtime:', status); });
+    .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
+    .subscribe(function(status){ console.log('[Spartan] Realtime B:', status); });
 }
 
 // ── MOCK DATA ──────────────────────────────────────────────────────────────

@@ -419,8 +419,57 @@ function renderCalEventModal() {
 
 // ── MOBILE: CALENDAR — week scroller with day cards ───────────────────────────
 var _mobileCalendarWeekOffset = 0;
+// Walk every deal/lead and emit normalised appointment objects from any
+// activity flagged scheduled. Mirrors the boss's reference (CalendarView reads
+// from `activities.filter(a => a.scheduled && a.date)`) but uses our embedded-
+// activity shape (each entity carries its own activities[] array).
+function _gatherScheduledForMobileCalendar() {
+  var st = getState();
+  var contacts = st.contacts || [];
+  var out = [];
+  function _contactById(id) { return contacts.find(function(c){ return c.id === id; }); }
+  (st.deals || []).forEach(function(d){
+    var c = _contactById(d.cid);
+    var clientName = c ? (c.fn + ' ' + c.ln) : (d.title || 'Deal');
+    (d.activities || []).forEach(function(a){
+      if (!a || !a.scheduled) return;
+      var dt = a.dueDate || a.date;
+      if (!dt) return;
+      out.push({
+        id: a.id, date: String(dt).slice(0,10), time: a.time,
+        client: clientName,
+        subject: a.subject || (a.type ? a.type.charAt(0).toUpperCase() + a.type.slice(1) : 'Appointment'),
+        suburb: d.suburb || (c && c.suburb) || '',
+        type: a.type || '', rep: a.by || '',
+        dealId: d.id,
+      });
+    });
+  });
+  (st.leads || []).forEach(function(l){
+    (l.activities || []).forEach(function(a){
+      if (!a || !a.scheduled) return;
+      var dt = a.dueDate || a.date;
+      if (!dt) return;
+      out.push({
+        id: a.id, date: String(dt).slice(0,10), time: a.time,
+        client: ((l.fn || '') + ' ' + (l.ln || '')).trim() || (a.subject || 'Appointment'),
+        subject: a.subject || (a.type ? a.type.charAt(0).toUpperCase() + a.type.slice(1) : 'Appointment'),
+        suburb: l.suburb || '',
+        type: a.type || '', rep: a.by || '',
+        leadId: l.id,
+      });
+    });
+  });
+  // Legacy MOCK_APPOINTMENTS may still hold scheduled-from-the-map entries
+  // created on desktop before activities were promoted to first-class. Merge
+  // them in so the calendar isn't half-empty during the transition.
+  if (typeof MOCK_APPOINTMENTS !== 'undefined' && MOCK_APPOINTMENTS) {
+    MOCK_APPOINTMENTS.forEach(function(a){ out.push(a); });
+  }
+  return out;
+}
 function renderCalendarMobile() {
-  var apts = (typeof MOCK_APPOINTMENTS !== 'undefined' && MOCK_APPOINTMENTS) ? MOCK_APPOINTMENTS : [];
+  var apts = _gatherScheduledForMobileCalendar();
   var cu = getCurrentUser() || {};
   var myName = cu.name || '';
   var role = cu.role || '';

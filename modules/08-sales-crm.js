@@ -21,9 +21,13 @@ function renderTodayMobile() {
   var today = new Date();
   var todayStr = today.toISOString().slice(0, 10);
 
-  // Today's appointments (MOCK_APPOINTMENTS persisted in localStorage; real
-  // calendar events aren't loaded on mobile because Calendar OAuth is desktop-only).
-  var apptsAll = (typeof MOCK_APPOINTMENTS !== 'undefined' && MOCK_APPOINTMENTS) ? MOCK_APPOINTMENTS : [];
+  // Today's appointments — pull from scheduled activities on every deal/lead
+  // (matches the Calendar tab), falling back to MOCK_APPOINTMENTS for legacy
+  // map-flow entries. Calendar/Gmail OAuth isn't available in the wrapper, so
+  // there's no Google-Calendar source on mobile.
+  var apptsAll = (typeof _gatherScheduledForMobileCalendar === 'function')
+    ? _gatherScheduledForMobileCalendar()
+    : ((typeof MOCK_APPOINTMENTS !== 'undefined' && MOCK_APPOINTMENTS) ? MOCK_APPOINTMENTS : []);
   var todaysAppts = apptsAll.filter(function(a){
     return a.date === todayStr && (isManager || a.rep === myName);
   }).sort(function(a,b){ return (a.time||'').localeCompare(b.time||''); });
@@ -299,7 +303,7 @@ function renderDashboard() {
   bLeads.forEach(l => (l.activities || []).forEach(a => allActs.push({ ...a, _title: l.fn + ' ' + l.ln, _id: l.id, _et: 'lead' })));
   allActs.sort((a, b) => b.date > a.date ? 1 : -1);
   const recentActs = allActs.slice(0, 5);
-  const AICON = { note: '📝', call: '📞', email: '✉️', task: '☑️', stage: '🔀', created: '⭐', meeting: '📅', file: '📎', edit: '✏️' };
+  const AICON = { note: '📝', call: '📞', email: '✉️', task: '☑️', stage: '🔀', created: '⭐', meeting: '📅', file: '📎', edit: '✏️', photo: '📸' };
   const unread = (emailInbox || []).filter(m => !m.read).length;
 
   // ── Branch config ────────────────────────────────────────────────────────────
@@ -2620,6 +2624,200 @@ function renderInlineMapScheduler(entityId, entityType) {
   </div>`;
 }
 
+// ── MOBILE: stage-advance helper ─────────────────────────────────────────────
+// Advances a deal one stage forward in its pipeline. If the next stage is the
+// Won stage, defers to markDealWon() so the existing payment-method modal,
+// job creation, and audit run normally. Adds a 'stage' activity + audit
+// entry on regular advances.
+function advanceDealStageMobile(dealId) {
+  var deal = (getState().deals || []).find(function(d){ return d.id === dealId; });
+  if (!deal) return;
+  if (deal.won || deal.lost) { addToast('Deal is closed', 'info'); return; }
+  var pl = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === deal.pid; });
+  if (!pl) return;
+  var stages = pl.stages.slice().sort(function(a,b){ return a.ord - b.ord; }).filter(function(s){ return !s.isLost; });
+  var curIdx = stages.findIndex(function(s){ return s.id === deal.sid; });
+  if (curIdx < 0) curIdx = 0;
+  var next = stages[curIdx + 1];
+  if (!next) { addToast('Already at the final stage', 'info'); return; }
+  if (next.isWon) { if (typeof markDealWon === 'function') markDealWon(dealId); return; }
+  // Plain stage move — apply locally, persist, log activity, audit.
+  var oldStage = stages[curIdx];
+  var deals = getState().deals.slice();
+  var i = deals.findIndex(function(x){ return x.id === dealId; });
+  deals[i] = Object.assign({}, deals[i], { sid: next.id });
+  setState({ deals: deals });
+  if (typeof dbUpdate === 'function') dbUpdate('deals', dealId, { sid: next.id });
+  if (typeof saveActivityToEntity === 'function') {
+    saveActivityToEntity(dealId, 'deal', {
+      id: 'a' + Date.now(), type: 'stage',
+      text: (oldStage ? oldStage.name : '?') + ' → ' + next.name,
+      date: new Date().toISOString().slice(0,10),
+      time: new Date().toTimeString().slice(0,5),
+      by: (getCurrentUser()||{name:'Admin'}).name,
+    });
+  }
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'deal', entityId:dealId, action:'deal.stage_changed',
+      summary:'Stage changed: ' + (oldStage ? oldStage.name : '?') + ' → ' + next.name,
+      before:{ sid: deal.sid }, after:{ sid: next.id },
+    });
+  }
+  addToast('Moved to ' + next.name, 'success');
+}
+
+// ── MOBILE: camera capture ───────────────────────────────────────────────────
+// Uses @capacitor/camera (installed in the wrapper). The plugin resizes
+// on-device to 1024px wide @ JPEG 80 — typical capture lands at 100-200KB.
+// We upload the binary blob to Supabase Storage (bucket: crm-photos), then
+// route the resulting public URL through addEntityFile() — the same helper
+// the desktop Files tab uses. That way:
+//   • the photo appears in the desktop "Files" tab on the deal/lead
+//   • a 'file' activity is logged (existing allowed type, no schema risk)
+//   • the entity_files table gets a row alongside spartan_files_X_Y in
+//     localStorage so dbLoadAll on other devices picks it up
+async function takeMobilePhoto(entityId, entityType) {
+  var Camera = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Camera;
+  if (!Camera) {
+    addToast('Camera plugin not loaded — open in the wrapper app', 'error');
+    return;
+  }
+  if (!_sb) {
+    if (typeof initSupabase === 'function') initSupabase();
+    if (!_sb) { addToast('Database not connected', 'error'); return; }
+  }
+  try {
+    var photo = await Camera.getPhoto({
+      quality: 80, width: 1024, allowEditing: false,
+      resultType: 'base64', source: 'CAMERA',
+    });
+    if (!photo || !photo.base64String) return;
+    addToast('Uploading…', 'info');
+    var binary = atob(photo.base64String);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    var ext = (photo.format || 'jpeg').toLowerCase();
+    var mime = 'image/' + (ext === 'jpg' ? 'jpeg' : ext);
+    var blob = new Blob([bytes], { type: mime });
+    var cu = getCurrentUser() || {};
+    var ts = Date.now();
+    var path = (cu.id || 'anon') + '/' + entityType + '-' + entityId + '/' + ts + '.' + ext;
+    var up = await _sb.storage.from('crm-photos').upload(path, blob, {
+      cacheControl: '3600', upsert: false, contentType: mime,
+    });
+    if (up && up.error) {
+      console.error('[Spartan] photo upload failed:', up.error);
+      addToast('Upload failed: ' + (up.error.message || 'storage'), 'error');
+      return;
+    }
+    var pub = _sb.storage.from('crm-photos').getPublicUrl(path);
+    var publicUrl = pub && pub.data && pub.data.publicUrl;
+    if (!publicUrl) { addToast('Could not resolve photo URL', 'error'); return; }
+    var fileName = 'photo-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + ts + '.' + ext;
+    var fileId = 'file_' + ts;
+    var byName = cu.name || 'Admin';
+    // Replicate addEntityFile's storage writes — we don't call addEntityFile
+    // directly because it logs a generic "File uploaded: foo.jpg" activity;
+    // for a camera capture we want a richer "📸 Photo captured" entry
+    // with the URL as text (so the timeline can render the photo inline).
+    //   1) localStorage so desktop Files tab sees the photo without a reload
+    if (typeof getEntityFiles === 'function' && typeof saveEntityFiles === 'function') {
+      var files = getEntityFiles(entityType, entityId);
+      files.push({
+        id: fileId, name: fileName, dataUrl: publicUrl,
+        size: (blob && blob.size) || 0,
+        uploadedBy: byName, uploadedAt: new Date().toISOString(),
+      });
+      saveEntityFiles(entityType, entityId, files);
+    }
+    //   2) entity_files row mirrors what desktop's addEntityFile writes
+    if (typeof dbInsert === 'function') {
+      try {
+        dbInsert('entity_files', {
+          id: fileId, entity_type: entityType, entity_id: entityId,
+          name: fileName, data_url: publicUrl, uploaded_by: byName,
+        });
+      } catch (e) { /* swallow — same pattern as desktop addEntityFile */ }
+    }
+    //   3) Photo activity. type='file' to satisfy the existing activities-
+    //   table constraint; subject lifts the "Photo captured" caption to the
+    //   row header so the body can be just the URL — which the timeline
+    //   detects and renders as an inline <img>.
+    if (typeof saveActivityToEntity === 'function') {
+      saveActivityToEntity(entityId, entityType, {
+        id: 'a' + ts, type: 'file',
+        subject: '📸 Photo captured',
+        text: publicUrl,
+        date: new Date().toISOString().slice(0,10),
+        time: new Date().toTimeString().slice(0,5),
+        by: byName,
+      });
+    }
+    addToast('Photo saved ✓', 'success');
+    renderPage();
+  } catch (e) {
+    var msg = (e && e.message) || String(e);
+    if (msg.indexOf('cancel') >= 0 || msg.indexOf('Cancel') >= 0) return;
+    console.error('[Spartan] camera error:', e);
+    addToast('Camera error: ' + msg, 'error');
+  }
+}
+
+// ── MOBILE: typed-note modal ─────────────────────────────────────────────────
+// Lightweight bottom-sheet replacement for the desktop notes-tab inline form.
+// Lives in module state so a renderPage triggered by setState (e.g. realtime
+// echo) doesn't drop the user's typing.
+var _pendingMobileNote = null;          // { entityId, entityType, text }
+function openMobileNote(entityId, entityType) {
+  _pendingMobileNote = { entityId: entityId, entityType: entityType, text: '' };
+  renderPage();
+  setTimeout(function(){
+    var el = document.getElementById('mobNoteInput');
+    if (el) el.focus();
+  }, 60);
+}
+function cancelMobileNote() { _pendingMobileNote = null; renderPage(); }
+function setMobileNoteDraft(value) { if (_pendingMobileNote) _pendingMobileNote.text = value; }
+function saveMobileNote() {
+  if (!_pendingMobileNote) return;
+  var p = _pendingMobileNote;
+  var text = (p.text || '').trim();
+  if (!text) { addToast('Note is empty', 'warning'); return; }
+  if (typeof saveActivityToEntity === 'function') {
+    saveActivityToEntity(p.entityId, p.entityType, {
+      id: 'a' + Date.now(), type: 'note', text: text,
+      date: new Date().toISOString().slice(0,10),
+      time: new Date().toTimeString().slice(0,5),
+      by: (getCurrentUser()||{name:'Admin'}).name,
+    });
+  }
+  _pendingMobileNote = null;
+  addToast('Note saved', 'success');
+  renderPage();
+}
+function renderMobileNoteModal() {
+  if (!_pendingMobileNote) return '';
+  var p = _pendingMobileNote;
+  var safe = (p.text || '').replace(/</g, '&lt;');
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)cancelMobileNote()" style="z-index:300">'
+    +   '<div class="modal" style="max-width:480px;width:calc(100% - 24px)">'
+    +     '<div class="modal-header" style="padding:14px 18px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
+    +       '<h3 style="margin:0;font-size:15px;font-weight:700;font-family:Syne,sans-serif">Add a note</h3>'
+    +       '<button onclick="cancelMobileNote()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1;padding:0">×</button>'
+    +     '</div>'
+    +     '<div class="modal-body" style="padding:14px 18px">'
+    +       '<textarea id="mobNoteInput" rows="5" oninput="setMobileNoteDraft(this.value)" placeholder="What happened? Quick recap…" style="width:100%;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:14px;resize:vertical;outline:none;box-sizing:border-box;line-height:1.5">' + safe + '</textarea>'
+    +     '</div>'
+    +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px;justify-content:flex-end">'
+    +       '<button onclick="cancelMobileNote()" style="padding:9px 14px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit">Cancel</button>'
+    +       '<button onclick="saveMobileNote()" style="padding:9px 18px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Save note</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+}
+
 // ── MOBILE: Deal/Lead detail — boss's reference layout ───────────────────────
 // Closely follows SpartanSalesMobile.jsx LeadDetail/DealDetail: black hero,
 // quick action bar (Call/SMS/Email), flat key-value Details card, optional
@@ -2693,16 +2891,57 @@ function _renderEntityDetailMobile(opts) {
     valHtml = '<div style="font-size:24px;font-weight:800;margin-top:8px;font-family:Syne,sans-serif;color:#fbbf24">' + prefix + fmt$$(entity.val) + suffix + '</div>';
   }
 
-  // Quick action bar — Call / SMS / Email. Shows whatever's available.
+  // Quick action bar — Call / SMS / Email / Photo. Shows whatever's available
+  // (phone-less leads still get the photo button; email-less leads still get
+  // call/sms). Photo always renders since every entity supports photos.
   var actionBar = '';
-  if (phone || email) {
-    var cells = [];
-    if (phone) cells.push('<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></a>');
-    if (phone) cells.push('<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#3b82f6;text-decoration:none"><span style="font-size:18px">💬</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">SMS</span></a>');
-    if (email) cells.push('<a href="mailto:' + email + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></a>');
+  var cells = [];
+  if (phone) cells.push('<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></a>');
+  if (phone) cells.push('<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#3b82f6;text-decoration:none"><span style="font-size:18px">💬</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">SMS</span></a>');
+  if (email) cells.push('<a href="mailto:' + email + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></a>');
+  cells.push('<button onclick="takeMobilePhoto(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#0a0a0a;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">📸</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">PHOTO</span></button>');
+  if (cells.length) {
     var sepStyle = ';border-right:1px solid #f3f4f6';
     cells = cells.map(function(c, i){ return c.replace(';color:', (i < cells.length - 1 ? sepStyle : '') + ';color:'); });
     actionBar = '<div style="margin-top:-10px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);display:grid;grid-template-columns:repeat(' + cells.length + ',1fr);margin-bottom:14px">' + cells.join('') + '</div>';
+  }
+
+  // Files section — reads from the same getEntityFiles() store the desktop
+  // Files tab uses. Image-extension entries render as 84px thumbnails (tap
+  // → full-size in system browser). Non-image entries render as a single
+  // row with the filename and uploader. Hidden when the entity has none.
+  var photosHtml = '';
+  var entFiles = (typeof getEntityFiles === 'function') ? getEntityFiles(entityType, entity.id) : [];
+  if (entFiles && entFiles.length) {
+    var imgRe = /\.(jpe?g|png|gif|webp|heic)$/i;
+    var imgs = entFiles.filter(function(f){ return f && f.dataUrl && imgRe.test(f.name || ''); });
+    var others = entFiles.filter(function(f){ return f && f.dataUrl && !imgRe.test(f.name || ''); });
+    var blocks = [];
+    if (imgs.length) {
+      var thumbs = imgs.slice(0, 12).map(function(f){
+        var safeUrl = String(f.dataUrl || '').replace(/"/g, '&quot;');
+        return '<a href="' + safeUrl + '" target="_blank" rel="noopener" style="flex-shrink:0;width:84px;height:84px;border-radius:8px;overflow:hidden;display:block;box-shadow:0 1px 3px rgba(0,0,0,.06);background:#f3f4f6"><img src="' + safeUrl + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block" alt=""></a>';
+      }).join('');
+      blocks.push('<div style="display:flex;gap:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px">' + thumbs + '</div>');
+    }
+    if (others.length) {
+      blocks.push('<div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-top:' + (imgs.length ? '8px' : '0') + '">' +
+        others.slice(0, 8).map(function(f, i){
+          var safeUrl = String(f.dataUrl || '').replace(/"/g, '&quot;');
+          var name = String(f.name || 'File').replace(/</g, '&lt;');
+          return '<a href="' + safeUrl + '" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:10px;padding:11px 14px;text-decoration:none;color:#374151;' + (i > 0 ? 'border-top:1px solid #f3f4f6;' : '') + '">' +
+            '<span style="font-size:18px;flex-shrink:0">📎</span>' +
+            '<div style="flex:1;min-width:0">' +
+              '<div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
+              (f.uploadedBy ? '<div style="font-size:10px;color:#9ca3af;margin-top:1px">Uploaded by ' + f.uploadedBy + '</div>' : '') +
+            '</div>' +
+            '<span style="color:#9ca3af;font-size:14px">›</span>' +
+          '</a>';
+        }).join('') +
+      '</div>');
+    }
+    photosHtml = '<h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin:18px 4px 8px">Files <span style="color:#9ca3af;font-weight:600">' + entFiles.length + '</span></h2>' +
+      blocks.join('');
   }
 
   // Details rows (skip empties so the card never has dashes).
@@ -2737,24 +2976,59 @@ function _renderEntityDetailMobile(opts) {
     ? sec('Notes') + '<div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:13px;color:#374151;white-space:pre-wrap;line-height:1.6">' + entity.notes + '</div>'
     : '';
 
-  // Bottom actions (per type).
+  // Bottom actions (per type). Common across both: a + Note button for typed
+  // notes. Editing is desktop-only — sales reps on mobile log activity, they
+  // don't tweak deal fields.
   var bottomActions = '';
-  var actions = [];
+  var noteBtn = '<button onclick="openMobileNote(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="flex:1;padding:11px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:700;color:#374151;cursor:pointer;font-family:inherit">+ Note</button>';
+  var rows = [];
   if (entityType === 'lead') {
     var canEdit = typeof canEditLead === 'function' && canEditLead(entity);
-    if (canEdit) actions.push('<button onclick="openLeadEditDrawer(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:700;color:#374151;cursor:pointer;font-family:inherit">✎ Edit</button>');
+    var actions = [noteBtn];
     if (!entity.owner && !entity.converted && canEdit) {
       actions.push('<button onclick="claimLead(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">+ Claim this lead</button>');
     } else if (!entity.converted) {
       actions.push('<button onclick="openConvertLeadModal(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Convert to Deal →</button>');
     }
+    rows.push(actions);
   } else {
-    actions.push('<button onclick="openDealEdit(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:700;color:#374151;cursor:pointer;font-family:inherit">✎ Edit</button>');
-    if (!entity.won && !entity.lost) {
-      actions.push('<button onclick="markDealWon(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#22c55e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">✓ Mark Won</button>');
+    // Deal: three-button row.
+    //   - Mark Lost (red)        — opens existing reason+note modal
+    //   - + Note (white)         — typed note sheet
+    //   - Advance / Won / Reopen (green) — depends on deal state
+    var pl2 = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === entity.pid; });
+    var stages2 = pl2 ? pl2.stages.slice().sort(function(a,b){ return a.ord - b.ord; }).filter(function(s){ return !s.isLost; }) : [];
+    var curIdx2 = stages2.findIndex(function(s){ return s.id === entity.sid; });
+    var nextStage = curIdx2 >= 0 ? stages2[curIdx2 + 1] : null;
+    var greenBtn;
+    if (entity.won) {
+      // Reopen — admin-only per existing unwindDealWon policy. Hide for non-admins.
+      var cu = getCurrentUser() || {};
+      if (cu.role === 'admin') {
+        greenBtn = '<button onclick="unwindDealWon(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#0a0a0a;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">↺ Reopen Deal</button>';
+      } else {
+        greenBtn = '';
+      }
+    } else if (entity.lost) {
+      greenBtn = '';   // Lost is terminal at the moment; reopening lost is desktop-only.
+    } else if (nextStage && nextStage.isWon) {
+      greenBtn = '<button onclick="markDealWon(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#22c55e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">✓ Mark Won</button>';
+    } else if (nextStage) {
+      greenBtn = '<button onclick="advanceDealStageMobile(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#22c55e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">→ ' + nextStage.name + '</button>';
+    } else {
+      greenBtn = '';
     }
+    var lostBtn = (!entity.won && !entity.lost)
+      ? '<button onclick="markDealLost(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#fef2f2;color:#b91c1c;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid #fecaca">✗ Mark Lost</button>'
+      : '';
+    var dealRow = [lostBtn, noteBtn, greenBtn].filter(Boolean);
+    if (dealRow.length) rows.push(dealRow);
   }
-  if (actions.length) bottomActions = '<div style="margin-top:18px;display:flex;gap:8px">' + actions.join('') + '</div>';
+  if (rows.length) {
+    bottomActions = rows.map(function(r){
+      return '<div style="margin-top:12px;display:flex;gap:8px">' + r.join('') + '</div>';
+    }).join('');
+  }
 
   // Compose. Hero pulls -12px to extend edge-to-edge over main's padding.
   return '' +
@@ -2770,6 +3044,7 @@ function _renderEntityDetailMobile(opts) {
     actionBar +
     sec('Details') +
     detailsCard +
+    photosHtml +
     notesHtml +
     bottomActions;
 }
@@ -2803,8 +3078,8 @@ function renderEntityDetail({
   const inlineForm = renderTabForm(entityId, entityType, detailTab, contact);
 
   // ── History items ─────────────────────────────────────────────────────────
-  const AICON = { note: '📝', call: '📞', email: '✉️', task: '☑️', stage: '🔀', created: '⭐', meeting: '📅', file: '📎', edit: '✏️' };
-  const ACOLBORDER = { note: '#f59e0b', call: '#3b82f6', email: '#8b5cf6', task: '#22c55e', stage: '#9ca3af', created: '#ef4444', meeting: '#0d9488', file: '#6366f1', edit: '#64748b' };
+  const AICON = { note: '📝', call: '📞', email: '✉️', task: '☑️', stage: '🔀', created: '⭐', meeting: '📅', file: '📎', edit: '✏️', photo: '📸' };
+  const ACOLBORDER = { note: '#f59e0b', call: '#3b82f6', email: '#8b5cf6', task: '#22c55e', stage: '#9ca3af', created: '#ef4444', meeting: '#0d9488', file: '#6366f1', edit: '#64748b', photo: '#ec4899' };
 
   const historyItems = activities.length === 0
     ? `<div style="padding:40px 20px;text-align:center">
@@ -2844,9 +3119,17 @@ function renderEntityDetail({
                    Other activity types stay on the existing pre-wrap raw
                    render — their text is plain and includes intentional
                    newlines from edit/note/call activities. -->
-              ${act.text && act.type !== 'stage' ? (act.type === 'email' && typeof _sanitizeEmailBody === 'function'
-                ? `<div style="font-size:13px;color:#374151;line-height:1.6;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'};overflow:hidden">${_sanitizeEmailBody(act.text)}</div>`
-                : `<div style="font-size:13px;color:#374151;line-height:1.6;white-space:pre-wrap;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'}">${act.text}</div>`) : ''}
+              ${act.text && act.type !== 'stage' ? (
+                // Image-URL → render inline <img>. Catches the mobile camera
+                // capture flow (type='file', text=publicUrl) AND the older
+                // type='photo' shape if any of those rows exist. Anything
+                // else falls through to the existing text/email rendering.
+                /^https?:\/\/.+\.(jpe?g|png|gif|webp|heic)(\?.*)?$/i.test(act.text)
+                  ? `<a href="${String(act.text).replace(/"/g,'&quot;')}" target="_blank" rel="noopener" style="display:inline-block;margin-top:4px;border-radius:8px;overflow:hidden;border:1px solid #f3f4f6;max-width:280px;box-shadow:0 1px 3px rgba(0,0,0,.06)"><img src="${String(act.text).replace(/"/g,'&quot;')}" loading="lazy" style="display:block;max-width:280px;max-height:280px;object-fit:cover" alt="Photo"></a>`
+                  : (act.type === 'email' && typeof _sanitizeEmailBody === 'function'
+                    ? `<div style="font-size:13px;color:#374151;line-height:1.6;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'};overflow:hidden">${_sanitizeEmailBody(act.text)}</div>`
+                    : `<div style="font-size:13px;color:#374151;line-height:1.6;white-space:pre-wrap;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'}">${act.text}</div>`)
+                ) : ''}
               ${act.type === 'stage' ? `<div style="font-size:13px;color:#6b7280">${act.text}</div>` : ''}
 
               <!-- Email tracking row (emails only) -->

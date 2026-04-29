@@ -183,6 +183,7 @@ function renderPage(){
     ${typeof _pendingPayRunVoid !== 'undefined' && _pendingPayRunVoid ? renderVoidPayRunModal() : ''}
     ${typeof _pendingPayRunDetailId !== 'undefined' && _pendingPayRunDetailId ? renderPayRunDetailModal() : ''}
     ${typeof _availModalForInstallerId !== 'undefined' && _availModalForInstallerId ? renderAvailExceptionModal() : ''}
+    ${typeof _pendingMobileNote !== 'undefined' && _pendingMobileNote ? renderMobileNoteModal() : ''}
   `;
   _restoreFocus(_focusSnap);
   renderToasts();
