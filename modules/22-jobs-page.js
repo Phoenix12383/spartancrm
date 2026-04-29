@@ -833,7 +833,14 @@ function renderJobDetail() {
       var c = t.category || 'other';
       (byCat[c] = byCat[c] || []).push(t);
     });
+    // Match the categories used in Settings -> Tools (TCATS in 20-job-settings.js).
+    // Anything outside this list falls through to a generic "Other" group below.
     var catLabels = {
+      lifting:         'Lifting',
+      access:          'Access',
+      sealing:         'Sealing',
+      fastening:       'Fastening',
+      measuring:       'Measuring',
       power_tool:      'Power Tools',
       access_equipment:'Access Equipment',
       lifting_gear:    'Lifting Gear',
@@ -858,9 +865,14 @@ function renderJobDetail() {
     } else {
       tabContent += '<input type="text" id="jobToolsSearch" placeholder="Search tools…" value="'+toolsSearch.replace(/"/g,'&quot;')+'" oninput="setState({jobToolsSearch:this.value})" class="inp" style="width:100%;padding:8px 12px;font-size:13px;margin-bottom:14px">';
 
-      // Render each category as a sub-card
-      var orderedCats = ['power_tool','access_equipment','lifting_gear','licence','consumable','other'];
-      orderedCats.forEach(function(cat) {
+      // Render each category as a sub-card. Show the existing TCATS order
+      // first, then any categories outside that list (so tools tagged with
+      // unknown categories still render — never silently drop a tool).
+      var orderedCats = ['lifting','access','sealing','fastening','measuring','power_tool','access_equipment','lifting_gear','licence','consumable','other'];
+      var seenCats = {};
+      var renderCatGroup = function(cat) {
+        if (seenCats[cat]) return;
+        seenCats[cat] = true;
         var list = byCat[cat] || [];
         if (list.length === 0) return;
         tabContent += '<div style="margin-bottom:14px">'
@@ -879,7 +891,11 @@ function renderJobDetail() {
             +'</div>';
         });
         tabContent += '</div>';
-      });
+      };
+      // Predefined order first
+      orderedCats.forEach(renderCatGroup);
+      // Any leftover (unknown) categories — render under their raw key as a heading
+      Object.keys(byCat).forEach(renderCatGroup);
 
       if (filteredTools.length === 0) {
         tabContent += '<div style="padding:20px;text-align:center;color:#9ca3af;font-size:12px">No tools match your search.</div>';
