@@ -2620,6 +2620,160 @@ function renderInlineMapScheduler(entityId, entityType) {
   </div>`;
 }
 
+// ── MOBILE: Deal/Lead detail — boss's reference layout ───────────────────────
+// Closely follows SpartanSalesMobile.jsx LeadDetail/DealDetail: black hero,
+// quick action bar (Call/SMS/Email), flat key-value Details card, optional
+// Notes, bottom action buttons. Drops nearby-leads, quote list, status grid,
+// stage bar, full activity timeline — boss intentionally trimmed those.
+function _renderEntityDetailMobile(opts) {
+  var entityType = opts.entityType;
+  var entityId = opts.entityId;
+  var title = opts.title;
+  var owner = opts.owner;
+  var contact = opts.contact || {};
+  var backOnclick = opts.backOnclick;
+  var backLabel = opts.backLabel || 'Back';
+  var st = getState();
+  var entity = entityType === 'lead'
+    ? (st.leads || []).find(function(l){ return l.id === entityId; })
+    : (st.deals || []).find(function(d){ return d.id === entityId; });
+  if (!entity) return '<div style="padding:40px;text-align:center;color:#9ca3af">Not found</div>';
+
+  // Resolve fields — prefer entity-level data, fall back to contact.
+  var phone = entity.phone || contact.phone || '';
+  var email = entity.email || contact.email || '';
+  var addr = [
+    entity.street || contact.street,
+    entity.suburb || contact.suburb,
+    entity.state || contact.state,
+    entity.postcode || contact.postcode,
+  ].filter(Boolean).join(', ');
+  var source = entity.source || contact.source || '';
+  var created = entity.created || '';
+  var status, statusCol;
+  if (entityType === 'lead') {
+    status = entity.status || 'New';
+    var leadStatusColors = { New:'#3b82f6', Contacted:'#f59e0b', Qualified:'#22c55e', Unqualified:'#9ca3af', Archived:'#6b7280' };
+    statusCol = leadStatusColors[status] || '#9ca3af';
+  } else {
+    var pl = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === entity.pid; });
+    var stage = pl && pl.stages.find(function(s){ return s.id === entity.sid; });
+    status = stage ? stage.name : '—';
+    statusCol = stage ? stage.col : '#9ca3af';
+  }
+
+  function fmt$$(n) { return '$' + (Number(n)||0).toLocaleString('en-AU', {maximumFractionDigits:0}); }
+  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+  function fmtRel(iso) {
+    if (!iso) return '';
+    var days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    if (isNaN(days)) return iso;
+    if (days <= 0) return 'today';
+    if (days === 1) return 'yesterday';
+    if (days < 7) return days + 'd ago';
+    if (days < 30) return Math.floor(days/7) + 'w ago';
+    return Math.floor(days/30) + 'mo ago';
+  }
+
+  // Won / Not Proceeding pill (top-right of hero, deals only).
+  var wonLostBadge = '';
+  if (entityType === 'deal') {
+    if (entity.won) wonLostBadge = '<span style="font-size:10px;font-weight:800;padding:4px 10px;border-radius:20px;background:#22c55e;color:#fff;letter-spacing:.04em">✓ WON</span>';
+    else if (entity.lost) wonLostBadge = '<span style="font-size:10px;font-weight:800;padding:4px 10px;border-radius:20px;background:#ef4444;color:#fff;letter-spacing:.04em">NOT PROCEEDING</span>';
+  }
+
+  // Hero subtitle.
+  var subtitle = (source ? source + ' · ' : '') + (created ? 'arrived ' + fmtRel(created) : '');
+
+  // Optional value display (gold) — leads show "~ $X estimate"; deals show "$X".
+  var valHtml = '';
+  if (entity.val && entity.val > 0) {
+    var prefix = entityType === 'lead' ? '~' : '';
+    var suffix = entityType === 'lead' ? ' estimate' : '';
+    valHtml = '<div style="font-size:24px;font-weight:800;margin-top:8px;font-family:Syne,sans-serif;color:#fbbf24">' + prefix + fmt$$(entity.val) + suffix + '</div>';
+  }
+
+  // Quick action bar — Call / SMS / Email. Shows whatever's available.
+  var actionBar = '';
+  if (phone || email) {
+    var cells = [];
+    if (phone) cells.push('<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></a>');
+    if (phone) cells.push('<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#3b82f6;text-decoration:none"><span style="font-size:18px">💬</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">SMS</span></a>');
+    if (email) cells.push('<a href="mailto:' + email + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></a>');
+    var sepStyle = ';border-right:1px solid #f3f4f6';
+    cells = cells.map(function(c, i){ return c.replace(';color:', (i < cells.length - 1 ? sepStyle : '') + ';color:'); });
+    actionBar = '<div style="margin-top:-10px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);display:grid;grid-template-columns:repeat(' + cells.length + ',1fr);margin-bottom:14px">' + cells.join('') + '</div>';
+  }
+
+  // Details rows (skip empties so the card never has dashes).
+  function row(label, val) {
+    if (!val || val === '—') return '';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:11px 14px;border-bottom:1px solid #f3f4f6;gap:12px">' +
+      '<span style="font-size:11px;color:#9ca3af;flex-shrink:0">' + label + '</span>' +
+      '<span style="font-size:13px;font-weight:600;color:#374151;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">' + val + '</span>' +
+    '</div>';
+  }
+  var statusBadge = '<span style="display:inline-block;font-size:10px;font-weight:700;padding:3px 9px;border-radius:10px;background:' + statusCol + '20;color:' + statusCol + ';border:1px solid ' + statusCol + '40">' + status + '</span>';
+  var ownerVal = owner || (entityType === 'lead'
+    ? '<span style="display:inline-block;font-size:10px;font-weight:700;padding:3px 9px;border-radius:10px;background:#fef3c7;color:#92400e;border:1px solid #fde68a">Unassigned</span>'
+    : '—');
+  var detailsCard = '<div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)">' +
+    row('Phone', phone) +
+    row('Email', email) +
+    row('Address', addr) +
+    row(entityType === 'deal' ? 'Stage' : 'Status', statusBadge) +
+    row(entityType === 'deal' ? 'Rep' : 'Owner', ownerVal) +
+    row('Source', source) +
+    row('Branch', entity.branch) +
+    row('Created', created ? (fmtRel(created) + (created.length > 5 ? ' (' + created + ')' : '')) : '') +
+  '</div>';
+
+  function sec(title) {
+    return '<h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin:18px 4px 8px">' + title + '</h2>';
+  }
+
+  // Notes
+  var notesHtml = entity.notes
+    ? sec('Notes') + '<div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:13px;color:#374151;white-space:pre-wrap;line-height:1.6">' + entity.notes + '</div>'
+    : '';
+
+  // Bottom actions (per type).
+  var bottomActions = '';
+  var actions = [];
+  if (entityType === 'lead') {
+    var canEdit = typeof canEditLead === 'function' && canEditLead(entity);
+    if (canEdit) actions.push('<button onclick="openLeadEditDrawer(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:700;color:#374151;cursor:pointer;font-family:inherit">✎ Edit</button>');
+    if (!entity.owner && !entity.converted && canEdit) {
+      actions.push('<button onclick="claimLead(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">+ Claim this lead</button>');
+    } else if (!entity.converted) {
+      actions.push('<button onclick="openConvertLeadModal(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Convert to Deal →</button>');
+    }
+  } else {
+    actions.push('<button onclick="openDealEdit(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:700;color:#374151;cursor:pointer;font-family:inherit">✎ Edit</button>');
+    if (!entity.won && !entity.lost) {
+      actions.push('<button onclick="markDealWon(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#22c55e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">✓ Mark Won</button>');
+    }
+  }
+  if (actions.length) bottomActions = '<div style="margin-top:18px;display:flex;gap:8px">' + actions.join('') + '</div>';
+
+  // Compose. Hero pulls -12px to extend edge-to-edge over main's padding.
+  return '' +
+    '<div style="margin:-12px -12px 0;padding:14px 16px 28px;background:#0a0a0a;color:#fff">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px">' +
+        '<button onclick="' + backOnclick + '" style="background:none;border:none;color:#fff;font-size:13px;cursor:pointer;font-family:inherit;padding:4px 0;display:inline-flex;align-items:center;gap:4px;font-weight:500">‹ ' + backLabel + '</button>' +
+        wonLostBadge +
+      '</div>' +
+      '<h1 style="font-size:20px;font-weight:800;margin:0;font-family:Syne,sans-serif;line-height:1.2">' + title + '</h1>' +
+      (subtitle ? '<div style="font-size:11px;opacity:.7;margin-top:4px">' + subtitle + '</div>' : '') +
+      valHtml +
+    '</div>' +
+    actionBar +
+    sec('Details') +
+    detailsCard +
+    notesHtml +
+    bottomActions;
+}
+
 function renderEntityDetail({
   entityType, entityId,
   title, owner,
@@ -2630,6 +2784,12 @@ function renderEntityDetail({
   activities,
   contact,
 }) {
+  // Native wrapper: use the boss's stripped-down mobile layout (hero +
+  // quick actions + flat details + notes + bottom actions). Desktop flow
+  // continues below unchanged.
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) {
+    return _renderEntityDetailMobile({ entityType: entityType, entityId: entityId, title: title, owner: owner, contact: contact, backOnclick: backOnclick, backLabel: backLabel });
+  }
   const TABS = [
     { id: 'activity', label: 'Activity', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>' },
     { id: 'notes', label: 'Notes', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' },
