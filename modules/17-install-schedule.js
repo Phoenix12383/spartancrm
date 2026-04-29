@@ -699,6 +699,45 @@ function generateJobInvoice(jobId, claimId, pct, description, dueDate) {
   return inv;
 }
 
+// Manual "Generate Invoice" trigger for a pending claim. Derives description
+// and due date from the claim id so the result matches the auto-flow.
+// Used by the Progress Claims tab when automation didn't fire (legacy data,
+// deals won before the trigger existed, etc.).
+function generateInvoiceForClaim(jobId, claimId) {
+  var jobs = getState().jobs || [];
+  var job = jobs.find(function(j){ return j.id === jobId; });
+  if (!job) { addToast('Job not found','error'); return; }
+  var claims = getJobClaims(jobId);
+  var cl = claims.find(function(c){ return c.id === claimId; });
+  if (!cl) { addToast('Claim not found','error'); return; }
+  if (cl.invoiceId) { addToast('Invoice already exists for this claim','warning'); return; }
+  var jn = job.jobNumber || '';
+  var deal = (getState().deals||[]).find(function(d){ return d.id === job.dealId; });
+  var dt = deal ? deal.title : '';
+  var desc, dueOffsetDays;
+  if (claimId === 'cl_dep') {
+    desc = cl.pct + '% Deposit — ' + jn + (dt ? ' — ' + dt : '');
+    dueOffsetDays = 7;
+  } else if (claimId === 'cl_cm') {
+    desc = cl.pct + '% Check Measure Complete — ' + jn;
+    dueOffsetDays = 14;
+  } else if (claimId === 'cl_preinstall') {
+    desc = cl.pct + '% Pre-Installation — ' + jn;
+    dueOffsetDays = 7;
+  } else if (claimId === 'cl_final') {
+    desc = cl.pct + '% Completion — Final Balance — ' + jn;
+    dueOffsetDays = 7;
+  } else {
+    desc = (cl.stage || ('Progress Claim ' + cl.pct + '%')) + ' — ' + jn;
+    dueOffsetDays = 14;
+  }
+  var dueDate = new Date(Date.now() + dueOffsetDays * 24 * 3600000).toISOString().slice(0,10);
+  if (!confirm('Generate '+desc+' invoice for $'+Math.round(cl.amountIncGst).toLocaleString()+' (inc GST)?')) return;
+  generateJobInvoice(jobId, claimId, cl.pct, desc, dueDate);
+  renderPage();
+}
+window.generateInvoiceForClaim = generateInvoiceForClaim;
+
 // Calculate business days before a date
 function businessDaysBefore(dateStr, days) {
   var d = new Date(dateStr + 'T12:00:00');
