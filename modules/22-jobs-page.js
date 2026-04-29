@@ -679,8 +679,18 @@ function renderJobDetail() {
         } else if (job.finalRenderedPdfUrl) {
           tabContent += '<button onclick="window.open(\''+job.finalRenderedPdfUrl+'\',\'_blank\')" class="btn-w" style="font-size:12px;gap:4px">\ud83d\udcc4 View Final PDF</button>';
         }
-        tabContent += '<button onclick="pushJobToFactory(\''+job.id+'\');renderPage();" class="btn-r" style="font-size:13px;padding:8px 24px;gap:6px">\ud83c\udfed Push to Production</button>'
-          +'<button onclick="setState({jobDetailTab:\'installation\'})" class="btn-w" style="font-size:13px;padding:8px 24px;gap:6px">\ud83d\udee0\ufe0f Installation Scheduling \u2192</button></div>';
+        tabContent += '<button onclick="setState({jobDetailTab:\'installation\'})" class="btn-w" style="font-size:13px;padding:8px 24px;gap:6px">\ud83d\udee0\ufe0f Installation Scheduling \u2192</button></div>';
+        // Dev-only manual hand-off into the Factory CRM production queue.
+        // In normal operation the Production Manager accepts signed jobs from
+        // Factory CRM \u2192 Awaiting Production; this button is a shortcut for
+        // testing/one-off fast-track. Job status already auto-advances to
+        // c2_order_schedule_standard the moment DocuSign reports signed.
+        if (devMode) {
+          tabContent += '<div style="margin-top:14px;padding-top:12px;border-top:1px dashed #e5e7eb">'
+            +'<button onclick="pushJobToFactory(\''+job.id+'\');renderPage();" class="btn-r" style="font-size:13px;padding:8px 24px;gap:6px">\ud83c\udfed Push to Production</button>'
+            +'<div style="font-size:11px;color:#6b7280;margin-top:6px;line-height:1.5;max-width:560px">\ud83e\uddea Dev-only manual trigger. Normally the Production Manager accepts signed jobs from <strong>Factory CRM \u2192 Awaiting Production</strong>. Status has already auto-advanced to <strong>Order &amp; Schedule</strong> on signing \u2014 this button only fast-tracks the factory hand-off.</div>'
+            +'</div>';
+        }
         // Dev-only resend/test block \u2014 production normally hides this since
         // the envelope is already signed and the workflow has moved on.
         if (devMode) {
