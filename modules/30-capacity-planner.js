@@ -87,7 +87,9 @@
 
     var weekCount = +(getState().capPlanWeeks) || 8;
     var startOffset = +(getState().capPlanOffset) || 0;
-    var expandedWeek = getState().capPlanExpandedWeek || null;
+    // Don't use `|| null` — week offset 0 is a valid value and would collapse to null.
+    var expandedWeek = getState().capPlanExpandedWeek;
+    if (expandedWeek === undefined) expandedWeek = null;
 
     var weeks = [];
     for (var w = 0; w < weekCount; w++) {
