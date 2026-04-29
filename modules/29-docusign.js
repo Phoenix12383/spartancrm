@@ -469,8 +469,167 @@ function refreshDocuSignStatus(jobId) {
   });
 }
 
+// ─── Variation DocuSign (Manual §6.3) ──────────────────────────────────────
+// Builds a single-page Variation Quote PDF with one signature anchor and
+// sends it through the same docusign-send Edge Function with kind='variation'.
+// The Edge Function stamps the kind on the envelope's customFields so the
+// webhook can dispatch correctly when the customer signs.
+
+function buildVariationPdfBase64(job) {
+  // jsPDF is loaded globally (via index.html). Use the UMD path: window.jspdf.
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    addToast('jsPDF not loaded — cannot build variation PDF', 'error');
+    return null;
+  }
+  var jsPDF = window.jspdf.jsPDF;
+  var doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+  var contacts = getState().contacts || [];
+  var contact = contacts.find(function(c){ return c.id === (job.contactId || job.cid); }) || {};
+  var customerName = ((contact.fn||'') + ' ' + (contact.ln||'')).trim() || '—';
+  var customerEmail = contact.email || '—';
+  var amount = +job.variationAmount || 0;
+  var notes = job.variationNotes || '';
+  var jobNum = job.jobNumber || job.id;
+  var today = new Date().toLocaleDateString('en-AU', {day:'numeric',month:'long',year:'numeric'});
+  var signed = '$' + (amount < 0 ? '-' : '') + Math.abs(amount).toLocaleString('en-AU', {minimumFractionDigits:2, maximumFractionDigits:2});
+
+  // Header
+  doc.setFont('helvetica','bold'); doc.setFontSize(18);
+  doc.text('Spartan Double Glazing — Variation Quote', 20, 25);
+  doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(110);
+  doc.text('Per Manual §6.3 — Final Sign-Off variation acceptance', 20, 32);
+  doc.setTextColor(0);
+
+  // Job metadata
+  var y = 45;
+  doc.setFont('helvetica','bold'); doc.setFontSize(11);
+  doc.text('Job Reference', 20, y); doc.setFont('helvetica','normal');
+  doc.text(jobNum, 70, y); y += 7;
+  doc.setFont('helvetica','bold'); doc.text('Customer', 20, y); doc.setFont('helvetica','normal');
+  doc.text(customerName, 70, y); y += 7;
+  doc.setFont('helvetica','bold'); doc.text('Email', 20, y); doc.setFont('helvetica','normal');
+  doc.text(customerEmail, 70, y); y += 7;
+  doc.setFont('helvetica','bold'); doc.text('Date', 20, y); doc.setFont('helvetica','normal');
+  doc.text(today, 70, y); y += 12;
+
+  // Variation amount box
+  doc.setDrawColor(196, 18, 48); doc.setLineWidth(0.6);
+  doc.roundedRect(20, y, 170, 26, 2, 2);
+  doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(110);
+  doc.text(amount >= 0 ? 'AMOUNT PAYABLE BY CUSTOMER' : 'CREDIT TO CUSTOMER', 25, y + 8);
+  doc.setTextColor(0); doc.setFontSize(20);
+  doc.text(signed + ' (incl. GST)', 25, y + 19);
+  y += 32;
+
+  // Reason
+  doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.text('Reason for Variation', 20, y); y += 6;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10);
+  var lines = doc.splitTextToSize(notes || 'On-site check measure produced dimensions that materially differ from the original quote, changing the bill of materials. See variance check on the job for frame-by-frame breakdown.', 170);
+  doc.text(lines, 20, y); y += (lines.length * 5) + 4;
+
+  // Acceptance clause
+  doc.setFillColor(247,247,250); doc.rect(20, y, 170, 30, 'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.text('Customer Acceptance', 25, y + 7);
+  doc.setFont('helvetica','normal'); doc.setFontSize(10);
+  var accLines = doc.splitTextToSize(
+    'I accept the price variation stated above and authorise Spartan to incorporate it into the Final Design contract. I understand the Final Design DocuSign cannot be sent until this variation is signed.',
+    160);
+  doc.text(accLines, 25, y + 13);
+  y += 36;
+
+  // Signature anchor — DocuSign places the Customer signHere here.
+  doc.setFont('helvetica','bold'); doc.setFontSize(10);
+  doc.text('Customer Signature:', 20, y + 15);
+  // White-on-white anchor text. DocuSign scans the PDF for this string.
+  doc.setTextColor(255,255,255); doc.setFontSize(1);
+  doc.text('\\sp_sig_variation_accept\\', 70, y + 15);
+  doc.setTextColor(0); doc.setFontSize(10);
+  doc.line(70, y + 18, 180, y + 18);
+
+  doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(140);
+  doc.text('Spartan Double Glazing — page 1 of 1 — generated ' + new Date().toISOString().slice(0,10), 20, 285);
+
+  var dataUri = doc.output('datauristring');
+  // Strip the 'data:application/pdf;filename=...;base64,' prefix.
+  var commaIdx = dataUri.indexOf(',');
+  return commaIdx >= 0 ? dataUri.slice(commaIdx + 1) : null;
+}
+
+function sendVariationDocuSign(jobId) {
+  var jobs = getState().jobs || [];
+  var job = jobs.find(function(j) { return j.id === jobId; });
+  if (!job) { addToast('Job not found', 'error'); return; }
+  if (typeof job.variationAmount !== 'number') {
+    addToast('Variation amount is required (open the variance card first)', 'error');
+    return;
+  }
+  var contacts = getState().contacts || [];
+  var contact = contacts.find(function(c){ return c.id === (job.contactId || job.cid); }) || {};
+  var customerName = ((contact.fn||'') + ' ' + (contact.ln||'')).trim();
+  var customerEmail = contact.email || '';
+  if (!customerName)  { addToast('Customer name required on contact', 'error'); return; }
+  if (!customerEmail) { addToast('Customer email required on contact', 'error'); return; }
+  if (!_sb) { addToast('Supabase not initialised — cannot send Variation DocuSign', 'error'); return; }
+
+  var pdfBase64 = buildVariationPdfBase64(job);
+  if (!pdfBase64) return;
+
+  addToast('Sending Variation DocuSign…', 'info');
+
+  _sb.functions.invoke('docusign-send', {
+    body: {
+      jobId: jobId,
+      kind: 'variation',
+      customerName: customerName,
+      customerEmail: customerEmail,
+      pdfBase64: pdfBase64,
+      variationAmount: job.variationAmount,
+      variationNotes: job.variationNotes || '',
+    },
+  }).then(async function(res) {
+    if (res.error) {
+      var detail = '';
+      try { if (res.error.context && typeof res.error.context.text === 'function') detail = await res.error.context.text(); } catch(e){}
+      addToast('Variation DocuSign failed: ' + (res.error.message || 'error') + (detail ? ' — ' + detail.slice(0,200) : ''), 'error');
+      return;
+    }
+    var data = res.data || {};
+    if (!data.ok) {
+      addToast('Variation DocuSign rejected: ' + (data.error || 'unknown'), 'error');
+      return;
+    }
+    var now = new Date().toISOString();
+    setState({ jobs: (getState().jobs||[]).map(function(j){
+      return j.id === jobId ? Object.assign({}, j, {
+        variationStatus: 'awaiting_signature',
+        variationEnvelopeId: data.envelopeId,
+        variationSentAt: now,
+      }) : j;
+    })});
+    if (typeof dbUpdate === 'function') {
+      try {
+        dbUpdate('jobs', jobId, {
+          variation_status: 'awaiting_signature',
+          variation_envelope_id: data.envelopeId,
+          variation_sent_at: now,
+        });
+      } catch(e) { console.warn('dbUpdate variation fields failed', e); }
+    }
+    if (typeof logJobAudit === 'function') {
+      logJobAudit(jobId, 'Variation DocuSign Sent', 'Envelope ' + data.envelopeId + ' to ' + customerEmail + ' · $' + job.variationAmount);
+    }
+    addToast('✅ Variation DocuSign sent to ' + customerEmail, 'success');
+    if (typeof renderPage === 'function') renderPage();
+  }).catch(function(e) {
+    console.error('Variation DocuSign exception:', e);
+    addToast('Variation DocuSign failed: ' + (e.message || String(e)), 'error');
+  });
+}
+
 // Expose to window for inline onclick handlers
 window.sendFinalDesignDocuSign = sendFinalDesignDocuSign;
+window.sendVariationDocuSign = sendVariationDocuSign;
+window.buildVariationPdfBase64 = buildVariationPdfBase64;
 window.refreshDocuSignStatus = refreshDocuSignStatus;
 window.getDocuSignEnvelopeForJob = getDocuSignEnvelopeForJob;
 window.buildFinalDesignPdfBase64 = buildFinalDesignPdfBase64;

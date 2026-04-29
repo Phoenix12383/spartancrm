@@ -147,6 +147,19 @@ Deno.serve(async (req) => {
     return new Response('ok', { status: 200, headers: corsHeaders });
   }
 
+  // Read the envelope's spartan_kind custom field set by docusign-send.
+  // Default to 'final_design' for legacy envelopes that pre-date the kind
+  // dispatch. The kind decides whether the signed event flips status to c2
+  // (final design) OR sets variation_status='signed' (variation acceptance).
+  const customFields = payload.data?.envelopeSummary?.customFields?.textCustomFields
+                    || payload.data?.envelopeSummary?.envelopeCustomFields?.textCustomFields
+                    || [];
+  const kindCF = (customFields as Array<{ name?: string; value?: string }>).find(
+    (cf) => (cf.name || '').toLowerCase() === 'spartan_kind'
+  );
+  const kind = (kindCF?.value || 'final_design') as 'final_design' | 'variation';
+  console.log('[docusign-webhook] dispatching event', event, 'as kind=', kind);
+
   const updates: Record<string, unknown> = {
     docusign_status: event,
   };
@@ -154,21 +167,35 @@ Deno.serve(async (req) => {
   // On completed → stamp signature time, transition status, attach signed PDF.
   if (event === 'envelope-completed') {
     const signedAt = payload.data?.envelopeSummary?.completedDateTime || new Date().toISOString();
-    updates.final_signed_at = signedAt;
     updates.docusign_completed_at = signedAt;
-    // Transition d → c2. The CRM's transitionJobStatus normally runs this with
-    // canTransition gating; we trust DocuSign here because the customer signed.
-    updates.status = 'c2_order_schedule_standard';
+
+    if (kind === 'variation') {
+      // Manual §6.3 — customer accepted the price variation. Unlocks the
+      // Final Design DocuSign send. No status transition (the job stays at
+      // c1 until the Final Design envelope is signed).
+      updates.variation_status = 'signed';
+      updates.variation_signed_at = signedAt;
+    } else {
+      // Final Design — Manual §6.6 — customer signed the binding contract.
+      // Stamp finalSignedAt and advance the job to c2. The CRM's normal
+      // transition gate is bypassed here because DocuSign already verified
+      // the signature on every clause.
+      updates.final_signed_at = signedAt;
+      updates.status = 'c2_order_schedule_standard';
+    }
 
     // Attach signed PDF if included in the payload.
     const docs = payload.data?.envelopeSummary?.documents || payload.documents || [];
+    const matchRegex = kind === 'variation' ? /variation/i : /final.*design/i;
     const signedDoc = docs.find((d: any) =>
-      d.documentId === '1' || (d.name && /final.*design/i.test(d.name))
+      d.documentId === '1' || (d.name && matchRegex.test(d.name))
     );
     if (signedDoc && signedDoc.PDFBytes) {
-      const fileName = `final-design-signed-${envelopeId}.pdf`;
+      const fileName = (kind === 'variation'
+          ? `variation-signed-${envelopeId}.pdf`
+          : `final-design-signed-${envelopeId}.pdf`);
+      const category = kind === 'variation' ? 'variation_signed' : 'final_design_signed';
       try {
-        // Upload to Supabase Storage bucket 'job-files'
         const { error: storageErr } = await sb.storage
           .from('job-files')
           .upload(`${job.id}/${fileName}`, Uint8Array.from(atob(signedDoc.PDFBytes), (c) => c.charCodeAt(0)), {
@@ -179,7 +206,7 @@ Deno.serve(async (req) => {
           await sb.from('job_files').insert({
             job_id: job.id,
             file_name: fileName,
-            category: 'final_design_signed',
+            category: category,
             uploaded_at: signedAt,
             uploaded_by: 'docusign-webhook',
           });
@@ -190,7 +217,12 @@ Deno.serve(async (req) => {
     }
   } else if (event === 'envelope-declined' || event === 'envelope-voided') {
     updates.docusign_declined_at = new Date().toISOString();
-    // Keep status at d (Final Sign Off). Sales Manager sees decline + chases.
+    if (kind === 'variation') {
+      // Customer declined / voided the variation. Roll back the in-progress
+      // status so the Sales Manager can re-issue or mark non-material.
+      updates.variation_status = 'awaiting_quote';
+    }
+    // Final Design declined: keep status at c1; SM sees decline + chases.
   }
 
   const { error: updErr } = await sb.from('jobs').update(updates).eq('id', job.id);

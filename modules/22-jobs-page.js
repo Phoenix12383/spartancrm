@@ -871,12 +871,42 @@ function renderJobDetail() {
             +'</tr>';
         });
         tabContent += '</tbody></table>';
+        // Variation flow actions — shown when there's at least one major variance.
+        // Reads variationStatus from the job to decide what to render:
+        //   undefined / 'awaiting_quote' → Generate Quote + Mark Non-Material
+        //   'awaiting_signature'           → Sent banner + Resend
+        //   'signed' / 'not_material'      → Green banner
         if (nMajor > 0) {
-          tabContent += '<div style="margin-top:10px;padding:10px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:12px;color:#7f1d1d">'
-            +'<strong>⚠ Action required:</strong> '+nMajor+' frame'+(nMajor!==1?'s':'')+' exceed both 20mm <em>and</em> 5% tolerance. '
-            +'Per manual §6.3 the customer must sign a separate Variation DocuSign accepting the price change before the Final Design DocuSign. '
-            +'Generate a Variation Quote in the Sales CRM, get it signed, then return here to send the Final Design.'
+          var _vStat = job.variationStatus || 'awaiting_quote';
+          var _vAmt = +job.variationAmount || 0;
+          var _vEnv = job.variationEnvelopeId;
+          var _vSentAt = job.variationSentAt;
+          var _vSignedAt = job.variationSignedAt;
+          tabContent += '<div style="margin-top:10px;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:12px;color:#7f1d1d">'
+            +'<strong>⚠ Action required (Manual §6.3):</strong> '+nMajor+' frame'+(nMajor!==1?'s':'')+' exceed both 20mm <em>and</em> 5% tolerance. '
+            +'The customer must sign a separate Variation DocuSign accepting the price change before the Final Design DocuSign can be sent.'
             +'</div>';
+          if (_vStat === 'awaiting_quote') {
+            tabContent += '<div style="margin-top:8px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">'
+              +'<div style="flex:1;min-width:200px;font-size:12px;color:#92400e">Sales Manager: choose how to resolve.</div>'
+              +(isManager ? '<button onclick="var amt=prompt(\'Variation amount in dollars (positive = customer pays extra, negative = credit). Manual §6.3 — Sales Manager judges based on glass / hardware / material delta:\',\'\');if(amt===null)return;var a=parseFloat(amt);if(isNaN(a)){addToast(\'Invalid amount\',\'error\');return;}var n=prompt(\'Reason / notes for the variation:\',\'\')||\'\';setState({jobs:(getState().jobs||[]).map(function(j){return j.id===\''+job.id+'\'?Object.assign({},j,{variationAmount:a,variationNotes:n,hasVariation:true}):j;})});if(typeof dbUpdate===\'function\'){try{dbUpdate(\'jobs\',\''+job.id+'\',{variation_amount:a,variation_notes:n,has_variation:true});}catch(e){}}sendVariationDocuSign(\''+job.id+'\');" class="btn-r" style="font-size:12px;padding:6px 12px">📨 Generate &amp; Send Variation DocuSign</button>'
+                          + '<button onclick="if(confirm(\'Mark variances as non-material? This means the price is not affected and no Variation DocuSign is needed.\')){var now=new Date().toISOString();setState({jobs:(getState().jobs||[]).map(function(j){return j.id===\''+job.id+'\'?Object.assign({},j,{variationStatus:\'not_material\',variationResolvedAt:now}):j;})});if(typeof dbUpdate===\'function\'){try{dbUpdate(\'jobs\',\''+job.id+'\',{variation_status:\'not_material\',variation_resolved_at:now});}catch(e){}}if(typeof logJobAudit===\'function\')logJobAudit(\''+job.id+'\',\'Variances Marked Non-Material\',\'Sales Manager judged no price impact\');addToast(\'⚖️ Variances marked non-material\',\'success\');renderPage();}" class="btn-w" style="font-size:12px;padding:6px 12px">⚖️ Mark Non-Material</button>'
+                          : '<span style="font-size:11px;color:#92400e;font-style:italic">Only Sales Manager / admin can act on variances.</span>')
+              +'</div>';
+          } else if (_vStat === 'awaiting_signature') {
+            tabContent += '<div style="margin-top:8px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">'
+              +'<div style="flex:1;min-width:200px;font-size:12px;color:#1d4ed8">📨 <strong>Variation DocuSign sent</strong> · $'+(_vAmt||0).toLocaleString()+(_vSentAt?' · '+new Date(_vSentAt).toLocaleString('en-AU'):'')+(_vEnv?' · envelope '+_vEnv.slice(0,8)+'…':'')+'<div style="font-size:11px;color:#3b82f6;margin-top:2px">Waiting for customer to sign. Final Design DocuSign is locked until then.</div></div>'
+              +(isManager && _vEnv ? '<button onclick="sendVariationDocuSign(\''+job.id+'\')" class="btn-w" style="font-size:11px;padding:5px 10px">🔄 Resend</button>' : '')
+              +'</div>';
+          } else if (_vStat === 'signed') {
+            tabContent += '<div style="margin-top:8px;padding:12px 14px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;font-size:12px;color:#15803d">'
+              +'✅ <strong>Variation accepted</strong> by customer'+(_vSignedAt?' on '+new Date(_vSignedAt).toLocaleDateString('en-AU'):'')+(typeof _vAmt === 'number' ? ' · $'+_vAmt.toLocaleString() : '')+'. Final Design DocuSign is unlocked.'
+              +'</div>';
+          } else if (_vStat === 'not_material') {
+            tabContent += '<div style="margin-top:8px;padding:12px 14px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;font-size:12px;color:#15803d">'
+              +'⚖️ <strong>Variances marked non-material</strong> by Sales Manager — no Variation DocuSign required. Final Design DocuSign is unlocked.'
+              +'</div>';
+          }
         }
         tabContent += '</div>';
       } else if (surveyFrames.length > 0 && origItems.length === 0) {

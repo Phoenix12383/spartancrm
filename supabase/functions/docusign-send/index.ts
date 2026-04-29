@@ -32,11 +32,20 @@ import { getDocuSignAccessToken, getDocuSignApiBase, getDocuSignAccountId } from
 interface SendRequest {
   jobId: string;
   templateId?: string;
+  // 'final_design' (default) — the 7-clause envelope that locks production.
+  // 'variation' — single-page acceptance of a price variation per Manual §6.3.
+  // The kind is also stamped onto the envelope's customFields so the webhook
+  // can dispatch differently when each kind is signed.
+  kind?: 'final_design' | 'variation';
   customerName: string;
   customerEmail: string;
   emailSubject?: string;
   emailBlurb?: string;
   pdfBase64: string;
+  // Variation-only metadata. Stamped into customFields so the webhook can
+  // mirror them back to the job on signed events (audit trail).
+  variationAmount?: number;
+  variationNotes?: string;
   flags?: {
     renderWarning?: boolean;
     specialColour?: boolean;
@@ -196,6 +205,7 @@ Deno.serve(async (req) => {
   }
 
   const flags = body.flags || {};
+  const kind = body.kind || 'final_design';
 
   // Decide which tabs strategy to use:
   //   1. If body.tabs is provided, use the caller's programmatic placement
@@ -217,6 +227,21 @@ Deno.serve(async (req) => {
         recipientId: t.recipientId || '1',
       }));
     }
+  } else if (kind === 'variation') {
+    // Variation envelope — single signature anchor printed on the variation PDF
+    // by the CRM-side builder. Just one signHere; no clause fan-out.
+    recipientTabs = {
+      signHereTabs: [{
+        tabLabel: 'sp_sig_variation_accept',
+        anchorString: '\\sp_sig_variation_accept\\',
+        anchorXOffset: '0',
+        anchorYOffset: '0',
+        anchorUnits: 'inches',
+        anchorIgnoreIfNotPresent: 'true',
+        documentId:  '1',
+        recipientId: '1',
+      }],
+    };
   } else {
     const signHereTabs = buildSignHereTabs(flags);
     recipientTabs = {
@@ -228,17 +253,45 @@ Deno.serve(async (req) => {
     };
   }
 
+  // Per-kind copy + filename. Variation envelopes are noticeably smaller
+  // and use a different subject so the customer's inbox tells them apart
+  // from the Final Design envelope.
+  const isVariation = kind === 'variation';
+  const defaultSubject = isVariation
+    ? `Action Required: Accept the price variation for your Spartan job — Job ${body.jobId}`
+    : `Action Required: Sign your Spartan Final Design — Job ${body.jobId}`;
+  const defaultBlurb = isVariation
+    ? `Hi ${body.customerName},\n\nFollowing the on-site Check Measure, your Spartan Double Glazing job has a price variation that needs your acceptance before we can send the Final Design contract. Please review the attached and sign to confirm.`
+    : `Hi ${body.customerName},\n\nYour Spartan Double Glazing Final Design is ready for your signature. Please review the attached document and sign each clause to authorise production.`;
+  const docName = isVariation
+    ? `Variation Quote — ${body.jobId}.pdf`
+    : `Final Design — ${body.jobId}.pdf`;
+
+  // Stamp identifying custom fields onto the envelope so the webhook can
+  // dispatch by kind without needing a database round-trip on every event.
+  const envelopeCustomFields = [
+    { name: 'spartan_kind', value: kind, required: 'false', show: 'false' },
+    { name: 'spartan_job_id', value: body.jobId, required: 'false', show: 'false' },
+  ];
+  if (isVariation && typeof body.variationAmount === 'number') {
+    envelopeCustomFields.push({ name: 'spartan_variation_amount', value: String(body.variationAmount), required: 'false', show: 'false' });
+  }
+  if (isVariation && body.variationNotes) {
+    envelopeCustomFields.push({ name: 'spartan_variation_notes', value: body.variationNotes.slice(0, 200), required: 'false', show: 'false' });
+  }
+
   // Build a composite envelope (no template). All recipient + tab config
   // lives in this request — DocuSign just routes the envelope. Avoids the
   // fragility of a template that depends on UI-side tab-to-recipient
   // assignment surviving every edit.
   const envelopeDef = {
-    emailSubject: body.emailSubject || `Action Required: Sign your Spartan Final Design — Job ${body.jobId}`,
-    emailBlurb:   body.emailBlurb   || `Hi ${body.customerName},\n\nYour Spartan Double Glazing Final Design is ready for your signature. Please review the attached document and sign each clause to authorise production.`,
+    emailSubject: body.emailSubject || defaultSubject,
+    emailBlurb:   body.emailBlurb   || defaultBlurb,
     status: 'sent',
+    customFields: { textCustomFields: envelopeCustomFields },
     documents: [{
       documentBase64: body.pdfBase64,
-      name: `Final Design — ${body.jobId}.pdf`,
+      name: docName,
       fileExtension: 'pdf',
       documentId: '1',
     }],
@@ -278,6 +331,7 @@ Deno.serve(async (req) => {
 
   return new Response(JSON.stringify({
     ok: true,
+    kind: kind,
     envelopeId: dsJson.envelopeId,
     status: dsJson.status,
     sentAt: new Date().toISOString(),
