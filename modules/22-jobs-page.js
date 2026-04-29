@@ -704,6 +704,39 @@ function renderJobDetail() {
     // after the 45% payment lands (status = c1_final_sign_off).
     var atFinalSignOff = job.status === 'c1_final_sign_off';
 
+    // Variation gate (Manual \u00a76.3) \u2014 when major variances exist, the Final
+    // Design DocuSign cannot be sent until the variation is either signed by
+    // the customer or marked non-material by the Sales Manager. Same logic
+    // as the variance card and the workflow trigger panel.
+    var _origItems_v = (job.cadData && Array.isArray(job.cadData.projectItems)) ? job.cadData.projectItems : [];
+    var _measItems_v = surveyFrames || [];
+    var hasMajorVar_v = false;
+    if (_origItems_v.length > 0 && _measItems_v.length > 0) {
+      var _byId_v = {};
+      _origItems_v.forEach(function(o){ if (o && o.id) _byId_v[o.id] = o; });
+      for (var _vi = 0; _vi < _measItems_v.length && !hasMajorVar_v; _vi++) {
+        var _m_v = _measItems_v[_vi];
+        var _o_v = (_m_v.id && _byId_v[_m_v.id]) || _origItems_v[_vi];
+        if (!_o_v) continue;
+        var _oW_v = +_o_v.widthMm || +_o_v.width || 0;
+        var _oH_v = +_o_v.heightMm || +_o_v.height || 0;
+        var _mW_v = +_m_v.widthMm || +_m_v.width || 0;
+        var _mH_v = +_m_v.heightMm || +_m_v.height || 0;
+        if (_oW_v <= 0 || _oH_v <= 0) continue;
+        var _dW_v = _mW_v - _oW_v, _dH_v = _mH_v - _oH_v;
+        var _pW_v = Math.abs(_dW_v)/_oW_v, _pH_v = Math.abs(_dH_v)/_oH_v;
+        if ((Math.abs(_dW_v)>20 && _pW_v>0.05) || (Math.abs(_dH_v)>20 && _pH_v>0.05)) hasMajorVar_v = true;
+      }
+    }
+    var vStatus_v = job.variationStatus || (hasMajorVar_v ? 'awaiting_quote' : 'none');
+    var variationResolved_v = (vStatus_v === 'signed' || vStatus_v === 'not_material' || vStatus_v === 'none');
+    var variationGateOpen = variationResolved_v;
+    var variationGateReason = !variationResolved_v
+      ? (vStatus_v === 'awaiting_quote'
+        ? 'Major variances detected \u2014 generate a Variation Quote (or mark non-material) before sending the Final Design DocuSign.'
+        : 'Variation Quote sent \u2014 waiting for the customer to sign before the Final Design DocuSign can go out.')
+      : '';
+
     tabContent = '<div class="card" style="padding:20px;margin-bottom:14px">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
       +'<div><h4 style="font-size:16px;font-weight:700;margin:0">\ud83d\udcdd Final Design & Sign-Off</h4>'
@@ -943,9 +976,19 @@ function renderJobDetail() {
                 + '</div>';
             }
             if (atFinalSignOff) {
-              html += '<div style="font-size:11px;color:#6b7280;margin-bottom:10px">Send the Final Design to the customer for DocuSign e-signature (per manual \u00a76.5). Conditional clauses (Render Warning, Special Colour, Variation) are only included when the matching job flag is set.</div>'
-                + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
-                + '<button onclick="sendFinalDesignDocuSign(\'' + job.id + '\')" class="btn-r" style="font-size:13px;padding:8px 20px;gap:6px"' + (isManager?'':' disabled title="Manager only"') + '>\ud83d\udce4 ' + (dsRec && dsRec.envelopeId ? 'Resend' : 'Send') + ' DocuSign</button>'
+              html += '<div style="font-size:11px;color:#6b7280;margin-bottom:10px">Send the Final Design to the customer for DocuSign e-signature (per manual \u00a76.5). Conditional clauses (Render Warning, Special Colour, Variation) are only included when the matching job flag is set.</div>';
+              // Variation gate banner \u2014 shown to everyone, dev or not.
+              if (!variationGateOpen) {
+                html += '<div style="padding:10px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;font-size:12px;color:#7f1d1d;margin-bottom:10px">\ud83d\udd12 <strong>Locked by Manual \u00a76.3:</strong> '+variationGateReason+'</div>';
+              }
+              html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+                + (variationGateOpen
+                    ? '<button onclick="sendFinalDesignDocuSign(\'' + job.id + '\')" class="btn-r" style="font-size:13px;padding:8px 20px;gap:6px"' + (isManager?'':' disabled title="Manager only"') + '>\ud83d\udce4 ' + (dsRec && dsRec.envelopeId ? 'Resend' : 'Send') + ' DocuSign</button>'
+                    : '<button disabled title="'+variationGateReason.replace(/"/g,'&quot;')+'" style="font-size:13px;padding:8px 20px;background:#e5e7eb;border:1px solid #d1d5db;color:#9ca3af;border-radius:6px;cursor:not-allowed">\ud83d\udd12 ' + (dsRec && dsRec.envelopeId ? 'Resend' : 'Send') + ' DocuSign (Locked)</button>'
+                  )
+                + (devMode && !variationGateOpen
+                    ? '<button onclick="if(confirm(\'Override variation gate (dev only)?\\n\\n'+variationGateReason.replace(/'/g,"\\'").replace(/\n/g,' ')+'\'))sendFinalDesignDocuSign(\'' + job.id + '\')" class="btn-w" style="font-size:11px;padding:6px 12px;gap:4px;border:2px dashed #c4b5fd;color:#6d28d9">\ud83e\uddea Override (Dev)</button>'
+                    : '')
                 + (dsRec && dsRec.envelopeId
                     ? '<button onclick="refreshDocuSignStatus(\'' + job.id + '\')" class="btn-w" style="font-size:12px;padding:8px 14px;gap:4px">\ud83d\udd04 Refresh Status</button>'
                     : '')

@@ -307,6 +307,23 @@ function sendFinalDesignDocuSign(jobId) {
   if (!job.cadFinalData) {
     if (!confirm('Final Design has not been saved in CAD yet. Send DocuSign anyway? The PDF will use survey/original data.')) return;
   }
+  // Variation gate (Manual §6.3) — block the send if a major variance is
+  // unresolved. Production users see the disabled button; this is the
+  // last-line defence catching any code path (e.g. dev bypass buttons).
+  // Dev-mode override: the UI confirms before invoking, so we accept the
+  // call here and just log the bypass.
+  var _vStatus = job.variationStatus || 'none';
+  var _variationResolved = (_vStatus === 'signed' || _vStatus === 'not_material' || _vStatus === 'none');
+  if (!_variationResolved) {
+    var _devOverride = (typeof isDevMode === 'function') && isDevMode();
+    if (!_devOverride) {
+      addToast('🔒 Customer must accept the variation first (Manual §6.3). Generate a Variation Quote (or mark non-material) on the variance card.', 'error');
+      return;
+    }
+    if (typeof logJobAudit === 'function') {
+      logJobAudit(jobId, 'Variation Gate Overridden (Dev)', 'Final Design DocuSign sent while variationStatus=' + _vStatus);
+    }
+  }
 
   var contacts = getState().contacts || [];
   var contact = contacts.find(function(c) { return c.id === (job.contactId || job.cid); }) || {};
