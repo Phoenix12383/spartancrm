@@ -109,7 +109,70 @@ function updateInvoiceStatus(invId, status) {
   if (status === 'sent' && !inv.sentDate) inv.sentDate = new Date().toISOString().slice(0,10);
   saveInvoices(invoices);
   addToast('Invoice ' + inv.invoiceNumber + ' \u2192 ' + status, 'success');
+  // Auto-advance the job status when the relevant progress claim is paid.
+  // Mirrors what the Workflow Test Buttons do (markPaymentReceived) but here
+  // it fires from the invoicing UI's own Mark Paid button so the two paths
+  // stay consistent. cl_cm paid \u2192 c1_final_sign_off; cl_final \u2192 h_completed.
+  // cl_deposit + cl_preInstall don't drive status \u2014 they're tracked only.
+  if (status === 'paid') _autoAdvanceJobOnInvoicePaid(inv);
   renderPage();
+}
+
+// Helper \u2014 keep status field aligned with payment progress so jobs don't
+// silently get stuck at a_check_measure after the 45% has cleared.
+function _autoAdvanceJobOnInvoicePaid(inv) {
+  if (!inv || !inv.jobId || inv.type !== 'progress_claim') return;
+  var claims = (typeof getJobClaims === 'function') ? getJobClaims(inv.jobId) : [];
+  var claim = claims.find(function(c){ return c.invoiceId === inv.id; });
+  if (!claim) return;
+  // Mirror the paid state onto the claim record itself (the Workflow Test
+  // Buttons would have done this; the invoicing UI didn't until now).
+  claims = claims.map(function(c){
+    return c.id === claim.id ? Object.assign({}, c, {status:'paid', paidDate: new Date().toISOString().slice(0,10)}) : c;
+  });
+  if (typeof saveJobClaims === 'function') saveJobClaims(inv.jobId, claims);
+
+  // Decide what status this claim should drive the job to.
+  var nextStatus = null;
+  if      (claim.id === 'cl_cm')    nextStatus = 'c1_final_sign_off';
+  else if (claim.id === 'cl_final') nextStatus = 'h_completed_standard';
+  if (!nextStatus) return;
+
+  var jobs = getState().jobs || [];
+  var job  = jobs.find(function(j){ return j.id === inv.jobId; });
+  if (!job) return;
+
+  // Don't regress \u2014 if the job is already at or past the target status,
+  // do nothing. STATUS_ORDER mirrors the manual's pipeline.
+  var STATUS_ORDER = [
+    'a_check_measure','c_awaiting_2nd_payment','c1_final_sign_off',
+    'c2_order_schedule_standard','c3_order_schedule_service',
+    'd1_awaiting_material','d2_material_at_factory','d3_cutting',
+    'd4_milling_steel_welding','d5_hardware_revealing',
+    'e_dispatch_standard','e1_dispatch_service','f_installing',
+    'b_check_status','g_final_payment','h_completed_standard','h1_completed_service'
+  ];
+  var curIdx = STATUS_ORDER.indexOf(job.status);
+  var newIdx = STATUS_ORDER.indexOf(nextStatus);
+  if (curIdx >= 0 && newIdx >= 0 && newIdx <= curIdx) return;
+
+  // Force-advance via direct setState. canTransition's specific rule for
+  // a\u2192c requires cmDocUrl which may not be set if CM came in via a non-CAD
+  // path; we trust the paid-invoice signal as authoritative.
+  var now = new Date().toISOString();
+  var cu  = (typeof getCurrentUser === 'function' && getCurrentUser()) || {id:'system', name:'System'};
+  var hist = (job.statusHistory || []).concat([{
+    status: nextStatus, at: now, by: cu.id,
+    note: 'Auto-advance after invoice marked paid (' + (claim.stage || claim.id) + ')'
+  }]);
+  setState({ jobs: (getState().jobs||[]).map(function(j) {
+    return j.id === inv.jobId ? Object.assign({}, j, { status: nextStatus, statusHistory: hist }) : j;
+  })});
+  try { if (typeof dbUpdate === 'function') dbUpdate('jobs', inv.jobId, { status: nextStatus }); }
+  catch (e) { console.warn('[invoicing] dbUpdate status failed:', e); }
+  if (typeof logJobAudit === 'function') {
+    logJobAudit(inv.jobId, 'Status Advanced (Invoice Paid)', (claim.stage || claim.id) + ' \u2192 ' + nextStatus);
+  }
 }
 
 function voidInvoice(invId) { if (!confirm('Void this invoice?')) return; updateInvoiceStatus(invId, 'void'); }
