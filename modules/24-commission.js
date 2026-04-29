@@ -2053,7 +2053,102 @@ function _renderTeamRollupTab(allWon, status, allReps) {
   return html;
 }
 
+// ── MOBILE: COMMISSION — black hero + filter cards + line list ───────────────
+var _mobileCommissionFilter = 'all';
+function renderCommissionMobile() {
+  var st = getState();
+  var deals = st.deals || [];
+  var contacts = st.contacts || [];
+  var jobs = st.jobs || [];
+  var cu = getCurrentUser() || {};
+  var myName = cu.name || '';
+  var role = cu.role || '';
+  var isManager = role === 'admin' || role === 'sales_manager' || role === 'accounts';
+  var wonDeals = deals.filter(function(d){ return d.won && (isManager || d.rep === myName); });
+  // Read paid map persisted by desktop commission flow.
+  var paidMap = {};
+  try { paidMap = JSON.parse(localStorage.getItem('spartan_paid_commissions') || '{}'); } catch(e) {}
+  var lines = wonDeals.map(function(d){
+    var exGst = (d.val || 0) / 1.1;
+    var commission = exGst * 0.05;
+    var job = jobs.find(function(j){ return j.dealId === d.id; });
+    var status = 'pending';
+    var isPaid = !!paidMap[d.id];
+    if (isPaid) status = 'paid';
+    else if (job && (job.finalSignedAt || (job.status && String(job.status).indexOf('completed') >= 0))) status = 'due';
+    return { deal: d, commission: commission, exGst: exGst, status: status, isPaid: isPaid, job: job };
+  });
+  var filter = _mobileCommissionFilter || 'all';
+  var filtered = filter === 'all' ? lines : lines.filter(function(l){ return l.status === filter; });
+  filtered.sort(function(a, b){ return (b.deal.wonDate || '').localeCompare(a.deal.wonDate || ''); });
+  var totals = { paid: 0, due: 0, pending: 0, total: 0 };
+  lines.forEach(function(l){
+    totals.total += l.commission;
+    if (l.status === 'paid') totals.paid += l.commission;
+    else if (l.status === 'due') totals.due += l.commission;
+    else totals.pending += l.commission;
+  });
+  function fmtK(n) {
+    var v = Number(n) || 0;
+    if (v >= 1000000) return '$' + (v/1000000).toFixed(1) + 'M';
+    if (v >= 1000) return '$' + Math.round(v/1000) + 'k';
+    return '$' + v.toFixed(0);
+  }
+  function fmt$(n) { return '$' + (Number(n) || 0).toLocaleString('en-AU', { maximumFractionDigits: 0 }); }
+  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+  function statTile(label, val, count, col, key) {
+    var on = filter === key;
+    return '<button onclick="_mobileCommissionFilter=\'' + key + '\';renderPage()" style="background:' + (on ? col : '#fff') + ';border-radius:12px;padding:12px;text-align:left;border:none;cursor:pointer;font-family:inherit;width:100%;box-shadow:0 1px 3px rgba(0,0,0,.06);' + (on ? 'color:#fff' : 'color:#0a0a0a') + '">' +
+      '<div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-bottom:6px;color:' + (on ? '#fff' : col) + ';opacity:' + (on ? '.9' : '1') + '">' + label + '</div>' +
+      '<div style="font-size:18px;font-weight:800;font-family:Syne,sans-serif;line-height:1">' + fmtK(val) + '</div>' +
+      '<div style="font-size:10px;margin-top:3px;opacity:' + (on ? '.85' : '.7') + '">' + count + ' deal' + (count===1?'':'s') + '</div>' +
+    '</button>';
+  }
+  function lineCard(l) {
+    var d = l.deal;
+    var c = contacts.find(function(x){ return x.id === d.cid; });
+    var name = c ? (c.fn + ' ' + c.ln) : (d.title || 'Deal');
+    var statusCol = l.status === 'paid' ? '#22c55e' : l.status === 'due' ? '#c41230' : '#f59e0b';
+    var statusLabel = l.status === 'paid' ? '✓ Paid' : l.status === 'due' ? '💰 Due' : '⏳ Pending';
+    return '<button onclick="setState({dealDetailId:\'' + _esc(d.id) + '\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ' + statusCol + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:13px;font-weight:700;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
+          '<div style="font-size:11px;color:#6b7280;margin-top:2px">Won ' + (d.wonDate || '—') + ' · Deal ' + fmtK(d.val) + '</div>' +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0">' +
+          '<div style="font-size:14px;font-weight:800;font-family:Syne,sans-serif;color:#0a0a0a">' + fmt$(l.commission) + '</div>' +
+          '<span style="display:inline-block;font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;background:' + statusCol + '20;color:' + statusCol + ';margin-top:3px">' + statusLabel + '</span>' +
+        '</div>' +
+      '</div>' +
+    '</button>';
+  }
+  return '' +
+    '<div style="margin:-12px -12px 0;padding:18px 16px 22px;background:#0a0a0a;color:#fff">' +
+      '<div style="font-size:11px;opacity:.6;margin-bottom:2px">Commission earned</div>' +
+      '<h1 style="font-size:28px;font-weight:800;margin:0;font-family:Syne,sans-serif">' + fmt$(totals.total) + '</h1>' +
+      '<div style="font-size:11px;opacity:.5;margin-top:4px">' + lines.length + ' won deal' + (lines.length===1?'':'s') + ' · 5% base rate ex-GST</div>' +
+    '</div>' +
+    '<div style="margin-top:-10px">' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">' +
+        statTile('✓ Paid', totals.paid, lines.filter(function(l){ return l.isPaid; }).length, '#22c55e', 'paid') +
+        statTile('💰 Due', totals.due, lines.filter(function(l){ return l.status === 'due'; }).length, '#c41230', 'due') +
+        statTile('⏳ Pending', totals.pending, lines.filter(function(l){ return l.status === 'pending'; }).length, '#f59e0b', 'pending') +
+        statTile('Total', totals.total, lines.length, '#0a0a0a', 'all') +
+      '</div>' +
+    '</div>' +
+    '<div style="background:#fef9c3;border:1px solid #fde68a;border-radius:12px;padding:10px 12px;margin-bottom:12px;font-size:11px;color:#92400e;display:flex;align-items:flex-start;gap:8px">' +
+      '<span style="flex-shrink:0">💡</span>' +
+      '<div><strong>Rule:</strong> Commission becomes DUE only after Final Sign-Off completes. Pending = awaiting that step.</div>' +
+    '</div>' +
+    '<h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin:14px 4px 8px">' + (filter === 'all' ? 'All commissions' : filter.charAt(0).toUpperCase() + filter.slice(1)) + ' <span style="color:#9ca3af;font-weight:600">' + filtered.length + '</span></h2>' +
+    (filtered.length === 0
+      ? '<div style="padding:40px 20px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:13px;font-style:italic">No commissions in this view</div>'
+      : filtered.map(lineCard).join(''));
+}
+
 function renderCommissionPage() {
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) return renderCommissionMobile();
   var cu = getCurrentUser() || {role:'viewer',name:'',id:''};
   var isAdmin = cu.role === 'admin' || cu.role === 'accounts';
   var isManager = cu.role === 'sales_manager';

@@ -1234,8 +1234,101 @@ function emailUseTemplate(tmpl) {
   });
 }
 
+// ── MOBILE: EMAIL — tracking-focused list ─────────────────────────────────────
+// Sales reps don't compose email on mobile (no Gmail OAuth token in the
+// wrapper) — this view is read-only tracking: which emails have been
+// opened/clicked since last check.
+var _mobileEmailFolder = 'sent';
+var _mobileEmailSearch = '';
+function renderEmailMobile() {
+  var st = getState();
+  var emailSent = st.emailSent || [];
+  var emailInbox = st.emailInbox || [];
+  var totalSent = emailSent.length;
+  var openedCount = emailSent.filter(function(e){ return e.opened; }).length;
+  var clickedCount = emailSent.filter(function(e){ return e.clicked; }).length;
+  var openRate = totalSent ? Math.round(openedCount / totalSent * 100) : 0;
+  var folder = _mobileEmailFolder || 'sent';
+  var search = _mobileEmailSearch || '';
+  var emails;
+  if (folder === 'sent') emails = emailSent;
+  else if (folder === 'inbox') emails = emailInbox;
+  else if (folder === 'opened') emails = emailSent.filter(function(e){ return e.opened; });
+  else if (folder === 'unopened') emails = emailSent.filter(function(e){ return !e.opened; });
+  else emails = emailSent;
+  emails = emails.slice().sort(function(a, b){
+    return ((b.date||'') + (b.time||'')).localeCompare((a.date||'') + (a.time||''));
+  });
+  if (search) {
+    var s2 = search.toLowerCase();
+    emails = emails.filter(function(e){
+      return ((e.subject||'') + ' ' + (e.body||'') + ' ' + (e.to||'') + ' ' + (e.from||'')).toLowerCase().indexOf(s2) >= 0;
+    });
+  }
+  function _attrEsc(s) { return String(s||'').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+  function fmtRel(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    var days = Math.floor((Date.now() - d.getTime()) / 86400000);
+    if (isNaN(days)) return '';
+    if (days <= 0) return 'Today';
+    if (days === 1) return 'Yest';
+    if (days < 7) return days + 'd';
+    if (days < 30) return Math.floor(days/7) + 'w';
+    return Math.floor(days/30) + 'mo';
+  }
+  function emailCard(e) {
+    var recipient = e.to || e.from || '—';
+    var subject = e.subject || '(no subject)';
+    var preview = (e.body || '').replace(/<[^>]*>/g, '').slice(0, 80);
+    var isInbox = folder === 'inbox';
+    return '<div style="background:#fff;border-radius:12px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:13px;font-weight:700;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + recipient + '</div>' +
+          '<div style="font-size:12px;color:#374151;font-weight:500;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + subject + '</div>' +
+        '</div>' +
+        '<div style="font-size:10px;color:#9ca3af;flex-shrink:0">' + fmtRel(e.date) + '</div>' +
+      '</div>' +
+      (preview ? '<div style="font-size:11px;color:#6b7280;margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + preview + '</div>' : '') +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+        (e.opened
+          ? '<span style="display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:#dcfce7;color:#15803d">👁 ' + (e.opens || 1) + '× opened</span>'
+          : (!isInbox ? '<span style="font-size:9px;font-weight:600;padding:2px 7px;border-radius:10px;background:#f3f4f6;color:#6b7280">Not opened</span>' : '')) +
+        (e.clicked ? '<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:#dbeafe;color:#1d4ed8">Clicked</span>' : '') +
+        (isInbox && !e.read ? '<span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;background:#fef2f4;color:#c41230">New</span>' : '') +
+      '</div>' +
+    '</div>';
+  }
+  return '' +
+    '<div style="margin:-12px -12px 12px;background:#fff;padding:12px 16px;border-bottom:1px solid #f0f0f0">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">' +
+        '<div>' +
+          '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">Email tracking</h1>' +
+          '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + openRate + '% open rate</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">' +
+        '<div style="background:#f3f4f6;border-radius:8px;padding:8px;text-align:center"><div style="font-size:14px;font-weight:800;color:#0a0a0a">' + totalSent + '</div><div style="font-size:9px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;color:#6b7280">Sent</div></div>' +
+        '<div style="background:#dcfce7;border-radius:8px;padding:8px;text-align:center"><div style="font-size:14px;font-weight:800;color:#15803d">' + openedCount + '</div><div style="font-size:9px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;color:#15803d">Opened</div></div>' +
+        '<div style="background:#dbeafe;border-radius:8px;padding:8px;text-align:center"><div style="font-size:14px;font-weight:800;color:#1d4ed8">' + clickedCount + '</div><div style="font-size:9px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;color:#1d4ed8">Clicked</div></div>' +
+      '</div>' +
+      '<input value="' + _attrEsc(search) + '" oninput="_mobileEmailSearch=this.value;renderPage()" placeholder="Search subject, recipient…" style="width:100%;padding:8px 12px;background:#f3f4f6;border:none;border-radius:8px;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box" />' +
+    '</div>' +
+    '<div style="margin:0 -12px 12px;background:#fff;border-bottom:1px solid #e5e7eb;display:flex;overflow-x:auto;-webkit-overflow-scrolling:touch">' +
+      [{id:'sent',label:'Sent'},{id:'opened',label:'Opened'},{id:'unopened',label:'Unopened'},{id:'inbox',label:'Inbox'}].map(function(t){
+        var on = folder === t.id;
+        return '<button onclick="_mobileEmailFolder=\'' + t.id + '\';renderPage()" style="flex:1;min-width:80px;padding:10px;border:none;background:none;cursor:pointer;font-family:inherit;font-size:11px;font-weight:700;color:' + (on ? '#c41230' : '#6b7280') + ';border-bottom:2.5px solid ' + (on ? '#c41230' : 'transparent') + ';white-space:nowrap">' + t.label + '</button>';
+      }).join('') +
+    '</div>' +
+    (emails.length === 0
+      ? '<div style="padding:50px 20px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:13px"><div style="font-size:32px;margin-bottom:8px;opacity:.4">✉</div><div style="font-style:italic">' + (search ? 'No emails match your search' : 'No emails in this folder') + '</div><div style="font-size:11px;margin-top:8px;font-style:italic">Sent emails from the desktop CRM appear here automatically.</div></div>'
+      : emails.map(emailCard).join(''));
+}
+
 // ── MAIN PAGE RENDER ──────────────────────────────────────────────────────────
 function renderEmailPage() {
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) return renderEmailMobile();
   const s = getState();
   if (s.gmailConnected) gmailSyncEmails();
   // Pull real opens from Supabase (written by api/track.js tracking pixel) and

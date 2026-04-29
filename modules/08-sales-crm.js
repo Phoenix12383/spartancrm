@@ -620,9 +620,68 @@ function renderDashboard() {
   </div>`;
 }
 
+// ── MOBILE: CONTACTS — vertical card list ─────────────────────────────────────
+function renderContactsMobile() {
+  var contacts = getState().contacts || [];
+  var q = (cSearch || '').toLowerCase();
+  var filtered = contacts.filter(function(c){
+    if (q && (c.fn + ' ' + c.ln).toLowerCase().indexOf(q) < 0
+        && (c.email||'').toLowerCase().indexOf(q) < 0
+        && (c.phone||'').indexOf(q) < 0) return false;
+    if (cBranch !== 'all' && c.branch !== cBranch) return false;
+    if (cType !== 'all' && c.type !== cType) return false;
+    return true;
+  });
+  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+  function _attrEsc(s) { return String(s||'').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+  function _initials(name) { return (name || '').split(' ').map(function(w){ return (w[0] || '').toUpperCase(); }).join('').slice(0,2); }
+  function contactCard(c) {
+    var fullName = (c.fn || '') + ' ' + (c.ln || '');
+    return '<button onclick="setState({contactDetailId:\'' + _esc(c.id) + '\',page:\'contacts\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px">' +
+      '<div style="display:flex;align-items:center;gap:10px">' +
+        '<div style="width:36px;height:36px;border-radius:50%;background:#0a0a0a;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;flex-shrink:0">' + _initials(fullName) + '</div>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:14px;font-weight:700;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + fullName.trim() + '</div>' +
+          (c.co ? '<div style="font-size:11px;color:#6b7280;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + c.co + '</div>' : '') +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0">' +
+          (c.type ? '<span style="display:inline-block;font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;background:#f3f4f6;color:#6b7280;text-transform:capitalize">' + c.type + '</span>' : '') +
+          (c.branch ? '<div style="font-size:9px;color:#9ca3af;margin-top:3px;font-weight:600">' + c.branch + '</div>' : '') +
+        '</div>' +
+      '</div>' +
+      ((c.phone || c.email) ? '<div style="display:flex;align-items:center;gap:10px;font-size:11px;color:#6b7280;border-top:1px solid #f3f4f6;padding-top:8px;margin-top:8px;overflow:hidden">' +
+        (c.phone ? '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">📞 ' + c.phone + '</span>' : '') +
+        (c.email ? '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">✉ ' + c.email + '</span>' : '') +
+      '</div>' : '') +
+    '</button>';
+  }
+  return '' +
+    '<div style="margin:-12px -12px 12px;background:#fff;padding:12px 16px;border-bottom:1px solid #f0f0f0">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">' +
+        '<div>' +
+          '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">Contacts</h1>' +
+          '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + filtered.length + ' of ' + contacts.length + '</div>' +
+        '</div>' +
+        '<button onclick="openNewContactModal()" style="padding:6px 12px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">+ Add</button>' +
+      '</div>' +
+      '<input id="contactSearchInput" value="' + _attrEsc(cSearch) + '" oninput="cSearch=this.value;renderPage()" placeholder="Search name, email, phone…" style="width:100%;padding:8px 12px;background:#f3f4f6;border:none;border-radius:8px;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box;margin-bottom:8px" />' +
+      '<div style="display:flex;gap:4px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px">' +
+        ['all','residential','commercial'].map(function(t){
+          var on = cType === t;
+          var label = t === 'all' ? 'All' : t.charAt(0).toUpperCase() + t.slice(1);
+          return '<button onclick="cType=\'' + t + '\';renderPage()" style="flex-shrink:0;padding:5px 12px;border-radius:14px;border:1px solid ' + (on ? '#c41230' : '#e5e7eb') + ';background:' + (on ? '#c41230' : '#fff') + ';color:' + (on ? '#fff' : '#6b7280') + ';font-size:11px;font-weight:' + (on ? 700 : 600) + ';cursor:pointer;font-family:inherit;white-space:nowrap">' + label + '</button>';
+        }).join('') +
+      '</div>' +
+    '</div>' +
+    (filtered.length === 0
+      ? '<div style="padding:40px 20px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:13px;font-style:italic">No contacts found</div>'
+      : filtered.map(contactCard).join(''));
+}
+
 function renderContacts() {
   const { contacts, panel, contactDetailId } = getState();
   if (contactDetailId) return renderContactDetail() + (getState().editingContactId ? renderEditContactDrawer() : '');
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) return renderContactsMobile();
   const filt = contacts.filter(c => {
     const q = cSearch.toLowerCase();
     const matchQ = !q || (c.fn + ' ' + c.ln).toLowerCase().includes(q) || c.email.toLowerCase().includes(q) || c.phone.includes(q);

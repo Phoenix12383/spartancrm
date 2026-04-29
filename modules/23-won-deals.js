@@ -26,7 +26,74 @@ function wonToggleSort(col) {
   renderPage();
 }
 
+// ── MOBILE: WON DEALS — vertical card list ────────────────────────────────────
+function renderWonMobile() {
+  var contacts = getState().contacts || [];
+  var allWon = (getState().deals || []).filter(function(d){ return d.won; });
+  var now = new Date();
+  var thisMonth = now.getMonth();
+  var thisYear = now.getFullYear();
+  var filtered = allWon.slice();
+  if (wonFilterRange === 'thisMonth') filtered = filtered.filter(function(d){ if (!d.wonDate) return false; var wd = new Date(d.wonDate + 'T12:00:00'); return wd.getMonth() === thisMonth && wd.getFullYear() === thisYear; });
+  else if (wonFilterRange === 'lastMonth') { var lm = thisMonth === 0 ? 11 : thisMonth - 1; var ly = thisMonth === 0 ? thisYear - 1 : thisYear; filtered = filtered.filter(function(d){ if (!d.wonDate) return false; var wd = new Date(d.wonDate + 'T12:00:00'); return wd.getMonth() === lm && wd.getFullYear() === ly; }); }
+  else if (wonFilterRange === 'thisQuarter') { var q = Math.floor(thisMonth / 3); filtered = filtered.filter(function(d){ if (!d.wonDate) return false; var wd = new Date(d.wonDate + 'T12:00:00'); return Math.floor(wd.getMonth() / 3) === q && wd.getFullYear() === thisYear; }); }
+  else if (wonFilterRange === 'thisYear') filtered = filtered.filter(function(d){ if (!d.wonDate) return false; var wd = new Date(d.wonDate + 'T12:00:00'); return wd.getFullYear() === thisYear; });
+  if (wonSearch) {
+    var qSearch = wonSearch.toLowerCase();
+    filtered = filtered.filter(function(d){
+      var c = contacts.find(function(x){ return x.id === d.cid; });
+      var cName = c ? (c.fn + ' ' + c.ln).toLowerCase() : '';
+      return (d.title||'').toLowerCase().indexOf(qSearch) >= 0 || cName.indexOf(qSearch) >= 0 || (d.suburb||'').toLowerCase().indexOf(qSearch) >= 0;
+    });
+  }
+  filtered.sort(function(a, b){ return (b.wonDate || '').localeCompare(a.wonDate || ''); });
+  function fmtK(n) {
+    var v = Number(n) || 0;
+    if (v >= 1000000) return '$' + (v/1000000).toFixed(1) + 'M';
+    if (v >= 1000) return '$' + Math.round(v/1000) + 'k';
+    return '$' + v.toFixed(0);
+  }
+  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+  function _attrEsc(s) { return String(s||'').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+  var totalVal = filtered.reduce(function(s, d){ return s + (d.val || 0); }, 0);
+  function wonCard(d) {
+    var c = contacts.find(function(x){ return x.id === d.cid; });
+    var name = c ? (c.fn + ' ' + c.ln) : (d.title || 'Deal');
+    return '<button onclick="setState({dealDetailId:\'' + _esc(d.id) + '\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid #22c55e">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:14px;font-weight:700;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
+          '<div style="font-size:11px;color:#6b7280;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (d.suburb || '—') + (d.branch ? ' · ' + d.branch : '') + '</div>' +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0">' +
+          '<div style="font-size:14px;font-weight:800;font-family:Syne,sans-serif;color:#0a0a0a">' + fmtK(d.val) + '</div>' +
+          (d.wonDate ? '<div style="font-size:10px;color:#22c55e;font-weight:700;margin-top:1px">✓ ' + d.wonDate + '</div>' : '') +
+        '</div>' +
+      '</div>' +
+      (d.rep ? '<div style="font-size:10px;color:#6b7280;border-top:1px solid #f3f4f6;padding-top:8px;margin-top:8px">👤 ' + d.rep + '</div>' : '') +
+    '</button>';
+  }
+  return '' +
+    '<div style="margin:-12px -12px 12px;background:#fff;padding:12px 16px;border-bottom:1px solid #f0f0f0">' +
+      '<div style="margin-bottom:10px">' +
+        '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">Won Deals</h1>' +
+        '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + filtered.length + ' deal' + (filtered.length===1?'':'s') + ' · ' + fmtK(totalVal) + '</div>' +
+      '</div>' +
+      '<input value="' + _attrEsc(wonSearch) + '" oninput="wonSearch=this.value;renderPage()" placeholder="Search name, suburb…" style="width:100%;padding:8px 12px;background:#f3f4f6;border:none;border-radius:8px;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box;margin-bottom:8px" />' +
+      '<div style="display:flex;gap:4px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px">' +
+        [{id:'all',label:'All'},{id:'thisMonth',label:'This month'},{id:'lastMonth',label:'Last month'},{id:'thisQuarter',label:'This Q'},{id:'thisYear',label:'YTD'}].map(function(r){
+          var on = wonFilterRange === r.id;
+          return '<button onclick="wonFilterRange=\'' + r.id + '\';renderPage()" style="flex-shrink:0;padding:5px 12px;border-radius:14px;border:1px solid ' + (on ? '#c41230' : '#e5e7eb') + ';background:' + (on ? '#c41230' : '#fff') + ';color:' + (on ? '#fff' : '#6b7280') + ';font-size:11px;font-weight:' + (on ? 700 : 600) + ';cursor:pointer;font-family:inherit;white-space:nowrap">' + r.label + '</button>';
+        }).join('') +
+      '</div>' +
+    '</div>' +
+    (filtered.length === 0
+      ? '<div style="padding:40px 20px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:13px;font-style:italic">No won deals in this view</div>'
+      : filtered.map(wonCard).join(''));
+}
+
 function renderWonPage() {
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) return renderWonMobile();
   var deals = getState().deals.filter(function(d){ return d.won; });
   var contacts = getState().contacts;
   var now = new Date();

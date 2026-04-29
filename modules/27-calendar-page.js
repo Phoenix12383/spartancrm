@@ -417,7 +417,116 @@ function renderCalEventModal() {
     +'</div></div></div>';
 }
 
+// ── MOBILE: CALENDAR — week scroller with day cards ───────────────────────────
+var _mobileCalendarWeekOffset = 0;
+function renderCalendarMobile() {
+  var apts = (typeof MOCK_APPOINTMENTS !== 'undefined' && MOCK_APPOINTMENTS) ? MOCK_APPOINTMENTS : [];
+  var cu = getCurrentUser() || {};
+  var myName = cu.name || '';
+  var role = cu.role || '';
+  var isManager = role === 'admin' || role === 'sales_manager' || role === 'accounts';
+  var weekOffset = _mobileCalendarWeekOffset || 0;
+  function startOfWeek(d) {
+    var out = new Date(d);
+    var day = out.getDay();
+    var diff = day === 0 ? -6 : 1 - day;
+    out.setDate(out.getDate() + diff);
+    out.setHours(0, 0, 0, 0);
+    return out;
+  }
+  var weekStart = startOfWeek(new Date());
+  weekStart.setDate(weekStart.getDate() + weekOffset * 7);
+  var weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekEnd.getDate() + 6);
+  var weekStartStr = weekStart.toISOString().slice(0, 10);
+  var weekEndStr = weekEnd.toISOString().slice(0, 10);
+  var weekApts = apts.filter(function(a){
+    if (!a.date) return false;
+    if (a.date < weekStartStr || a.date > weekEndStr) return false;
+    if (!isManager && a.rep && a.rep !== myName) return false;
+    return true;
+  }).sort(function(a, b){
+    return (a.date + (a.time || '')).localeCompare(b.date + (b.time || ''));
+  });
+  var todayStr = new Date().toISOString().slice(0, 10);
+  var byDay = {};
+  for (var i = 0; i < 7; i++) {
+    var d2 = new Date(weekStart);
+    d2.setDate(d2.getDate() + i);
+    var k = d2.toISOString().slice(0, 10);
+    byDay[k] = { date: new Date(d2), apts: [] };
+  }
+  weekApts.forEach(function(a){
+    var k2 = a.date.slice(0, 10);
+    if (byDay[k2]) byDay[k2].apts.push(a);
+  });
+  function fmtTime12(t) {
+    if (!t) return '';
+    var p = t.split(':'); var hh = parseInt(p[0]); var mm = p[1] || '00';
+    var ap = hh >= 12 ? 'pm' : 'am'; var h12 = hh % 12 || 12;
+    return h12 + ':' + mm + ap;
+  }
+  function fmtWeekRange(start) {
+    var end = new Date(start); end.setDate(end.getDate() + 6);
+    var s1 = start.toLocaleDateString('en-AU', { day:'numeric', month:'short' });
+    var e1 = end.toLocaleDateString('en-AU', { day:'numeric', month:'short' });
+    return s1 + ' – ' + e1;
+  }
+  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+  function dayCard(key, info) {
+    var date = info.date;
+    var dayApts = info.apts;
+    var isToday = key === todayStr;
+    var dayName = date.toLocaleDateString('en-AU', { weekday:'long' });
+    var dayNum = date.getDate();
+    var monthShort = date.toLocaleDateString('en-AU', { month:'short' });
+    return '<div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:10px;' + (isToday ? 'outline:2px solid #c41230;outline-offset:-2px' : '') + '">' +
+      '<div style="padding:8px 12px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #f3f4f6;background:' + (isToday ? '#fef2f4' : '#f9fafb') + '">' +
+        '<div style="display:flex;align-items:center;gap:10px">' +
+          '<div style="text-align:center;min-width:36px">' +
+            '<div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:' + (isToday ? '#c41230' : '#6b7280') + '">' + dayName.slice(0,3) + '</div>' +
+            '<div style="font-size:18px;font-weight:800;line-height:1;color:' + (isToday ? '#c41230' : '#0a0a0a') + ';font-family:Syne,sans-serif">' + dayNum + '</div>' +
+          '</div>' +
+          '<span style="font-size:11px;color:#6b7280">' + monthShort + '</span>' +
+        '</div>' +
+        '<span style="font-size:10px;color:#6b7280;font-weight:600">' + (dayApts.length === 0 ? 'Free' : dayApts.length + ' event' + (dayApts.length===1?'':'s')) + '</span>' +
+      '</div>' +
+      (dayApts.length === 0
+        ? '<div style="padding:14px;font-size:11px;color:#9ca3af;font-style:italic;text-align:center">No appointments</div>'
+        : dayApts.map(function(a, idx){
+            var name = a.client || a.subject || 'Appointment';
+            var click = a.dealId ? "setState({dealDetailId:'" + _esc(a.dealId) + "'})" : '';
+            return '<button ' + (click ? 'onclick="' + click + '"' : '') + ' style="width:100%;text-align:left;padding:10px 12px;border:none;background:none;cursor:' + (click ? 'pointer' : 'default') + ';font-family:inherit;' + (idx > 0 ? 'border-top:1px solid #f3f4f6;' : '') + 'display:flex;align-items:center;gap:10px">' +
+              '<div style="font-size:11px;font-weight:800;color:#c41230;width:50px;flex-shrink:0">' + (fmtTime12(a.time) || '—') + '</div>' +
+              '<div style="flex:1;min-width:0">' +
+                '<div style="font-size:13px;font-weight:600;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
+                (a.suburb ? '<div style="font-size:10px;color:#6b7280;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📍 ' + a.suburb + (a.type ? ' · ' + a.type : '') + '</div>' : (a.type ? '<div style="font-size:10px;color:#6b7280;margin-top:1px">' + a.type + '</div>' : '')) +
+              '</div>' +
+              (a.dealId ? '<span style="color:#9ca3af;font-size:14px;flex-shrink:0">↗</span>' : '') +
+            '</button>';
+          }).join('')) +
+    '</div>';
+  }
+  return '' +
+    '<div style="margin:-12px -12px 12px;background:#fff;padding:12px 16px;border-bottom:1px solid #f0f0f0">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">' +
+        '<div>' +
+          '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">Calendar</h1>' +
+          '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + weekApts.length + ' event' + (weekApts.length===1?'':'s') + ' this week</div>' +
+        '</div>' +
+        '<button onclick="_mobileCalendarWeekOffset=0;renderPage()" style="padding:5px 12px;border-radius:14px;border:none;background:#fef2f4;color:#c41230;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">Today</button>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+        '<button onclick="_mobileCalendarWeekOffset=(_mobileCalendarWeekOffset||0)-1;renderPage()" style="padding:6px 14px;border:none;background:#f3f4f6;border-radius:8px;cursor:pointer;font-family:inherit;font-size:14px;color:#374151;font-weight:700">‹</button>' +
+        '<div style="font-size:13px;font-weight:700;color:#0a0a0a">' + fmtWeekRange(weekStart) + '</div>' +
+        '<button onclick="_mobileCalendarWeekOffset=(_mobileCalendarWeekOffset||0)+1;renderPage()" style="padding:6px 14px;border:none;background:#f3f4f6;border-radius:8px;cursor:pointer;font-family:inherit;font-size:14px;color:#374151;font-weight:700">›</button>' +
+      '</div>' +
+    '</div>' +
+    Object.keys(byDay).map(function(k){ return dayCard(k, byDay[k]); }).join('');
+}
+
 function renderCalendarPage() {
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) return renderCalendarMobile();
   var cu = getCurrentUser() || {name:'Admin',role:'admin'};
   var isRep = cu.role === 'sales_rep';
   // Rep filter: reps are locked to themselves; admins/managers can pick
