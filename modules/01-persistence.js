@@ -649,13 +649,13 @@ async function dbLoadAll() {
       var byJob = {};
       jobFilesRows.forEach(function(f) {
         if (!byJob[f.job_id]) byJob[f.job_id] = [];
-        // Field names must match what addJobFile / the UI reads (uploadedAt, id) — otherwise
-        // dates render as "Invalid Date" and the remove button has no row to target.
+        // Metadata only — the multi-MB base64 in f.data_url stays in Supabase
+        // and is fetched on demand via getJobFileDataUrl (17-install-schedule).
+        // Storing it locally blew the ~5 MB localStorage quota.
         byJob[f.job_id].push({
           id: f.id,
           name: f.name,
           category: f.category,
-          dataUrl: f.data_url,
           uploadedBy: f.uploaded_by,
           uploadedAt: f.created_at || f.uploaded_at || new Date().toISOString()
         });

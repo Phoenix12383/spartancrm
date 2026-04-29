@@ -409,16 +409,30 @@ function logJobAudit(jobId, action, detail, oldVal, newVal) {
   }
 }
 
-// ── Job Files (localStorage-backed + Supabase) ─────────────────────────────
+// ── Job Files (metadata in localStorage, base64 dataUrl in Supabase) ───────
+// localStorage holds only lightweight metadata. The actual PDF/image base64
+// lives in the Supabase job_files.data_url column and is fetched on demand
+// via getJobFileDataUrl / viewJobFile. Putting multi-MB base64 strings in
+// localStorage blew the ~5 MB origin quota after a couple of CM saves.
+window._jobFileBlobs = window._jobFileBlobs || {}; // session-only cache: id → dataUrl
+function _stripDataUrl(f) { return {id:f.id, name:f.name, category:f.category, uploadedBy:f.uploadedBy, uploadedAt:f.uploadedAt}; }
 function getJobFiles(jobId) { try{return JSON.parse(localStorage.getItem('spartan_files_'+jobId)||'[]');}catch(e){return [];} }
-function saveJobFiles(jobId, files) { localStorage.setItem('spartan_files_'+jobId, JSON.stringify(files)); }
+function saveJobFiles(jobId, files) {
+  // Always strip dataUrl before writing — protects against legacy entries
+  // and any caller that hands us full file objects.
+  var lean = (files||[]).map(_stripDataUrl);
+  try { localStorage.setItem('spartan_files_'+jobId, JSON.stringify(lean)); }
+  catch(e) { console.warn('[job_files] localStorage write failed for '+jobId, e); }
+}
 function addJobFile(jobId, name, category, dataUrl) {
   var files = getJobFiles(jobId);
   var user = getCurrentUser() || {name:'Admin'};
   var id = 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-  var fileObj = {id:id, name:name, category:category||'general', dataUrl:dataUrl, uploadedBy:user.name, uploadedAt:new Date().toISOString()};
+  var fileObj = {id:id, name:name, category:category||'general', uploadedBy:user.name, uploadedAt:new Date().toISOString()};
   files.push(fileObj);
   saveJobFiles(jobId, files);
+  // Cache the dataUrl in memory so View works immediately without round-trip.
+  window._jobFileBlobs[id] = dataUrl;
   // Send the same id to Supabase so local + remote stay aligned across reloads.
   if (typeof _sb !== 'undefined' && _sb) {
     dbInsert('job_files', {id:id, job_id:jobId, name:name, category:category||'general', data_url:dataUrl, uploaded_by:user.name});
@@ -430,6 +444,7 @@ function removeJobFile(jobId, fileId) {
   var files = getJobFiles(jobId);
   var file = files.find(function(f){return f.id===fileId;});
   saveJobFiles(jobId, files.filter(function(f){return f.id!==fileId;}));
+  delete window._jobFileBlobs[fileId];
   // Drop from Supabase so the file doesn't reappear on next dbLoadAll.
   if (typeof _sb !== 'undefined' && _sb) {
     try { _sb.from('job_files').delete().eq('id', fileId); } catch(e) { console.warn('job_files delete failed', fileId, e); }
@@ -437,6 +452,73 @@ function removeJobFile(jobId, fileId) {
   if (file) logJobAudit(jobId, 'File Removed', file.name);
   addToast('File removed', 'warning');
 }
+// Fetch the base64 dataUrl for a file. Memory cache first, then Supabase.
+async function getJobFileDataUrl(fileId) {
+  if (window._jobFileBlobs[fileId]) return window._jobFileBlobs[fileId];
+  if (typeof _sb === 'undefined' || !_sb) return null;
+  try {
+    var res = await _sb.from('job_files').select('data_url').eq('id', fileId).single();
+    if (res && res.data && res.data.data_url) {
+      window._jobFileBlobs[fileId] = res.data.data_url;
+      return res.data.data_url;
+    }
+  } catch(e) { console.warn('[job_files] fetch failed for '+fileId, e); }
+  return null;
+}
+// Open a job file in a new tab. Decodes base64 to a Blob so the browser
+// gets a real PDF stream instead of a multi-MB data: URL.
+async function viewJobFile(fileId, filename) {
+  var dataUrl = await getJobFileDataUrl(fileId);
+  if (!dataUrl) { addToast('File not found — try refreshing','warning'); return; }
+  try {
+    var commaIdx = dataUrl.indexOf(',');
+    var meta = dataUrl.slice(5, commaIdx); // "application/pdf;base64"
+    var mime = meta.split(';')[0] || 'application/pdf';
+    var b64  = dataUrl.slice(commaIdx + 1);
+    var bin  = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var blob = new Blob([bytes], {type: mime});
+    var url  = URL.createObjectURL(blob);
+    var w = window.open(url, '_blank');
+    if (!w) {
+      // Popup blocked — fall back to a download link.
+      var a = document.createElement('a'); a.href = url; a.download = filename || 'file'; document.body.appendChild(a); a.click(); a.remove();
+    }
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+  } catch(e) {
+    console.error('[job_files] viewJobFile failed', e);
+    addToast('Could not open file','error');
+  }
+}
+// One-time migration: strip dataUrl from any pre-existing spartan_files_*
+// entries on script load. Without this, users who already filled their
+// localStorage quota with base64 PDFs stay stuck — the next setItem still
+// throws QuotaExceededError because total across keys is over the limit.
+(function _migrateJobFilesLocalStorage() {
+  try {
+    var keys = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (k && k.indexOf('spartan_files_') === 0) keys.push(k);
+    }
+    var freed = 0;
+    keys.forEach(function(k) {
+      try {
+        var raw = localStorage.getItem(k) || '[]';
+        var arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return;
+        var hadBlob = arr.some(function(f){ return f && f.dataUrl; });
+        if (!hadBlob) return;
+        var lean = arr.map(_stripDataUrl);
+        var next = JSON.stringify(lean);
+        freed += raw.length - next.length;
+        localStorage.setItem(k, next);
+      } catch(e) { /* ignore individual key failures */ }
+    });
+    if (freed > 0) console.log('[job_files] migrated localStorage, freed ~' + Math.round(freed/1024) + ' KB');
+  } catch(e) { /* ignore */ }
+})();
 
 // ── Progress Claims ─────────────────────────────────────────────────────────
 function getJobClaims(jobId) { try{return JSON.parse(localStorage.getItem('spartan_claims_'+jobId)||'[]');}catch(e){return [];} }
