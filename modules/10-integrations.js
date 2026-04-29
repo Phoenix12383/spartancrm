@@ -76,25 +76,45 @@ function googleSignInForLoginNative() {
     .then(function(res){
       var profile = res && res.result && res.result.profile;
       if (!profile || !profile.email) { alert('Google Sign-In returned no profile.'); return; }
-      var users = getUsers();
-      var user = users.find(function(u){ return u.email.toLowerCase() === profile.email.toLowerCase() && u.active; });
-      if (!user) {
-        var el = document.getElementById('loginErr');
-        if (el) { el.textContent = 'Access denied. No active account for ' + profile.email + '. Contact your administrator.'; el.style.display = 'block'; }
-        return;
-      }
-      if (profile.imageUrl) {
-        var u2 = users.find(function(x){ return x.id === user.id; });
-        if (u2) { u2.googlePic = profile.imageUrl; saveUsers(users); }
-      }
-      setCurrentUser(user.id);
-      var displayName = profile.name || ((profile.givenName || '') + ' ' + (profile.familyName || '')).trim();
-      localStorage.setItem('spartan_gmail_profile_' + user.id, JSON.stringify({
-        email: profile.email,
-        name: displayName,
-        picture: profile.imageUrl || ''
-      }));
-      location.reload();
+      // Hydrate users from Supabase before the local lookup. Cold-start in the
+      // Capacitor WebView has empty localStorage, so getUsers() would only see
+      // DEFAULT_USERS (the bootstrap admin) and reject every other email.
+      // dbLoadAll only runs after login, so we do a users-only pull here.
+      var sbReady = typeof _sb !== 'undefined' && _sb;
+      if (!sbReady && typeof initSupabase === 'function') sbReady = initSupabase();
+      var pull = sbReady ? _sb.from('users').select('*') : Promise.resolve({data:null});
+      return Promise.resolve(pull).then(function(r){
+        if (r && r.data && r.data.length > 0) {
+          var dbUsers = r.data.map(function(u){
+            return { id:u.id, name:u.name, email:u.email, role:u.role, branch:u.branch,
+              phone:u.phone, initials:u.initials, active:u.active!==false,
+              customPerms:u.custom_perms||null,
+              serviceStates:Array.isArray(u.service_states)?u.service_states:null,
+              googlePic:u.google_pic||null,
+              pw:u.pw||'spartan2026' };
+          });
+          localStorage.setItem('spartan_users', JSON.stringify(dbUsers));
+        }
+        var users = getUsers();
+        var user = users.find(function(u){ return u.email.toLowerCase() === profile.email.toLowerCase() && u.active; });
+        if (!user) {
+          var el = document.getElementById('loginErr');
+          if (el) { el.textContent = 'Access denied. No active account for ' + profile.email + '. Contact your administrator.'; el.style.display = 'block'; }
+          return;
+        }
+        if (profile.imageUrl) {
+          var u2 = users.find(function(x){ return x.id === user.id; });
+          if (u2) { u2.googlePic = profile.imageUrl; saveUsers(users); }
+        }
+        setCurrentUser(user.id);
+        var displayName = profile.name || ((profile.givenName || '') + ' ' + (profile.familyName || '')).trim();
+        localStorage.setItem('spartan_gmail_profile_' + user.id, JSON.stringify({
+          email: profile.email,
+          name: displayName,
+          picture: profile.imageUrl || ''
+        }));
+        location.reload();
+      });
     })
     .catch(function(e){
       alert('Google Sign-In (mobile) error: ' + (e && e.message ? e.message : e));
