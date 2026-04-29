@@ -57,9 +57,11 @@
       // Tag each row's status. Distinguish "no CAD survey on file" from
       // "vehicles in fleet don't fit the surveyed frames" — they look the same
       // on the surface but mean very different things to the dispatcher.
+      // 'split' means no single truck fits but a multi-vehicle split is viable.
       rows.forEach(function(r){
         var hasFrames = r.rec.frames && r.rec.frames.length > 0;
         if (!hasFrames) r.statusKind = 'not_surveyed';
+        else if (!r.rec.recommended && r.rec.split && r.rec.split.ok) r.statusKind = 'split';
         else if (!r.rec.recommended) r.statusKind = 'no_fit';
         else if (r.conflict) r.statusKind = 'conflict';
         else if (r.rec.fit && r.rec.fit.borderline) r.statusKind = 'tight';
@@ -157,6 +159,10 @@
               if (r.statusKind === 'not_surveyed') {
                 statusLabel = '— Not Surveyed'; statusCol2 = '#9ca3af'; rowBg = '#fff';
                 vehicleCell = '<span style="color:#9ca3af;font-style:italic">awaiting CAD survey</span>';
+              } else if (r.statusKind === 'split') {
+                var n = r.rec.split.plan.length;
+                statusLabel = '↗ Split ('+n+' vehicles)'; statusCol2 = '#92400e'; rowBg = '#fffbeb';
+                vehicleCell = '<span style="color:#92400e;font-weight:600">'+r.rec.split.plan.map(function(s){return s.vehicle.name;}).join(' + ')+'</span>';
               } else if (r.statusKind === 'no_fit') {
                 statusLabel = '✕ No fit'; statusCol2 = '#7f1d1d'; rowBg = '#fef2f2';
                 vehicleCell = '<span style="color:#7f1d1d;font-style:italic">none fits</span>';
