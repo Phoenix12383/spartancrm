@@ -3,54 +3,110 @@
 //
 // Auth:  Authorization: Bearer <google-id-token>  (verified via tokeninfo).
 // Body:  { to, subject, body, cc?, entityId, entityType }
-// Sends: Gmail SMTP using a single shared Workspace account + App Password.
-//        The rep's name appears in the From display name; the rep's actual
-//        Gmail address goes in Reply-To so customer replies route to the
-//        right person directly.
-//
-// Service-account approach blocked by the iam.disableServiceAccountKeyCreation
-// org policy. SMTP + App Password works around this without GCP changes.
+// Sends: Gmail API on behalf of the rep, using a Workspace service account
+//        with domain-wide delegation. Each rep's email genuinely appears
+//        From: <rep@spartandoubleglazing.com.au> in the recipient's inbox.
 //
 // Logs:  inserts a row into email_sent and writes an 'email' activity on the
 //        deal/lead — same shape the desktop gmailSend produces, so timeline
 //        and tracking-pixel opens both work consistently.
 //
-// Env vars required (set in Vercel):
-//   GMAIL_USER          — the shared sender Gmail (e.g. sales@…com.au)
-//   GMAIL_APP_PASSWORD  — 16-char App Password generated for that account
-//   GOOGLE_CLIENT_ID    — the OAuth client used by the wrapper (id-token aud)
+// Env vars required (set in Vercel after the admin generates the key):
+//   GOOGLE_SERVICE_ACCOUNT_BASE64 — the downloaded JSON key, base64-encoded
+//   GOOGLE_CLIENT_ID              — the OAuth client used by the wrapper
 //   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY — already used by other endpoints
+//
+// Until GOOGLE_SERVICE_ACCOUNT_BASE64 is set, the endpoint returns 500 with
+// a clear "env var not set" message — the mobile compose modal surfaces that
+// in a toast. The rest of the app keeps working.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import nodemailer from 'nodemailer';
+import { createSign } from 'crypto';
 import { getServerSupabase } from '../_lib/supabase.js';
 import { verifyGoogleIdTokenAndLookupUser } from '../_lib/auth.js';
 
-// Cached transporter — Vercel keeps the function warm for short bursts so
-// re-using one connection avoids the 200ms SSL handshake per request.
-let _transporter = null;
-function getTransporter() {
-  if (_transporter) return _transporter;
-  const user = process.env.GMAIL_USER;
-  const pass = process.env.GMAIL_APP_PASSWORD;
-  if (!user || !pass) {
-    throw new Error('GMAIL_USER and GMAIL_APP_PASSWORD env vars required');
-  }
-  _transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,                       // SSL — Gmail also accepts STARTTLS on 587
-    auth: { user, pass },
-  });
-  return _transporter;
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const GMAIL_SEND_URL   = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send';
+
+// Decode the base64-encoded service account JSON from env. Cached after the
+// first call so we don't re-decode on every request.
+let _saCache = null;
+function getServiceAccount() {
+  if (_saCache) return _saCache;
+  const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_BASE64;
+  if (!b64) throw new Error('GOOGLE_SERVICE_ACCOUNT_BASE64 env var not set');
+  const json = Buffer.from(b64, 'base64').toString('utf-8');
+  _saCache = JSON.parse(json);
+  return _saCache;
 }
 
-// Builds the HTML body with the same open-tracking pixel pattern desktop's
-// gmailSend uses — opens flow into the email_sent.opens column via
-// /api/track and surface in the desktop activity timeline + email page.
-function buildHtmlBody({ body, sentId, userId }) {
+// Sign a JWT with the service account's private key, then exchange it at
+// Google's token endpoint for a Gmail-scoped access token impersonating
+// `subjectEmail`. Each call mints a fresh 1-hour token — no caching needed
+// at this scale; an email send is an interactive action.
+async function getImpersonatedAccessToken(subjectEmail) {
+  const sa = getServiceAccount();
+  const now = Math.floor(Date.now() / 1000);
+  const claim = {
+    iss: sa.client_email,
+    scope: 'https://www.googleapis.com/auth/gmail.send',
+    aud: GOOGLE_TOKEN_URL,
+    iat: now,
+    exp: now + 3600,
+    sub: subjectEmail,                  // domain-wide-delegation impersonation
+  };
+  const header = { alg: 'RS256', typ: 'JWT', kid: sa.private_key_id };
+
+  const b64url = (buf) => Buffer.from(buf).toString('base64')
+    .replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+
+  const headerB64 = b64url(JSON.stringify(header));
+  const claimB64  = b64url(JSON.stringify(claim));
+  const signingInput = `${headerB64}.${claimB64}`;
+
+  const signer = createSign('RSA-SHA256');
+  signer.update(signingInput);
+  signer.end();
+  const signature = signer.sign(sa.private_key);
+  const sigB64 = signature.toString('base64')
+    .replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const jwt = `${signingInput}.${sigB64}`;
+
+  const tokRes = await fetch(GOOGLE_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: jwt,
+    }),
+  });
+  if (!tokRes.ok) {
+    const text = await tokRes.text();
+    throw new Error(`Token exchange failed (${tokRes.status}): ${text}`);
+  }
+  const tok = await tokRes.json();
+  if (!tok.access_token) throw new Error('Token exchange returned no access_token');
+  return tok.access_token;
+}
+
+// Build an RFC 822 message ready for base64url encoding into Gmail's raw-
+// message API. Mirrors the desktop gmailSend single-part path: HTML body
+// with newlines→<br> and an open-tracking pixel appended.
+function buildRfc822({ to, cc, fromEmail, fromName, subject, body, sentId, userId }) {
   const trackingPixel = `<img src="https://spaartan.tech/api/track?id=${encodeURIComponent(sentId)}&uid=${encodeURIComponent(userId || '')}" width="1" height="1" alt="" style="display:none !important;opacity:0" />`;
-  return (body || '').replace(/\r?\n/g, '<br>') + trackingPixel;
+  const htmlBody = (body || '').replace(/\r?\n/g, '<br>') + trackingPixel;
+  const fromHeader = fromName ? `"${fromName}" <${fromEmail}>` : fromEmail;
+  const lines = [
+    `To: ${to}`,
+    cc ? `Cc: ${cc}` : '',
+    `From: ${fromHeader}`,
+    `Subject: ${subject}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=utf-8',
+    '',
+    htmlBody,
+  ].filter(Boolean);
+  return lines.join('\r\n');
 }
 
 export default async function handler(req, res) {
@@ -62,47 +118,65 @@ export default async function handler(req, res) {
   // Auth — wrapper signs in via @capgo/capacitor-social-login and persists
   // the resulting Google idToken in localStorage. Mobile sends it as
   // Authorization: Bearer <idToken>; we verify against tokeninfo and pull
-  // the matching Spartan user.
+  // the matching Spartan user. The endpoint then impersonates that same
+  // email via the service account + domain-wide delegation.
   const auth = await verifyGoogleIdTokenAndLookupUser(req);
   if (auth.error) return res.status(auth.status).json({ error: auth.error });
   const user = auth.user;
+  const fromEmail = user.email;
 
   const { to, cc, subject, body, entityId, entityType } = req.body || {};
   if (!to || !subject || !body) {
     return res.status(400).json({ error: 'to, subject and body are required' });
   }
 
-  // Shape the sender for clarity. Recipient sees:
-  //   From:  "James Wilson — Spartan Double Glazing" <sales@…>
-  //   Reply-To: james@spartandoubleglazing.com.au
-  // So they identify the rep, can reply directly to the rep, but our shared
-  // sender account stays in control of the outbound mail.
-  const sharedSender = process.env.GMAIL_USER;
-  const fromHeader = `"${user.name} — Spartan Double Glazing" <${sharedSender}>`;
-
-  // Pre-allocate the email_sent id so the tracking pixel URL inside the
-  // body matches the row we'll insert below — same trick desktop uses.
-  const sentId = 'es' + Date.now();
-
-  let messageId = null;
+  // Mint an impersonated access token. Errors here are configuration
+  // problems (env var missing, domain-wide-delegation not authorised in
+  // Workspace, wrong scopes) — bubble them up so the mobile toast surfaces
+  // the actual cause.
+  let accessToken;
   try {
-    const transporter = getTransporter();
-    const info = await transporter.sendMail({
-      from: fromHeader,
-      to, cc: cc || undefined,
-      replyTo: user.email,
-      subject,
-      html: buildHtmlBody({ body, sentId, userId: user.id }),
-    });
-    messageId = info.messageId || null;
+    accessToken = await getImpersonatedAccessToken(fromEmail);
   } catch (e) {
-    console.error('[/api/email/send] SMTP send failed:', e.message);
-    return res.status(502).json({ error: 'Send failed: ' + e.message });
+    console.error('[/api/email/send] token exchange failed:', e.message);
+    return res.status(500).json({ error: 'Email service auth failed: ' + e.message });
   }
 
-  // Persist email_sent row + activity. Best-effort — if these fail the email
-  // already went out, so we still return 200 but include warnings. Realtime
-  // subscribers (desktop, other wrappers) pick the row up automatically.
+  // Pre-allocate the email_sent id so the tracking-pixel URL inside the
+  // body matches the row we'll insert below — same trick as desktop.
+  const sentId = 'es' + Date.now();
+  const raw822 = buildRfc822({
+    to, cc, fromEmail, fromName: user.name,
+    subject, body, sentId, userId: user.id,
+  });
+  const rawB64 = Buffer.from(raw822, 'utf-8').toString('base64')
+    .replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+
+  let gmailMsgId = null;
+  try {
+    const sendRes = await fetch(GMAIL_SEND_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ raw: rawB64 }),
+    });
+    if (!sendRes.ok) {
+      const errText = await sendRes.text();
+      console.error('[/api/email/send] gmail.send failed:', sendRes.status, errText);
+      return res.status(502).json({ error: 'Gmail send failed', detail: errText });
+    }
+    const sent = await sendRes.json();
+    gmailMsgId = sent.id || null;
+  } catch (e) {
+    console.error('[/api/email/send] gmail.send threw:', e.message);
+    return res.status(502).json({ error: 'Gmail send failed: ' + e.message });
+  }
+
+  // Persist email_sent row + activity. Best-effort — the email is already
+  // sent; if these fail we still return 200 but include warnings. Realtime
+  // subscribers (desktop, other wrappers) pick the row up on success.
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10);
   const timeStr = now.toTimeString().slice(0, 5);
@@ -116,7 +190,7 @@ export default async function handler(req, res) {
       subject, body: (body || '').slice(0, 200),
       date: dateStr, time: timeStr,
       by_user: user.name,
-      gmail_msg_id: messageId,
+      gmail_msg_id: gmailMsgId,
       deal_id: entityType === 'deal' ? entityId : null,
       lead_id: entityType === 'lead' ? entityId : null,
       contact_id: entityType === 'contact' ? entityId : null,
@@ -134,7 +208,7 @@ export default async function handler(req, res) {
         type: 'email', subject, text: body,
         by_user: user.name, date: dateStr, time: timeStr,
         to_addr: to, cc: cc || '',
-        gmail_msg_id: messageId,
+        gmail_msg_id: gmailMsgId,
         opens: 0, opened: false, clicked: false,
         done: false, due_date: '',
       });
@@ -143,7 +217,7 @@ export default async function handler(req, res) {
   }
 
   return res.status(200).json({
-    ok: true, sentId, messageId,
+    ok: true, sentId, gmailMsgId,
     warnings: warnings.length ? warnings : undefined,
   });
 }
