@@ -124,14 +124,13 @@ Deno.serve(async (req) => {
   }
   const sb = createClient(supabaseUrl, serviceRoleKey);
 
-  // Find the job this envelope belongs to. We store the envelope ID on the job
-  // when sending. If we haven't yet added a docusign_envelope_id column, fall
-  // back to a metadata search — the CRM-side store of envelope→job mapping is
-  // expected to be the system of record.
+  // Find the job this envelope belongs to. Final Design envelopes are stored
+  // on docusign_envelope_id; Variation envelopes go to variation_envelope_id
+  // (so a single job can have one of each in flight). Match either column.
   const { data: jobs, error: lookupErr } = await sb
     .from('jobs')
-    .select('id, docusign_envelope_id, status')
-    .eq('docusign_envelope_id', envelopeId)
+    .select('id, docusign_envelope_id, variation_envelope_id, status')
+    .or(`docusign_envelope_id.eq.${envelopeId},variation_envelope_id.eq.${envelopeId}`)
     .limit(1);
 
   if (lookupErr) {
