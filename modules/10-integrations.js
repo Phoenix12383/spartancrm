@@ -21,6 +21,11 @@ let gmailInboxContact = null;
 
 // ── Google Sign-In for login ─────────────────────────────────────────────────
 function googleSignInForLogin() {
+  // Capacitor native wrapper: GIS popup flow can't return to a custom-scheme
+  // URL inside a WebView, so route to the native plugin instead.
+  if (window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform()) {
+    return googleSignInForLoginNative();
+  }
   if (!GMAIL_CLIENT_ID) { alert('Admin must set Google Client ID first in Settings > Email & Gmail'); return; }
   if (typeof google === 'undefined') { alert('Google Sign-In not loaded. Check internet connection.'); return; }
   try {
@@ -49,6 +54,48 @@ function googleSignInForLogin() {
     });
     client.requestAccessToken();
   } catch(e) { alert('Google Sign-In error: ' + e.message); }
+}
+
+// ── Capacitor native Google Sign-In (Android/iOS wrapper) ────────────────────
+// Uses @capgo/capacitor-social-login. webClientId is configured in the
+// wrapper's capacitor.config.json, so we don't need to pass scopes for Gmail
+// or Calendar here — those APIs need a separate authorization flow on native
+// and are deliberately unsupported in the wrapper for now. The user can sign
+// in and use CRM features; email/calendar features stay in their disconnected
+// state on mobile.
+function googleSignInForLoginNative() {
+  var SocialLogin = window.Capacitor.Plugins && window.Capacitor.Plugins.SocialLogin;
+  if (!SocialLogin) { alert('Native Google Sign-In plugin not available.'); return; }
+  SocialLogin.initialize({ google: { webClientId: GMAIL_CLIENT_ID } })
+    .then(function(){
+      return SocialLogin.login({ provider: 'google', options: { scopes: ['email','profile'] } });
+    })
+    .then(function(res){
+      var profile = res && res.result && res.result.profile;
+      if (!profile || !profile.email) { alert('Google Sign-In returned no profile.'); return; }
+      var users = getUsers();
+      var user = users.find(function(u){ return u.email.toLowerCase() === profile.email.toLowerCase() && u.active; });
+      if (!user) {
+        var el = document.getElementById('loginErr');
+        if (el) { el.textContent = 'Access denied. No active account for ' + profile.email + '. Contact your administrator.'; el.style.display = 'block'; }
+        return;
+      }
+      if (profile.imageUrl) {
+        var u2 = users.find(function(x){ return x.id === user.id; });
+        if (u2) { u2.googlePic = profile.imageUrl; saveUsers(users); }
+      }
+      setCurrentUser(user.id);
+      var displayName = profile.name || ((profile.givenName || '') + ' ' + (profile.familyName || '')).trim();
+      localStorage.setItem('spartan_gmail_profile_' + user.id, JSON.stringify({
+        email: profile.email,
+        name: displayName,
+        picture: profile.imageUrl || ''
+      }));
+      location.reload();
+    })
+    .catch(function(e){
+      alert('Google Sign-In (mobile) error: ' + (e && e.message ? e.message : e));
+    });
 }
 
 // ── Auto-restore Gmail connection on login ───────────────────────────────────
