@@ -202,6 +202,10 @@ function renderPage(){
   if (typeof mountInlineGoogleMap === 'function') mountInlineGoogleMap();
   if (typeof mountServiceGoogleMap === 'function') mountServiceGoogleMap();
   if (typeof mountCMGoogleMap === 'function') mountCMGoogleMap();
+  // Native mobile deals: put the swipe container back at the active stage
+  // after innerHTML rewrites the DOM (otherwise every renderPage snaps it to
+  // column 0). No-op on non-deals pages and on desktop.
+  if (typeof _restoreDealsKanbanScroll === 'function') _restoreDealsKanbanScroll();
   setTimeout(function(){ _activeAutocompletes={}; attachAllAutocomplete(); }, 100);
 }
 

@@ -1405,9 +1405,281 @@ function unhighlightAllCols() {
 }
 
 
+// ── MOBILE: DEALS — swipeable column layout ───────────────────────────────────
+// Pipeline switcher → filter chip + collapsible panel → stage tab strip →
+// full-width swipeable columns (CSS scroll-snap). Tabs and scroll position
+// stay in sync via _onDealsKanbanScroll (called on native scroll events) and
+// _restoreDealsKanbanScroll (called from renderPage after each innerHTML
+// write so scroll position survives state-driven re-renders).
+function renderDealsMobile() {
+  var st = getState();
+  var deals = st.deals || [];
+  var contacts = st.contacts || [];
+  var pl = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === dPipeline; });
+  if (!pl) pl = (typeof PIPELINES !== 'undefined' && PIPELINES[0]) || null;
+  if (!pl) return '<div style="padding:40px;text-align:center;color:#9ca3af">No pipeline configured</div>';
+  var stages = pl.stages.slice().sort(function(a,b){ return a.ord - b.ord; });
+  var pDeals = deals.filter(function(d){ return d.pid === dPipeline; });
+
+  // Apply filters (same shape as desktop's `matchesFilter`).
+  function matches(d) {
+    if (kFilterOwners.length > 0 && kFilterOwners.indexOf(d.rep) < 0) return false;
+    if (kFilterValMin !== '' && d.val < parseFloat(kFilterValMin)) return false;
+    if (kFilterValMax !== '' && d.val > parseFloat(kFilterValMax)) return false;
+    if (kFilterSource.length > 0) {
+      var c = contacts.find(function(x){ return x.id === d.cid; });
+      if (!c || kFilterSource.indexOf(c.source) < 0) return false;
+    }
+    return true;
+  }
+  var filteredDeals = pDeals.filter(matches);
+
+  var byStage = {};
+  stages.forEach(function(s){ byStage[s.id] = []; });
+  filteredDeals.forEach(function(d){ if (byStage[d.sid]) byStage[d.sid].push(d); });
+
+  // Each column sorted: stale first, then by value desc.
+  Object.keys(byStage).forEach(function(k){
+    byStage[k].sort(function(a, b){
+      var sA = (a.age || 0) > 7 ? 1 : 0;
+      var sB = (b.age || 0) > 7 ? 1 : 0;
+      if (sA !== sB) return sB - sA;
+      return (b.val || 0) - (a.val || 0);
+    });
+  });
+
+  // Default selection: first stage with deals, or first stage if all empty.
+  var sel = _mobileDealStageId;
+  if (!sel || !byStage[sel]) {
+    var firstWithDeals = stages.find(function(s){ return (byStage[s.id]||[]).length > 0; });
+    sel = (firstWithDeals || stages[0]).id;
+    _mobileDealStageId = sel;
+  }
+
+  var allOwners = Array.from(new Set(deals.map(function(d){ return d.rep; }).filter(Boolean))).sort();
+  var totalOpen = filteredDeals.filter(function(d){ return !d.won && !d.lost; });
+  var totalVal = totalOpen.reduce(function(s,d){ return s + (d.val||0); }, 0);
+  var activeFilters = kFilterOwners.length + (kFilterValMin?1:0) + (kFilterValMax?1:0);
+  var cu = getCurrentUser();
+  var isManager = cu && (cu.role === 'admin' || cu.role === 'sales_manager' || cu.role === 'accounts');
+
+  function fmtK(n) {
+    var v = Number(n) || 0;
+    if (v >= 1000000) return '$' + (v/1000000).toFixed(1) + 'M';
+    if (v >= 1000) return '$' + Math.round(v/1000) + 'k';
+    return '$' + v.toFixed(0);
+  }
+  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+  function _initials(name) {
+    return (name || '').split(' ').map(function(w){ return (w[0] || '').toUpperCase(); }).join('').slice(0,2);
+  }
+
+  // Card renderer — top row: name+address / value+quotes; bottom row:
+  // rep avatar, activity dot, source, stale clock. Red outline when very stale.
+  function dealCard(d, stage) {
+    var c = contacts.find(function(x){ return x.id === d.cid; });
+    var name = c ? (c.fn + ' ' + c.ln) : (d.title || 'Untitled');
+    var stale = (d.age || 0) > 7;
+    var veryStale = (d.age || 0) > 14;
+    var quoteCount = (d.quotes || []).length;
+    var hasRecentAct = (d.activities || []).some(function(a){
+      if (!a || !a.date) return false;
+      try { return (Date.now() - new Date(a.date).getTime()) < 48 * 3600 * 1000; }
+      catch(e) { return false; }
+    });
+    return '<button onclick="setState({dealDetailId:\'' + _esc(d.id) + '\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ' + stage.col + ';' + (veryStale ? 'outline:1px solid #fca5a5;outline-offset:-1px;' : '') + '">' +
+      // Top row
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:14px;font-weight:700;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
+          '<div style="font-size:11px;color:#6b7280;margin-top:2px;display:flex;align-items:center;gap:4px;overflow:hidden">' +
+            '\u{1f4cd}' +
+            (d.postcode ? ' <span style="font-weight:700">' + d.postcode + '</span>' : '') +
+            ' <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (d.suburb || '—') + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0">' +
+          '<div style="font-size:14px;font-weight:800;font-family:Syne,sans-serif;color:#0a0a0a">' + fmtK(d.val) + '</div>' +
+          (quoteCount > 0 ? '<div style="font-size:10px;color:#6b7280;margin-top:1px">' + quoteCount + ' quote' + (quoteCount===1?'':'s') + '</div>' : '') +
+        '</div>' +
+      '</div>' +
+      // Bottom row
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid #f3f4f6">' +
+        '<div style="display:flex;align-items:center;gap:6px;min-width:0">' +
+          (d.rep ? '<div title="' + _esc(d.rep) + '" style="width:20px;height:20px;border-radius:50%;background:#0a0a0a;color:#fff;font-size:9px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0">' + _initials(d.rep) + '</div>' : '') +
+          '<span title="' + (hasRecentAct ? 'Activity in last 48h' : 'Quiet') + '" style="width:6px;height:6px;border-radius:50%;background:' + (hasRecentAct ? '#22c55e' : '#cbd5e1') + ';flex-shrink:0"></span>' +
+          (c && c.source ? '<span style="font-size:10px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + c.source + '</span>' : '') +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:3px;flex-shrink:0;font-size:10px;font-weight:700;color:' + (stale ? '#dc2626' : '#9ca3af') + '">' +
+          (stale ? '⚠️ ' : '') +
+          '\u{1f553} ' + (d.age || 0) + 'd' +
+        '</div>' +
+      '</div>' +
+    '</button>';
+  }
+
+  // Column renderer — header + cards + swipe hint.
+  function stageColumn(stage) {
+    var cards = byStage[stage.id] || [];
+    var sumVal = cards.reduce(function(s,d){ return s + (d.val||0); }, 0);
+    return '<div data-stage-id="' + stage.id + '" style="flex-shrink:0;width:100%;height:100%;scroll-snap-align:start;padding:12px;overflow-y:auto;box-sizing:border-box">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;padding:0 2px">' +
+        '<div style="display:flex;align-items:center;gap:8px;min-width:0">' +
+          '<span style="width:8px;height:8px;border-radius:50%;background:' + stage.col + ';flex-shrink:0"></span>' +
+          '<span style="font-size:14px;font-weight:700;color:#0a0a0a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + stage.name + '</span>' +
+          '<span style="font-size:11px;color:#9ca3af;font-weight:700">' + cards.length + '</span>' +
+        '</div>' +
+        (sumVal > 0 ? '<span style="font-size:11px;color:#6b7280;font-weight:600;flex-shrink:0">' + fmtK(sumVal) + '</span>' : '') +
+      '</div>' +
+      (cards.length === 0
+        ? '<div style="text-align:center;padding:40px 20px;color:#9ca3af;font-size:12px;font-style:italic">No deals in ' + stage.name + '</div>'
+        : cards.map(function(d){ return dealCard(d, stage); }).join('')) +
+      (stages.length > 1 ? '<div style="text-align:center;font-size:10px;color:#9ca3af;font-style:italic;margin-top:8px;padding-bottom:8px">Swipe ← →</div>' : '') +
+    '</div>';
+  }
+
+  // Filter panel — collapsed by default; chips for value brackets, manager
+  // also gets rep chips. Reuses our existing kFilter* state.
+  function filterPanel() {
+    if (!kFilterOpen) return '';
+    var allBracket = !kFilterValMin && !kFilterValMax;
+    var bLow = kFilterValMax === '25000' && !kFilterValMin;
+    var bMid = kFilterValMin === '25000' && kFilterValMax === '75000';
+    var bHigh = kFilterValMin === '75000' && !kFilterValMax;
+    function chipBtn(label, active, onclick) {
+      return '<button onclick="' + onclick + '" style="padding:4px 10px;border-radius:14px;border:none;background:' + (active?'#c41230':'#f3f4f6') + ';color:' + (active?'#fff':'#374151') + ';font-size:10px;font-weight:700;cursor:pointer;font-family:inherit">' + label + '</button>';
+    }
+    return '<div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">' +
+      (isManager ?
+        '<div><div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin-bottom:4px">Rep</div>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:4px">' +
+            chipBtn('All reps', kFilterOwners.length===0, "kFilterOwners=[];renderPage()") +
+            allOwners.map(function(r){
+              return chipBtn(r, kFilterOwners.indexOf(r) >= 0, "kFilterOwners=['" + _esc(r) + "'];renderPage()");
+            }).join('') +
+          '</div></div>'
+        : '') +
+      '<div><div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin-bottom:4px">Value bracket</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:4px">' +
+          chipBtn('All', allBracket, "kFilterValMin='';kFilterValMax='';renderPage()") +
+          chipBtn('< $25k', bLow, "kFilterValMin='';kFilterValMax='25000';renderPage()") +
+          chipBtn('$25–75k', bMid, "kFilterValMin='25000';kFilterValMax='75000';renderPage()") +
+          chipBtn('$75k+', bHigh, "kFilterValMin='75000';kFilterValMax='';renderPage()") +
+        '</div></div>' +
+    '</div>';
+  }
+
+  var SHELL_PX = TOPBAR_HEIGHT + BOTTOMNAV_HEIGHT;
+  return '' +
+    // Outer flex column — fills the visible viewport between top and bottom chrome.
+    '<div style="display:flex;flex-direction:column;height:calc(100vh - ' + SHELL_PX + 'px);margin:-12px;background:#f4f5f7">' +
+      // Header chrome (title + filter chip + pipeline switcher + filter panel)
+      '<div style="background:#fff;padding:12px 16px;border-bottom:1px solid #f0f0f0;flex-shrink:0">' +
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">' +
+          '<div>' +
+            '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">Deals</h1>' +
+            '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + totalOpen.length + ' open · ' + fmtK(totalVal) + ' pipeline</div>' +
+          '</div>' +
+          '<button onclick="kFilterOpen=!kFilterOpen;renderPage()" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;border:none;background:' + (kFilterOpen ? '#c41230' : '#f3f4f6') + ';color:' + (kFilterOpen ? '#fff' : '#374151') + ';font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">' +
+            'Filter' + (activeFilters > 0 ? '<span style="width:6px;height:6px;border-radius:50%;background:' + (kFilterOpen ? '#fff' : '#c41230') + '"></span>' : '') +
+          '</button>' +
+        '</div>' +
+        // Pipeline segmented control
+        '<div style="display:flex;background:#f3f4f6;border-radius:8px;padding:3px;gap:3px">' +
+          PIPELINES.map(function(p){
+            var on = p.id === dPipeline;
+            return '<button onclick="dPipeline=\'' + _esc(p.id) + '\';_mobileDealStageId=null;renderPage()" style="flex:1;padding:6px;border-radius:6px;border:none;background:' + (on ? '#fff' : 'transparent') + ';color:' + (on ? '#0a0a0a' : '#6b7280') + ';font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;' + (on ? 'box-shadow:0 1px 2px rgba(0,0,0,.06)' : '') + '">' + p.name + '</button>';
+          }).join('') +
+        '</div>' +
+        filterPanel() +
+      '</div>' +
+      // Stage tab strip
+      '<div id="dealStageTabs" style="background:#fff;border-bottom:1px solid #e5e7eb;overflow-x:auto;-webkit-overflow-scrolling:touch;flex-shrink:0">' +
+        '<div style="display:flex">' +
+          stages.map(function(s){
+            var count = (byStage[s.id] || []).length;
+            var on = s.id === sel;
+            return '<button data-stage-id="' + s.id + '" data-stage-col="' + s.col + '" onclick="_jumpToDealStage(\'' + s.id + '\')" style="flex-shrink:0;min-width:80px;padding:8px 12px;border:none;background:none;cursor:pointer;border-bottom:2.5px solid ' + (on ? s.col : 'transparent') + ';display:flex;flex-direction:column;align-items:center;gap:2px;font-family:inherit">' +
+              '<div style="display:flex;align-items:center;gap:6px">' +
+                '<span style="width:7px;height:7px;border-radius:50%;background:' + s.col + '"></span>' +
+                '<span data-name style="font-size:11px;font-weight:700;color:' + (on ? '#0a0a0a' : '#6b7280') + ';white-space:nowrap">' + s.name + '</span>' +
+              '</div>' +
+              '<span style="font-size:9px;color:#9ca3af">' + count + '</span>' +
+            '</button>';
+          }).join('') +
+        '</div>' +
+      '</div>' +
+      // Swipeable column container — CSS scroll-snap locks each column to a
+      // viewport edge. _onDealsKanbanScroll syncs the tab strip on swipe.
+      '<div id="dealKanbanScroll" data-stage-ids="' + stages.map(function(s){return s.id;}).join(',') + '" onscroll="_onDealsKanbanScroll(event)" style="flex:1;display:flex;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch">' +
+        stages.map(stageColumn).join('') +
+      '</div>' +
+    '</div>';
+}
+
+// Tab click — programmatically navigate to a stage column.
+function _jumpToDealStage(stageId) {
+  _mobileDealStageId = stageId;
+  var el = document.getElementById('dealKanbanScroll');
+  if (!el) { renderPage(); return; }
+  var stages = (el.dataset.stageIds || '').split(',');
+  var idx = stages.indexOf(stageId);
+  if (idx < 0) idx = 0;
+  el.scrollTo({ left: idx * el.clientWidth, behavior: 'smooth' });
+  _updateDealStageTabsActive(stageId);
+}
+
+// Swipe-driven sync — fires on the container's native scroll. Updates the
+// active stage id and tab strip styling without triggering renderPage (which
+// would clobber scroll momentum and re-render every card).
+function _onDealsKanbanScroll(ev) {
+  var el = ev && ev.currentTarget;
+  if (!el) return;
+  var stages = (el.dataset.stageIds || '').split(',');
+  if (!stages.length) return;
+  var idx = Math.round(el.scrollLeft / Math.max(1, el.clientWidth));
+  var stageId = stages[idx];
+  if (!stageId || stageId === _mobileDealStageId) return;
+  _mobileDealStageId = stageId;
+  _updateDealStageTabsActive(stageId);
+}
+
+// Direct-DOM update of the stage tab strip's underline + name colour.
+function _updateDealStageTabsActive(stageId) {
+  var strip = document.getElementById('dealStageTabs');
+  if (!strip) return;
+  var btns = strip.querySelectorAll('button[data-stage-id]');
+  btns.forEach(function(btn) {
+    var on = btn.dataset.stageId === stageId;
+    btn.style.borderBottom = '2.5px solid ' + (on ? (btn.dataset.stageCol || '#c41230') : 'transparent');
+    var nameSpan = btn.querySelector('span[data-name]');
+    if (nameSpan) nameSpan.style.color = on ? '#0a0a0a' : '#6b7280';
+  });
+}
+
+// Called from renderPage after each innerHTML write to put the swipe
+// container back at the active stage. Without this every state-driven
+// re-render would snap back to the first column.
+function _restoreDealsKanbanScroll() {
+  var el = document.getElementById('dealKanbanScroll');
+  if (!el) return;
+  var stages = (el.dataset.stageIds || '').split(',');
+  var idx = stages.indexOf(_mobileDealStageId);
+  if (idx < 0) idx = 0;
+  // Use rAF so the scroll happens after layout has settled.
+  requestAnimationFrame(function(){ el.scrollLeft = idx * el.clientWidth; });
+}
+
 function renderDeals() {
   const { deals, contacts, modal, dealDetailId } = getState();
   if (dealDetailId) return renderDealDetail() + (getState().editingDealId ? renderEditDealDrawer() : '');
+
+  // Native wrapper: full mobile deals layout (pipeline switcher, filter
+  // panel, stage tab strip, swipeable horizontal columns). Desktop kanban
+  // is unchanged below.
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) {
+    return renderDealsMobile();
+  }
 
   const pl = PIPELINES.find(p => p.id === dPipeline);
   // Include the lost stage as a visible "Not Proceeding" column. It lives at
