@@ -3470,15 +3470,34 @@ function confirmUnwindDealWon() {
   var typed = el ? (el.value || '') : '';
   if (typed !== 'UNWIND') { addToast('Type UNWIND exactly to confirm', 'error'); return; }
 
+  // Brief 4 Phase 4: cancellation reason is required so the clawback
+  // audit entry has context. Free text — typically "Customer cancelled",
+  // "Pricing dispute", "Wrong product", etc.
+  var reasonEl = document.getElementById('unwindReasonInput');
+  var reason = reasonEl ? String(reasonEl.value || '').trim() : '';
+  if (!reason) { addToast('Cancellation reason is required', 'error'); return; }
+
   var deal = (getState().deals || []).find(function (d) { return d.id === dealId; });
   if (!deal) { _pendingUnwindDealId = null; renderPage(); return; }
   var restoreStageId = deal.preWonStageId || _findFallbackStageId(deal);
   var cu = getCurrentUser() || { name: 'Admin' };
 
+  // Snapshot pre-unwind values for the clawback (before-state) and audit.
+  // Brief 4 Phase 4: also snapshot the commission BEFORE unwinding, since
+  // the unwind clears wonQuoteId and calcDealCommission would then fall
+  // back to activeQuoteId — possibly producing a different multiplier.
+  var prevWonDate = deal.wonDate;
+  var prevWonQuoteId = deal.wonQuoteId;
+  var prevVal = deal.val;
+  var prevCommission = 0;
+  if (typeof calcDealCommission === 'function') {
+    try { prevCommission = calcDealCommission(deal).commission || 0; } catch (e) {}
+  }
+
   var act = {
     id: 'a' + Date.now(),
     type: 'stage',
-    text: 'Deal unwound from Won by ' + cu.name,
+    text: 'Deal unwound from Won by ' + cu.name + ' — ' + reason,
     date: new Date().toISOString().slice(0, 10),
     time: new Date().toTimeString().slice(0, 5),
     by: cu.name, done: false, dueDate: '',
@@ -3509,8 +3528,55 @@ function confirmUnwindDealWon() {
   });
   dbInsert('activities', actToDb(act, 'deal', dealId));
 
+  // Brief 4 Phase 4: clawback the commission. We pass the snapshotted
+  // wonDate + commission so the helper doesn't need to read from state
+  // (which has already been mutated to the unwound shape). This avoids
+  // a setState dance and keeps the render count to one.
+  var clawback = null;
+  if (typeof clawbackCommission === 'function') {
+    try {
+      clawback = clawbackCommission(dealId, reason, {
+        wonDate: prevWonDate,
+        commissionOverride: prevCommission,
+      });
+    } catch (e) {}
+  }
+
+  // Brief 2 Phase 2 + Brief 4 Phase 4: cancellation audit entry. The
+  // clawback function writes its own commission.clawed_back entry for
+  // the money math; this one captures the deal-level cancellation event.
+  if (typeof appendAuditEntry === 'function') {
+    try {
+      appendAuditEntry({
+        entityType: 'deal', entityId: dealId,
+        action: 'deal.won_unwound',
+        summary: 'Won deal cancelled: ' + (deal.title || dealId) + ' — ' + reason,
+        before: { won: true, wonDate: prevWonDate, wonQuoteId: prevWonQuoteId, sid: deal.sid, val: prevVal },
+        after:  { won: false, wonDate: null, wonQuoteId: null, sid: restoreStageId, val: prevVal },
+        metadata: {
+          reason: reason,
+          clawbackTier: clawback ? clawback.tier : null,
+          clawedBackAmount: clawback ? clawback.clawedBackAmount : null,
+          alreadyClawed: clawback ? clawback.alreadyClawed : false,
+        },
+        branch: deal.branch || null,
+      });
+    } catch (e) {}
+  }
+
   _pendingUnwindDealId = null;
-  addToast('Deal unwound from Won', 'warning');
+  // Toast surfaces the clawback outcome so admin sees the math
+  // immediately. For 'skipped' tier the message is just "unwound";
+  // for 'partial' / 'full' it shows the dollar amount clawed back.
+  var toastMsg = 'Deal unwound from Won';
+  if (clawback && clawback.tier === 'full') {
+    toastMsg += ' — full clawback ($' + clawback.clawedBackAmount.toFixed(2) + ')';
+  } else if (clawback && clawback.tier === 'partial') {
+    toastMsg += ' — partial clawback (kept ' + clawback.keepPct + '%, clawed $' + clawback.clawedBackAmount.toFixed(2) + ')';
+  } else if (clawback && clawback.tier === 'skipped') {
+    toastMsg += ' — clawback skipped (' + clawback.daysSinceWon + ' days since won)';
+  }
+  addToast(toastMsg, 'warning');
   renderPage();
 }
 
@@ -3537,14 +3603,44 @@ function renderUnwindDealModal() {
     + '</div>'
     : '';
 
+  // Brief 4 Phase 4: clawback preview. Show the user what's about to
+  // happen to commission BEFORE they confirm. previewClawbackForDeal is
+  // a pure-read helper that returns {tier, keepPct, daysSinceWon,
+  // originalCommission, clawedBackAmount, remainingCommission} without
+  // mutating state.
+  var clawbackBlock = '';
+  if (typeof previewClawbackForDeal === 'function') {
+    var preview = previewClawbackForDeal(deal);
+    if (preview && preview.originalCommission > 0) {
+      var tierColor = preview.tier === 'full' ? '#b91c1c' : preview.tier === 'partial' ? '#92400e' : '#15803d';
+      var tierBg    = preview.tier === 'full' ? '#fee2e2' : preview.tier === 'partial' ? '#fef9c3' : '#f0fdf4';
+      var tierLabel = preview.tier === 'full' ? 'Full clawback' : preview.tier === 'partial' ? 'Partial clawback (' + preview.keepPct + '% kept)' : 'No clawback (over threshold)';
+      var fmt = function (n) { return '$' + n.toFixed(2); };
+      clawbackBlock = '<div style="margin-top:14px;padding:12px 14px;background:' + tierBg + ';border:1px solid ' + tierColor + '40;border-radius:8px">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+        +   '<div style="font-size:12px;font-weight:700;color:' + tierColor + '">\ud83d\udcb0 ' + tierLabel + '</div>'
+        +   '<div style="font-size:11px;color:#6b7280">' + preview.daysSinceWon + ' days since won</div>'
+        + '</div>'
+        + '<div style="font-size:11px;color:#374151;line-height:1.5">'
+        +   'Original commission: <b>' + fmt(preview.originalCommission) + '</b><br>'
+        +   (preview.tier === 'skipped'
+              ? 'Commission preserved in full \u2014 deal won more than ' + (preview.policy.partialClawbackUnderDays || 90) + ' days ago.'
+              : 'Clawing back: <b>' + fmt(preview.clawedBackAmount) + '</b> \u00b7 Remaining: <b>' + fmt(preview.remainingCommission) + '</b>')
+        + '</div></div>';
+    }
+  }
+
   return '<div id="unwindDealModal" class="modal-bg" style="display:flex" onclick="if(event.target===this)cancelUnwindDealWon()">'
-    + '<div class="modal" style="max-width:480px;padding:0;overflow:hidden">'
+    + '<div class="modal" style="max-width:520px;padding:0;overflow:hidden">'
     + '<div style="padding:20px 24px;border-bottom:1px solid #f0f0f0">'
     + '<h3 style="font-family:Syne,sans-serif;font-weight:800;font-size:17px;margin:0;color:#b91c1c">\u26a0 Unwind won state</h3>'
     + '</div>'
     + '<div style="padding:20px 24px">'
     + '<div style="font-size:13px;color:#374151;line-height:1.5">This will clear the won quote and move the deal back to <b>' + restoreStageName + '</b>.</div>'
     + jobWarning
+    + clawbackBlock
+    + '<div style="margin-top:16px;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">Cancellation reason <span style="color:#dc2626">*</span></div>'
+    + '<input id="unwindReasonInput" type="text" autocomplete="off" placeholder="e.g. Customer cancelled, Pricing dispute" style="width:100%;padding:9px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:13px">'
     + '<div style="margin-top:16px;font-size:12px;color:#6b7280">Type <code style="background:#f3f4f6;padding:1px 5px;border-radius:3px;font-weight:700;color:#b91c1c">UNWIND</code> to confirm:</div>'
     + '<input id="unwindConfirmInput" type="text" autocomplete="off" style="margin-top:6px;width:100%;padding:9px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:monospace;font-size:13px" placeholder="UNWIND">'
     + '</div>'

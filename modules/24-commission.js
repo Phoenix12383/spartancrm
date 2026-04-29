@@ -47,7 +47,18 @@ var _DEFAULT_COMMISSION_RULES = Object.freeze({
     baseRate: 5,           // pct on ex-GST deal value
     ageThresholdDays: 60,  // days from QuoteBooked → Won before penalty kicks in
     agePenaltyPct: 1,      // pct points subtracted from effective rate when over threshold
-    realisationGate: 'won' // 'won' | 'final_signed' | 'final_payment'
+    realisationGate: 'won', // 'won' | 'final_signed' | 'final_payment'
+    // Brief 4 Phase 4: clawback policy. When a Won deal is unwound /
+    // cancelled, days-since-wonDate maps to a tier:
+    //   < fullClawbackUnderDays      → tier='full'    (zero out commission)
+    //   < partialClawbackUnderDays   → tier='partial' (keep partialKeepPct%)
+    //   ≥ partialClawbackUnderDays   → tier='skipped' (no clawback)
+    // Defaults match the brief's spec (<30 / 30–90 / >90, 50% partial keep).
+    clawbackPolicy: Object.freeze({
+      fullClawbackUnderDays: 30,
+      partialClawbackUnderDays: 90,
+      partialKeepPct: 50,
+    }),
   }),
   perRep: Object.freeze({}),       // {[repName]: {baseRate?, ageThresholdDays?, agePenaltyPct?, realisationGate?}}
   perBranch: Object.freeze({}),    // {[branchCode]: {baseRate?}}
@@ -287,6 +298,180 @@ function realiseCommission(dealId, gateUsed) {
     } catch (e) {}
   }
   return true;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// CLAWBACK ENGINE (Brief 4 Phase 4)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Called by the Won-deal cancellation orchestrator (confirmUnwindDealWon
+// in modules/08-sales-crm.js) when a Won deal is unwound. Uses the
+// configured clawbackPolicy to decide how much of the commission to
+// claw back based on days since wonDate:
+//
+//   < fullClawbackUnderDays       → tier='full',    keepPct=0
+//   < partialClawbackUnderDays    → tier='partial', keepPct=partialKeepPct
+//   ≥ partialClawbackUnderDays    → tier='skipped', keepPct=100
+//
+// Each call appends a record to commissionStatus[dealId].clawbacks[]
+// for the audit trail — multiple admin attempts (e.g. "I had the wrong
+// reason, redo with right reason") are all recorded. The first call
+// transitions the state to clawed_back_<tier>; subsequent calls preserve
+// the state and commission math but still append a record so the audit
+// trail captures every attempt.
+//
+// Returns the result object {tier, keepPct, daysSinceWon,
+// originalCommission, clawedBackAmount, remainingCommission, alreadyClawed}
+// so the caller can show a preview / toast with the math.
+
+function _computeClawbackTier(daysSinceWon, policy) {
+  policy = policy || {};
+  var fullDays    = (policy.fullClawbackUnderDays    != null) ? policy.fullClawbackUnderDays    : 30;
+  var partialDays = (policy.partialClawbackUnderDays != null) ? policy.partialClawbackUnderDays : 90;
+  var partialKeepPct = (policy.partialKeepPct != null) ? policy.partialKeepPct : 50;
+  if (daysSinceWon < fullDays)    return { tier: 'full',    keepPct: 0 };
+  if (daysSinceWon < partialDays) return { tier: 'partial', keepPct: partialKeepPct };
+  return { tier: 'skipped', keepPct: 100 };
+}
+
+// Public — preview the clawback math without mutating state. Used by the
+// unwind modal to show "if you cancel this, $X will be clawed back".
+function previewClawbackForDeal(deal) {
+  if (!deal) return null;
+  var policy = (typeof getCommissionRules === 'function') ? getCommissionRules().defaults.clawbackPolicy : null;
+  var nowIso = new Date().toISOString().slice(0, 10);
+  var wonDate = deal.wonDate ? String(deal.wonDate).slice(0, 10) : null;
+  var daysSinceWon = wonDate ? _daysBetween(wonDate, nowIso) : null;
+  if (daysSinceWon == null) daysSinceWon = 0;
+  var tierInfo = _computeClawbackTier(daysSinceWon, policy);
+  var commission = 0;
+  if (typeof calcDealCommission === 'function') {
+    try { commission = calcDealCommission(deal).commission || 0; } catch (e) {}
+  }
+  var clawedBackAmount = commission * (1 - tierInfo.keepPct / 100);
+  var remainingCommission = commission - clawedBackAmount;
+  return {
+    tier: tierInfo.tier,
+    keepPct: tierInfo.keepPct,
+    daysSinceWon: daysSinceWon,
+    originalCommission: commission,
+    clawedBackAmount: clawedBackAmount,
+    remainingCommission: remainingCommission,
+    policy: policy || {},
+  };
+}
+
+// Public — apply a clawback to a deal's commission. Idempotent on state
+// + commission math (subsequent calls don't double-charge), but every
+// call appends to clawbacks[] for the audit trail.
+//
+// opts.wonDate              — override for daysSinceWon math when caller
+//                             snapshotted it before unwinding the deal
+// opts.commissionOverride   — pre-computed commission $ (avoids re-running
+//                             calcDealCommission post-unwind, which would
+//                             use activeQuoteId rather than the now-cleared
+//                             wonQuoteId and could give a different number)
+function clawbackCommission(dealId, reason, opts) {
+  if (!dealId) return null;
+  opts = opts || {};
+  var cu = getCurrentUser() || { name: 'Unknown' };
+  var deal = (typeof getState === 'function' && getState().deals)
+    ? getState().deals.find(function (d) { return d.id === dealId; })
+    : null;
+  var wonDate = (opts.wonDate != null) ? opts.wonDate
+              : (deal && deal.wonDate) ? deal.wonDate
+              : null;
+  var status = getCommissionStatus();
+  var rec = status[dealId];
+
+  var policy = (typeof getCommissionRules === 'function') ? getCommissionRules().defaults.clawbackPolicy : null;
+  var nowIso = new Date().toISOString();
+  var nowDate = nowIso.slice(0, 10);
+  var daysSinceWon = wonDate ? _daysBetween(wonDate, nowDate) : 0;
+  if (daysSinceWon == null) daysSinceWon = 0;
+  var tierInfo = _computeClawbackTier(daysSinceWon, policy);
+  // Original commission: caller can pass a pre-snapshotted value (the
+  // recommended path when calling from the orchestrator AFTER unwind).
+  // Otherwise compute from the current deal record. Defaults to 0 for
+  // safety.
+  var originalCommission = 0;
+  if (opts.commissionOverride != null) {
+    originalCommission = Number(opts.commissionOverride) || 0;
+  } else if (deal && typeof calcDealCommission === 'function') {
+    try { originalCommission = calcDealCommission(deal).commission || 0; } catch (e) {}
+  }
+  var clawedBackAmount = originalCommission * (1 - tierInfo.keepPct / 100);
+  var remainingCommission = originalCommission - clawedBackAmount;
+  var newStateLabel = 'clawed_back_' + tierInfo.tier; // 'clawed_back_full' / '_partial' / '_skipped'
+
+  // If no status record exists yet (legacy deal that pre-dates Phase 3),
+  // we still want to record the clawback attempt for the audit trail.
+  // Synthesise a minimal record.
+  if (!rec) {
+    rec = {
+      state: 'paid', // assume paid since the deal was won pre-Phase-3
+      accruedAt: wonDate ? wonDate + 'T00:00:00Z' : nowIso,
+      realisedAt: wonDate ? wonDate + 'T00:00:00Z' : nowIso,
+      paidAt: wonDate ? wonDate + 'T00:00:00Z' : nowIso,
+      paidBy: 'legacy',
+      gateUsed: 'legacy_unknown',
+      payRunId: null,
+      clawbacks: [],
+    };
+  }
+  if (!Array.isArray(rec.clawbacks)) rec.clawbacks = [];
+
+  // Track whether this is the FIRST clawback (state-mutating) or a
+  // subsequent attempt (audit-only).
+  var alreadyClawed = (rec.state === 'clawed_back_full' || rec.state === 'clawed_back_partial' || rec.state === 'clawed_back_skipped');
+  var prevState = rec.state;
+
+  var clawbackRecord = {
+    clawedBackAt: nowIso,
+    clawedBackBy: cu.name,
+    reason: (reason && String(reason).trim()) || null,
+    daysSinceWon: daysSinceWon,
+    tier: tierInfo.tier,
+    keepPct: tierInfo.keepPct,
+    originalCommission: originalCommission,
+    clawedBackAmount: clawedBackAmount,
+    remainingCommission: remainingCommission,
+  };
+  rec.clawbacks.push(clawbackRecord);
+
+  // First clawback: mutate state. Subsequent attempts: append-only.
+  if (!alreadyClawed) {
+    rec.state = newStateLabel;
+    rec.clawbackTier = tierInfo.tier; // denormalised for fast filter/lookup
+  }
+  status[dealId] = rec;
+  saveCommissionStatus(status);
+
+  // Audit. Even for skipped (no money clawed back), we write an entry
+  // so the cancellation event is visible in the audit log.
+  if (typeof appendAuditEntry === 'function') {
+    try {
+      var summary;
+      if (tierInfo.tier === 'full') {
+        summary = 'Full clawback ($' + originalCommission.toFixed(2) + ') — ' + daysSinceWon + ' days since won';
+      } else if (tierInfo.tier === 'partial') {
+        summary = 'Partial clawback (kept ' + tierInfo.keepPct + '% of $' + originalCommission.toFixed(2) + ', clawed $' + clawedBackAmount.toFixed(2) + ') — ' + daysSinceWon + ' days since won';
+      } else {
+        summary = 'Clawback skipped — ' + daysSinceWon + ' days since won (over threshold)';
+      }
+      if (alreadyClawed) summary = '[Re-attempt, audit-only] ' + summary;
+      appendAuditEntry({
+        entityType: 'commission', entityId: dealId,
+        action: 'commission.clawed_back',
+        summary: summary,
+        before: { state: prevState, originalCommission: originalCommission },
+        after:  { state: rec.state, tier: tierInfo.tier, clawedBackAmount: clawedBackAmount, remainingCommission: remainingCommission },
+        metadata: { reason: clawbackRecord.reason, daysSinceWon: daysSinceWon, alreadyClawed: alreadyClawed, attemptCount: rec.clawbacks.length },
+        branch: deal ? (deal.branch || null) : null,
+      });
+    } catch (e) {}
+  }
+  return Object.assign({}, clawbackRecord, { alreadyClawed: alreadyClawed, prevState: prevState });
 }
 
 // ── Backward-compat shims for pre-Phase-3 callers ───────────────────────────
