@@ -117,12 +117,15 @@ let topbarSearchTimer=null;
 // ── Module Bar (top-level red bar for Sales CRM / Job CRM / future modules) ─
 var MODULE_BAR_HEIGHT = 40;
 var TOPBAR_HEIGHT = 56;
-// Capacitor wrapper: hide the red module bar entirely (collapse the height
-// so renderPage's top offset doesn't leave a blank strip), and shrink the
-// top bar to a more compact 40px.
+// Bottom nav is the primary navigation in the wrapper (no sidebar). Height
+// stays 0 on desktop so layouts compute correctly there.
+var BOTTOMNAV_HEIGHT = 0;
+// Capacitor wrapper: hide the red module bar, switch to a black header bar
+// at 48px (room for the SPARTAN logo) and reserve 56px for the bottom nav.
 if (typeof isNativeWrapper === 'function' && isNativeWrapper()) {
   MODULE_BAR_HEIGHT = 0;
-  TOPBAR_HEIGHT = 40;
+  TOPBAR_HEIGHT = 48;
+  BOTTOMNAV_HEIGHT = 56;
 }
 function renderModuleBar(){
   if (typeof isNativeWrapper === 'function' && isNativeWrapper()) return '';
@@ -148,6 +151,39 @@ function renderModuleBar(){
   </div>`;
 }
 
+// ── Bottom Nav (native wrapper only) ─────────────────────────────────────────
+// Primary navigation on phone — replaces the desktop sidebar. Seven tabs:
+// Today (→ dashboard), Deals, Leads, Email, Calendar, Comm, More. The "More"
+// tab opens a screen with the less-frequently-used pages (Won, Contacts,
+// Reports, Audit, Schedule Map, Phone, Profile, Settings, Invoicing).
+function renderBottomNav(){
+  if (typeof isNativeWrapper !== 'function' || !isNativeWrapper()) return '';
+  const { page } = getState();
+  const NAV = [
+    { id:'dashboard',  label:'Today',    icon:'dashboard' },
+    { id:'deals',      label:'Deals',    icon:'deals' },
+    { id:'leads',      label:'Leads',    icon:'leads' },
+    { id:'email',      label:'Email',    icon:'email' },
+    { id:'calendar',   label:'Calendar', icon:'calendar' },
+    { id:'commission', label:'Comm',     icon:'commission' },
+    { id:'more',       label:'More',     icon:'settings' },
+  ];
+  // Map the current `page` to the tab that "owns" it so the right tab stays
+  // highlighted when the user is on a less-common screen.
+  var ownerTab = page;
+  if (['won','contacts','reports','audit','map','settings','profile','phone','invoicing'].indexOf(page) >= 0) ownerTab = 'more';
+  return `<nav id="bottomNav" style="position:fixed;bottom:0;left:0;right:0;height:${BOTTOMNAV_HEIGHT}px;background:#fff;border-top:1px solid #e5e7eb;display:flex;z-index:40;box-shadow:0 -2px 12px rgba(0,0,0,.04)">
+    ${NAV.map(function(n){
+      var active = ownerTab === n.id;
+      return `<button onclick="setState({page:'${n.id}',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null})" style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:none;background:none;cursor:pointer;padding:6px 2px;color:${active ? '#c41230' : '#6b7280'};font-family:inherit;position:relative">
+        ${active ? '<span style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:32px;height:2px;background:#c41230;border-radius:0 0 4px 4px"></span>' : ''}
+        ${Icon({n: n.icon, size: 18})}
+        <span style="font-size:9px;font-weight:700;letter-spacing:.02em;white-space:nowrap">${n.label}</span>
+      </button>`;
+    }).join('')}
+  </nav>`;
+}
+
 function renderTopBar(){
   const {sidebarOpen,branch,notifs}=getState();
   const native = typeof isNativeWrapper === 'function' && isNativeWrapper();
@@ -158,19 +194,22 @@ function renderTopBar(){
   const devBadge = (dev && !native)
     ? `<span title="Dev mode is on — stand-in trigger buttons are visible. Add ?dev=0 to URL to disable." style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:11px;font-weight:700;color:#92400e;padding:4px 10px;cursor:help;letter-spacing:.5px">🧪 DEV</span>`
     : '';
-  // Hamburger toggles the drawer on native. Lives in the top-left where users
-  // expect it on a phone.
-  const hamburger = native
-    ? `<button onclick="setState({sidebarOpen:!getState().sidebarOpen})" aria-label="Menu" style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:none;background:none;cursor:pointer;color:#374151;border-radius:6px;font-size:20px;line-height:1;padding:0;flex-shrink:0" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">☰</button>`
+  // Native: SPARTAN word-mark on the left as brand anchor. The drawer is
+  // gone now that the bottom nav owns navigation, so no hamburger.
+  const brandLeft = native
+    ? `<div style="display:flex;align-items:baseline;gap:6px;flex:1;min-width:0;color:#fff;font-family:Syne,sans-serif;font-weight:800;font-size:15px;letter-spacing:.5px">SPARTAN<span style="font-size:9px;font-weight:600;color:rgba(255,255,255,.5);letter-spacing:.6px">SALES</span></div>`
     : '';
-  return `<header id="topbar" style="position:fixed;top:${MODULE_BAR_HEIGHT}px;left:${offset}px;right:0;height:${TOPBAR_HEIGHT}px;background:#fff;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;padding:0 ${native ? '8' : '24'}px;gap:${native ? '8' : '16'}px;z-index:20;transition:left .2s">
-    ${hamburger}
+  // Native theme tokens — black header surface, white text/icons.
+  const tbBg = native ? '#0a0a0a' : '#fff';
+  const tbBorder = native ? '0' : '1px solid #f0f0f0';
+  return `<header id="topbar" style="position:fixed;top:${MODULE_BAR_HEIGHT}px;left:${offset}px;right:0;height:${TOPBAR_HEIGHT}px;background:${tbBg};border-bottom:${tbBorder};display:flex;align-items:center;padding:0 ${native ? '12' : '24'}px;gap:${native ? '8' : '16'}px;z-index:20;transition:left .2s">
+    ${brandLeft}
     ${devBadge}
-    <div style="position:relative;flex:1;${native ? '' : 'max-width:400px'}">
+    ${native ? '' : `<div style="position:relative;flex:1;max-width:400px">
       <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:#9ca3af">${Icon({n:'search',size:14})}</span>
-      <input id="topSearch" placeholder="${native ? 'Search…' : 'Search contacts, deals, leads... (/)'}" style="width:100%;padding:7px 10px 7px 32px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;outline:none;font-family:inherit" oninput="handleTopSearch(this.value)" onfocus="document.getElementById('searchDrop').style.display='block'" onblur="setTimeout(()=>{const d=document.getElementById('searchDrop');if(d)d.style.display='none'},200)">
+      <input id="topSearch" placeholder="Search contacts, deals, leads... (/)" style="width:100%;padding:7px 10px 7px 32px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;outline:none;font-family:inherit" oninput="handleTopSearch(this.value)" onfocus="document.getElementById('searchDrop').style.display='block'" onblur="setTimeout(()=>{const d=document.getElementById('searchDrop');if(d)d.style.display='none'},200)">
       <div id="searchDrop" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.1);z-index:100;max-height:320px;overflow-y:auto"></div>
-    </div>
+    </div>`}
     <div style="display:flex;align-items:center;gap:${native ? '4' : '8'}px">
       ${native ? '' : `<div style="position:relative">
         <button onclick="toggleBranchDrop()" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">
@@ -191,7 +230,7 @@ function renderTopBar(){
         return `<button title="${vmCount} unread voicemail${vmCount===1?'':'s'}" onclick="setState({page:'phone'})" style="position:relative;padding:7px;border:none;background:none;cursor:pointer;color:#6b7280;border-radius:8px;font-size:18px" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">📨<span style="position:absolute;top:-2px;right:-2px;min-width:16px;height:16px;padding:0 4px;background:#c41230;border-radius:50%;font-size:10px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center">${vmCount}</span></button>`;
       })()}
       <div style="position:relative">
-        <button id="notifBell" onclick="toggleNotifDrop()" style="position:relative;padding:7px;border:none;background:none;cursor:pointer;transition:transform .2s,color .2s;color:#6b7280;border-radius:8px" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">
+        <button id="notifBell" onclick="toggleNotifDrop()" style="position:relative;padding:7px;border:none;background:none;cursor:pointer;transition:transform .2s,color .2s;color:${native ? 'rgba(255,255,255,.85)' : '#6b7280'};border-radius:8px" onmouseover="this.style.background='${native ? 'rgba(255,255,255,.1)' : '#f3f4f6'}'" onmouseout="this.style.background=''">
           ${Icon({n:'bell',size:18})}
           ${unread>0?`<span style="position:absolute;top:-2px;right:-2px;width:16px;height:16px;background:#c41230;border-radius:50%;font-size:10px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center">${unread}</span>`:''}
         </button>
@@ -217,7 +256,7 @@ function renderTopBar(){
         ${native ? '' : `<div><div style="font-size:12px;font-weight:600;color:#111;line-height:1.2">${(getCurrentUser()||{name:"Admin"}).name}</div><div style="font-size:10px;color:#9ca3af">${(getCurrentUser()||{role:"admin"}).role}</div></div>
         <span style="font-size:10px;color:#9ca3af;margin-left:2px">▾</span>`}
         <!-- Profile dropdown -->
-        <div id="profileDrop" style="display:none;position:absolute;top:${native ? '36' : '44'}px;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.12);z-index:200;width:220px;overflow:hidden" onclick="event.stopPropagation()">
+        <div id="profileDrop" style="display:none;position:absolute;top:${native ? '44' : '44'}px;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.12);z-index:200;width:220px;overflow:hidden" onclick="event.stopPropagation()">
           <div style="padding:14px 16px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;gap:10px">
             <div style="width:32px;height:32px;background:#c41230;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">${(getCurrentUser()||{initials:'AD'}).initials}</div>
             <div><div style="font-size:13px;font-weight:600">${(getCurrentUser()||{name:'Admin'}).name}</div><div style="font-size:11px;color:#6b7280">${(getCurrentUser()||{email:''}).email}</div></div>
@@ -446,12 +485,11 @@ function handleTopSearch(q){
 }
 
 function renderSidebar(){
+  // Native wrapper: bottom nav owns navigation, no sidebar at all.
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) return '';
   const {page,sidebarOpen,dealDetailId,leadDetailId,contactDetailId,jobDetailId,leads,crmMode}=getState();
-  const native = typeof isNativeWrapper === 'function' && isNativeWrapper();
-  // On native the sidebar is an overlay drawer. Width is fixed at 220 and
-  // transform translates it off-screen when closed; on desktop the existing
-  // collapsed-icon mode (64px) is preserved.
-  const w = native ? 220 : (sidebarOpen ? 220 : 64);
+  const native = false;
+  const w = sidebarOpen ? 220 : 64;
   const mode = crmMode || 'sales';
   const salesNav=[
     ['dashboard','Dashboard'],['contacts','Contacts'],['leads','Leads'],['deals','Deals'],['won','Won Deals'],['calendar','Calendar'],['invoicing','Invoicing'],['commission','Commission'],

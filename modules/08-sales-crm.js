@@ -4,8 +4,204 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ── MOBILE: TODAY HOME SCREEN ─────────────────────────────────────────────────
+// Black hero strip + 2×2 stat grid + Today's appointments + Recent open deals.
+// Designed for the Capacitor wrapper; rendered via renderDashboard() when
+// isNativeWrapper() is true. Layout follows SpartanSalesMobile.jsx's TodayScreen
+// pattern but uses our brand red (#c41230) and existing data shapes.
+function renderTodayMobile() {
+  var st = getState();
+  var deals = st.deals || [];
+  var cu = getCurrentUser() || { name:'Admin', role:'admin', branch:'All' };
+  var myName = cu.name || 'User';
+  var role = cu.role || 'sales_rep';
+  var branch = cu.branch || '';
+  var isManager = role === 'admin' || role === 'sales_manager' || role === 'accounts';
+
+  var today = new Date();
+  var todayStr = today.toISOString().slice(0, 10);
+
+  // Today's appointments (MOCK_APPOINTMENTS persisted in localStorage; real
+  // calendar events aren't loaded on mobile because Calendar OAuth is desktop-only).
+  var apptsAll = (typeof MOCK_APPOINTMENTS !== 'undefined' && MOCK_APPOINTMENTS) ? MOCK_APPOINTMENTS : [];
+  var todaysAppts = apptsAll.filter(function(a){
+    return a.date === todayStr && (isManager || a.rep === myName);
+  }).sort(function(a,b){ return (a.time||'').localeCompare(b.time||''); });
+
+  // Visible-to-me deals (manager/admin sees all; reps see their own).
+  var visibleDeals = deals.filter(function(d){ return isManager || d.rep === myName; });
+  var myOpenDeals = visibleDeals.filter(function(d){ return !d.won && !d.lost; })
+    .sort(function(a,b){ return (b.val||0) - (a.val||0); });
+  var myOpenValue = myOpenDeals.reduce(function(s,d){ return s + (d.val||0); }, 0);
+
+  // Wins this week (last 7 days)
+  var weekStart = Date.now() - 7 * 86400000;
+  var weekWon = visibleDeals.filter(function(d){
+    return d.won && d.wonDate && new Date(d.wonDate).getTime() >= weekStart;
+  });
+  var weekWonValue = weekWon.reduce(function(s,d){ return s + (d.val||0); }, 0);
+
+  // Commission MTD — rough 5% of GST-exclusive won-this-month value.
+  var monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+  var monthWon = visibleDeals.filter(function(d){
+    return d.won && d.wonDate && new Date(d.wonDate).getTime() >= monthStart.getTime();
+  });
+  var monthCommission = monthWon.reduce(function(s,d){ return s + ((d.val||0)/1.1)*0.05; }, 0);
+
+  // Greeting + role label
+  var h = today.getHours();
+  var greet = h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
+  var fname = (myName.split(' ')[0]) || 'User';
+  var roleLabel = ({admin:'Admin',sales_manager:'Sales Manager',sales_rep:'Sales Rep',accounts:'Accounts',installer:'Installer',production_manager:'Production Manager',service_staff:'Service Staff'})[role] || role;
+  var dateStr = today.toLocaleDateString('en-AU', { weekday:'long', day:'numeric', month:'short' });
+
+  // $-formatter that compacts to k/M for stat tiles.
+  function fmtK(n) {
+    var v = Number(n) || 0;
+    if (v >= 1000000) return '$' + (v/1000000).toFixed(1) + 'M';
+    if (v >= 1000) return '$' + Math.round(v/1000) + 'k';
+    return '$' + v.toFixed(0);
+  }
+  function fmtTime12(t) {
+    if (!t) return '';
+    var p = t.split(':'); var hh = parseInt(p[0]); var mm = p[1] || '00';
+    var ap = hh >= 12 ? 'pm' : 'am'; var h12 = hh % 12 || 12;
+    return h12 + ':' + mm + ap;
+  }
+  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+
+  // Stat-card builder
+  function stat(label, val, sub, accent, onclick) {
+    var clickable = onclick ? 'cursor:pointer' : '';
+    var tag = onclick ? 'button' : 'div';
+    return '<' + tag + (onclick ? ' onclick="' + onclick + '"' : '') + ' style="background:#fff;border-radius:12px;padding:12px;text-align:left;border:none;font-family:inherit;width:100%;box-shadow:0 1px 3px rgba(0,0,0,.06);' + clickable + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px"><span style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;font-weight:700">' + label + '</span><span style="width:6px;height:6px;border-radius:50%;background:' + (accent || '#c41230') + ';margin-top:5px"></span></div>' +
+      '<div style="font-size:20px;font-weight:800;color:#0a0a0a;font-family:Syne,sans-serif;line-height:1">' + val + '</div>' +
+      (sub ? '<div style="font-size:10px;color:#6b7280;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + sub + '</div>' : '') +
+    '</' + tag + '>';
+  }
+
+  // Appointment card — Navigate / Call / SMS direct-action buttons baked in.
+  function apptCard(a) {
+    var addr = [a.street, a.suburb, a.state].filter(Boolean).join(', ');
+    var nameLine = a.client || a.subject || 'Appointment';
+    var navUrl = addr ? 'https://maps.google.com/?q=' + encodeURIComponent(addr) : '';
+    var phone = a.phone || '';
+    return '<div style="background:#fff;border-radius:12px;overflow:hidden;margin-bottom:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);display:flex">' +
+      '<div style="width:5px;background:#c41230;flex-shrink:0"></div>' +
+      '<div style="flex:1;padding:12px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">' +
+          '<span style="font-size:13px;font-weight:700;color:#1a1a1a">⏰ ' + (fmtTime12(a.time) || 'All day') + '</span>' +
+          (a.dealId ? '<button onclick="setState({dealDetailId:\'' + _esc(a.dealId) + '\'})" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;border:none;background:#fef2f4;color:#c41230;cursor:pointer;font-family:inherit">Open Deal</button>' : '') +
+        '</div>' +
+        '<div style="font-size:14px;font-weight:700;color:#1a1a1a;margin-bottom:2px">' + nameLine + '</div>' +
+        (addr ? '<div style="font-size:11px;color:#6b7280;margin-bottom:8px;display:flex;align-items:center;gap:4px">📍 ' + addr + '</div>' : '<div style="margin-bottom:8px"></div>') +
+        '<div style="display:flex;gap:6px">' +
+          (navUrl ? '<a href="' + navUrl + '" target="_blank" rel="noopener" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#0a0a0a;color:#fff;font-size:11px;font-weight:700;text-decoration:none">↗ Navigate</a>' : '') +
+          (phone ? '<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#22c55e;color:#fff;font-size:11px;font-weight:700;text-decoration:none">☎ Call</a>' : '') +
+          (phone ? '<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#3b82f6;color:#fff;font-size:11px;font-weight:700;text-decoration:none">💬 SMS</a>' : '') +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  // Compact deal card for the "Recent open deals" list.
+  function dealCardCompact(d) {
+    var c = (st.contacts || []).find(function(x){ return x.id === d.cid; });
+    var name = c ? (c.fn + ' ' + c.ln) : d.title;
+    var stage = null;
+    try {
+      var pl = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === d.pid; });
+      if (pl) stage = pl.stages.find(function(s){ return s.id === d.sid; });
+    } catch(e){}
+    return '<button onclick="setState({dealDetailId:\'' + _esc(d.id) + '\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ' + (stage ? stage.col : '#c41230') + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:14px;font-weight:700;color:#1a1a1a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
+          '<div style="font-size:11px;color:#6b7280;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (d.suburb || '') + (d.postcode ? ' · ' + d.postcode : '') + '</div>' +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0">' +
+          '<div style="font-size:14px;font-weight:800;font-family:Syne,sans-serif">' + fmtK(d.val) + '</div>' +
+          (stage ? '<div style="font-size:10px;font-weight:600;margin-top:2px;color:' + stage.col + '">' + stage.name + '</div>' : '') +
+        '</div>' +
+      '</div>' +
+    '</button>';
+  }
+
+  // Section heading with count badge.
+  function sectionTitle(title, count) {
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:0 4px;margin:18px 0 8px"><h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin:0">' + title + '</h2>' + (count !== undefined ? '<span style="font-size:11px;font-weight:700;color:#9ca3af">' + count + '</span>' : '') + '</div>';
+  }
+
+  return '' +
+    // Black hero — extends edge-to-edge by pulling out the 12px main padding.
+    '<div style="margin:-12px -12px 0;padding:18px 16px 22px;background:#0a0a0a;color:#fff">' +
+      '<div style="font-size:12px;opacity:.6;margin-bottom:2px">Good ' + greet + ', ' + fname + '</div>' +
+      '<h1 style="font-size:22px;font-weight:800;margin:0;font-family:Syne,sans-serif">' + dateStr + '</h1>' +
+      '<div style="font-size:11px;opacity:.5;margin-top:4px">' + roleLabel + ' · ' + branch + '</div>' +
+    '</div>' +
+
+    // 2×2 stat grid — pulls up so cards overlap the hero edge slightly.
+    '<div style="margin-top:-10px">' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px">' +
+        stat("Today's appts", todaysAppts.length, todaysAppts.length === 0 ? 'None scheduled' : 'Next: ' + (fmtTime12(todaysAppts[0].time) || 'TBD'), '#c41230', "setState({page:'calendar'})") +
+        stat('Open deals', myOpenDeals.length, fmtK(myOpenValue), '#0a0a0a', "setState({page:'deals'})") +
+        stat('Wins this week', weekWon.length, fmtK(weekWonValue), '#22c55e', null) +
+        stat('Commission MTD', fmtK(monthCommission), monthWon.length + ' win' + (monthWon.length === 1 ? '' : 's'), '#f59e0b', "setState({page:'commission'})") +
+      '</div>' +
+    '</div>' +
+
+    // Today's appointments
+    sectionTitle("Today's appointments", todaysAppts.length) +
+    (todaysAppts.length === 0
+      ? '<div style="padding:20px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:12px;font-style:italic">No appointments today.</div>'
+      : todaysAppts.map(apptCard).join('')) +
+
+    // Recent open deals (top 5)
+    sectionTitle('Recent open deals', myOpenDeals.length) +
+    (myOpenDeals.length === 0
+      ? '<div style="padding:20px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:12px;font-style:italic">No open deals — your queue is clean.</div>'
+      : myOpenDeals.slice(0, 5).map(dealCardCompact).join(''));
+}
+
+// ── MOBILE: MORE menu ─────────────────────────────────────────────────────────
+// Tap-target list of pages that don't fit in the 7 bottom-nav tabs.
+function renderMore() {
+  var items = [
+    {id:'won',       label:'Won Deals',     icon:'won'},
+    {id:'contacts',  label:'Contacts',      icon:'contacts'},
+    {id:'invoicing', label:'Invoicing',     icon:'invoicing'},
+    {id:'reports',   label:'Reports',       icon:'reports'},
+    {id:'audit',     label:'Audit',         icon:'audit'},
+    {id:'map',       label:'Schedule Map',  icon:'map'},
+    {id:'phone',     label:'Phone',         icon:'phone'},
+    {id:'profile',   label:'My Profile',    icon:'contacts'},
+    {id:'settings',  label:'Settings',      icon:'settings'},
+  ].filter(function(it){
+    return typeof canAccessPage !== 'function' || canAccessPage(it.id);
+  });
+  return '' +
+    '<h1 style="font-size:22px;font-weight:800;margin:4px 4px 14px;font-family:Syne,sans-serif">More</h1>' +
+    '<div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)">' +
+      items.map(function(it, i){
+        return '<button onclick="setState({page:\'' + it.id + '\',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null})" style="width:100%;text-align:left;padding:14px 16px;background:#fff;border:none;' + (i>0?'border-top:1px solid #f3f4f6;':'') + 'cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:12px;font-size:14px;font-weight:600;color:#1a1a1a">' +
+          '<span style="color:#6b7280;display:inline-flex;width:20px;justify-content:center">' + Icon({n: it.icon, size: 16}) + '</span>' +
+          '<span style="flex:1">' + it.label + '</span>' +
+          '<span style="color:#9ca3af;font-size:18px;line-height:1">›</span>' +
+        '</button>';
+      }).join('') +
+    '</div>' +
+    '<button onclick="logout()" style="width:100%;text-align:center;padding:12px;background:#fff;border:1px solid #fecaca;border-radius:12px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;color:#b91c1c;margin-top:16px">Sign Out</button>';
+}
+
 // ── DASHBOARD ─────────────────────────────────────────────────────────────────
 function renderDashboard() {
+  // Native wrapper: replace the desktop dashboard with the mobile "Today"
+  // home screen — black hero, 2x2 stat grid, today's appointments, recent
+  // open deals. Desktop behaviour is unchanged below this branch.
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) {
+    return renderTodayMobile();
+  }
   const { deals, leads, emailSent, emailInbox, contacts } = getState();
   const now = new Date();
   const B = getState().branch || 'all'; // 'all' | 'VIC' | 'SA' | 'ACT'

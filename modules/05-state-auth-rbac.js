@@ -13,7 +13,7 @@ function isNativeWrapper() {
 // Pages reachable in the mobile wrapper. Mirrors the Sales CRM sidebar in
 // 07-shared-ui.js plus 'profile' (reachable from the sidebar user-card).
 // renderPage bounces anything else to 'dashboard'.
-var SALES_WRAPPER_PAGES = ['dashboard','contacts','leads','deals','won','calendar','invoicing','commission','email','phone','reports','audit','map','settings','profile'];
+var SALES_WRAPPER_PAGES = ['dashboard','contacts','leads','deals','won','calendar','invoicing','commission','email','phone','reports','audit','map','settings','profile','more'];
 
 // ══════════════════════════════════════════════════════════════════════════════
 // UNIFIED AUDIT LOG (Module 01 — primitive only, Brief 2 Phase 1)

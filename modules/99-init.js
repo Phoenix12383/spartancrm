@@ -156,6 +156,7 @@ function renderPage(){
     dashboard:renderDashboard,contacts:renderContacts,leads:renderLeads,deals:renderDeals,won:renderWonPage,jobs:renderJobsPage,jobdashboard:renderJobDashboard,weeklyrev:renderWeeklyRevenue,finalsignoff:renderFinalSignOff,schedule:renderInstallSchedule,capacity:renderCapacityPlanning,cmmap:renderCMMapPage,jobsettings:renderJobSettings,factorydash:renderFactoryDash,prodqueue:renderProdQueue,prodboard:renderProdBoard,factorybom:renderFactoryBOM,factorycap:renderFactoryCapacity,factorydispatch:renderFactoryDispatch,accdash:renderAccDash,accoutstanding:renderAccOutstanding,acccashflow:renderAccCashFlow,accrecon:renderAccRecon,accbills:renderAccBills,accweekly:renderAccWeekly,accbranch:renderAccBranch,accxero:renderAccXero,servicelist:renderServiceList,servicemap:renderServiceMap,svcschedule:renderSvcSchedule,calendar:renderCalendarPage,invoicing:renderInvoicingPage,commission:renderCommissionPage,
     email:renderEmailPage,phone:renderPhonePage,reports:renderReports,map:renderMapPage,settings:renderSettings,profile:renderProfilePage,
     audit:typeof renderAuditPage === 'function' ? renderAuditPage : renderDashboard,
+    more: typeof renderMore === 'function' ? renderMore : renderDashboard,
   };
   const effectivePage=jobDetailId?'jobs':dealDetailId?'deals':leadDetailId?'leads':contactDetailId?'contacts':page;
   const fn=pageRenderers[effectivePage]||renderDashboard;
@@ -166,12 +167,13 @@ function renderPage(){
     ${renderModuleBar()}
     ${renderSidebar()}
     ${renderTopBar()}
-    <main style="margin-left:${offset}px;margin-top:${TOPBAR_HEIGHT + MODULE_BAR_HEIGHT}px;padding:${_mainPad}px;min-height:calc(100vh - ${TOPBAR_HEIGHT + MODULE_BAR_HEIGHT}px);transition:margin-left .2s;background:#f2f2f2">
+    <main style="margin-left:${offset}px;margin-top:${TOPBAR_HEIGHT + MODULE_BAR_HEIGHT}px;padding:${_mainPad}px;padding-bottom:${_mainPad + BOTTOMNAV_HEIGHT}px;min-height:calc(100vh - ${TOPBAR_HEIGHT + MODULE_BAR_HEIGHT}px);transition:margin-left .2s;background:${_native ? '#f4f5f7' : '#f2f2f2'}">
       <div style="${effectivePage==='email' ? 'width:100%' : 'max-width:1400px;margin:0 auto'}">
         ${fn()}
       </div>
     </main>
-    <div id="toasts" style="position:fixed;bottom:24px;right:24px;z-index:200;display:flex;flex-direction:column;gap:8px"></div>
+    ${typeof renderBottomNav === 'function' ? renderBottomNav() : ''}
+    <div id="toasts" style="position:fixed;${_native ? `bottom:${BOTTOMNAV_HEIGHT + 12}px;left:50%;transform:translateX(-50%);align-items:center` : 'bottom:24px;right:24px'};z-index:200;display:flex;flex-direction:column;gap:8px"></div>
     ${_pendingWonDealId ? renderPaymentMethodModal() : ''}
     ${_pendingWonQuoteSelection ? renderWonQuoteSelectionModal() : ''}
     ${_pendingUnwindDealId ? renderUnwindDealModal() : ''}
