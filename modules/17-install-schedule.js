@@ -86,16 +86,21 @@ function getCrewEffectiveHours(job, crewIds, fallback) {
 window.getCrewEffectiveHours = getCrewEffectiveHours;
 
 // ── Capacity Planner spec §5.1, §5.2, §5.3 #6 ────────────────────────────────
-// Lenient install-minutes reader. Prefers job.estimatedInstallMinutes, falls
-// back to the cached cadSurveyData.totals.installMinutes. Never recompute from
-// frame dimensions in CRM — that's CAD's job, duplicating it will drift.
+// Lenient install-minutes reader. Spec §5.1 says prefer estimatedInstallMinutes,
+// then fall back to cached cadSurveyData totals. We extend the chain to also
+// honour job.installDurationHours (the existing manual override) so legacy
+// jobs without a fresh CAD survey still produce a number. Never recompute
+// from frame dimensions in CRM — that's CAD's job and duplicating it drifts.
 function readJobInstallMinutes(job) {
   if (!job) return 0;
   var direct = +job.estimatedInstallMinutes || 0;
   if (direct > 0) return direct;
   var cs = job.cadSurveyData || job.cad_survey_data || {};
   var fromCad = (cs && cs.totals) ? +cs.totals.installMinutes : 0;
-  return fromCad > 0 ? fromCad : 0;
+  if (fromCad > 0) return fromCad;
+  var hoursOverride = +job.installDurationHours || 0;
+  if (hoursOverride > 0) return Math.round(hoursOverride * 60);
+  return 0;
 }
 window.readJobInstallMinutes = readJobInstallMinutes;
 

@@ -1120,19 +1120,24 @@ function renderJobDetail() {
       +'</div>';
 
     // ── Effective duration (Capacity Planner spec §5.2 / §5.3 #6) ───────────
-    // Baseline minutes from CAD, productivity-adjusted minutes per crew member,
-    // and the crew duration (slowest sets the pace when working in parallel).
+    // Baseline minutes from CAD (or job.installDurationHours fallback),
+    // productivity-adjusted minutes per crew member, and the crew duration
+    // (slowest sets the pace when working in parallel).
     if (typeof readJobInstallMinutes === 'function') {
       var baselineMin = readJobInstallMinutes(job);
-      if (baselineMin > 0) {
-        var minToHM = function(m) { var h = Math.floor(m/60); var mm = m % 60; return h + 'h ' + (mm<10?'0'+mm:mm) + 'm'; };
-        tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
-          +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
-          +'<h5 style="font-size:13px;font-weight:700;margin:0">⏱️ Effective Duration</h5>'
-          +'<span style="font-size:10px;color:#9ca3af">Adjusted for installer productivity %</span>'
-          +'</div>'
-          +'<div style="display:grid;grid-template-columns:140px 1fr;gap:16px;font-size:12px;align-items:start">'
-          +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:3px">Baseline (CAD)</div>'
+      var minToHM = function(m) { var h = Math.floor(m/60); var mm = m % 60; return h + 'h ' + (mm<10?'0'+mm:mm) + 'm'; };
+      tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+        +'<h5 style="font-size:13px;font-weight:700;margin:0">⏱️ Effective Duration</h5>'
+        +'<span style="font-size:10px;color:#9ca3af">Adjusted for installer productivity %</span>'
+        +'</div>';
+      if (baselineMin <= 0) {
+        tabContent += '<div style="font-size:12px;color:#6b7280;padding:10px 12px;background:#f9fafb;border-radius:6px">'
+          +'No install duration yet. Complete the Check Measure in CAD or set <strong>Install Duration (hours)</strong> on the job to see effective times per installer.'
+          +'</div>';
+      } else {
+        tabContent += '<div style="display:grid;grid-template-columns:140px 1fr;gap:16px;font-size:12px;align-items:start">'
+          +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:3px">Baseline</div>'
           +'<div style="font-weight:700;font-size:15px">'+minToHM(baselineMin)+'</div>'
           +'<div style="font-size:10px;color:#9ca3af;margin-top:2px">'+baselineMin+' min</div></div>'
           +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:6px">Per Installer</div>';
@@ -1161,8 +1166,9 @@ function renderJobDetail() {
             tabContent += '<div style="margin-top:10px;padding-top:8px;border-top:1px solid #f3f4f6;display:flex;align-items:center;gap:10px;font-size:11px"><span style="color:#9ca3af">Crew duration (slowest sets pace)</span><span style="font-weight:700;color:#374151;font-size:13px">'+minToHM(crewMaxMin)+'</span></div>';
           }
         }
-        tabContent += '</div></div></div>';
+        tabContent += '</div></div>';
       }
+      tabContent += '</div>';
     }
 
     // ── Tool coverage (Capacity Planner spec §5.3) ──────────────────────────
