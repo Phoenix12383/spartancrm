@@ -21,9 +21,13 @@ function renderTodayMobile() {
   var today = new Date();
   var todayStr = today.toISOString().slice(0, 10);
 
-  // Today's appointments (MOCK_APPOINTMENTS persisted in localStorage; real
-  // calendar events aren't loaded on mobile because Calendar OAuth is desktop-only).
-  var apptsAll = (typeof MOCK_APPOINTMENTS !== 'undefined' && MOCK_APPOINTMENTS) ? MOCK_APPOINTMENTS : [];
+  // Today's appointments — pull from scheduled activities on every deal/lead
+  // (matches the Calendar tab), falling back to MOCK_APPOINTMENTS for legacy
+  // map-flow entries. Calendar/Gmail OAuth isn't available in the wrapper, so
+  // there's no Google-Calendar source on mobile.
+  var apptsAll = (typeof _gatherScheduledForMobileCalendar === 'function')
+    ? _gatherScheduledForMobileCalendar()
+    : ((typeof MOCK_APPOINTMENTS !== 'undefined' && MOCK_APPOINTMENTS) ? MOCK_APPOINTMENTS : []);
   var todaysAppts = apptsAll.filter(function(a){
     return a.date === todayStr && (isManager || a.rep === myName);
   }).sort(function(a,b){ return (a.time||'').localeCompare(b.time||''); });
@@ -2620,6 +2624,103 @@ function renderInlineMapScheduler(entityId, entityType) {
   </div>`;
 }
 
+// ── MOBILE: stage-advance helper ─────────────────────────────────────────────
+// Advances a deal one stage forward in its pipeline. If the next stage is the
+// Won stage, defers to markDealWon() so the existing payment-method modal,
+// job creation, and audit run normally. Adds a 'stage' activity + audit
+// entry on regular advances.
+function advanceDealStageMobile(dealId) {
+  var deal = (getState().deals || []).find(function(d){ return d.id === dealId; });
+  if (!deal) return;
+  if (deal.won || deal.lost) { addToast('Deal is closed', 'info'); return; }
+  var pl = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === deal.pid; });
+  if (!pl) return;
+  var stages = pl.stages.slice().sort(function(a,b){ return a.ord - b.ord; }).filter(function(s){ return !s.isLost; });
+  var curIdx = stages.findIndex(function(s){ return s.id === deal.sid; });
+  if (curIdx < 0) curIdx = 0;
+  var next = stages[curIdx + 1];
+  if (!next) { addToast('Already at the final stage', 'info'); return; }
+  if (next.isWon) { if (typeof markDealWon === 'function') markDealWon(dealId); return; }
+  // Plain stage move — apply locally, persist, log activity, audit.
+  var oldStage = stages[curIdx];
+  var deals = getState().deals.slice();
+  var i = deals.findIndex(function(x){ return x.id === dealId; });
+  deals[i] = Object.assign({}, deals[i], { sid: next.id });
+  setState({ deals: deals });
+  if (typeof dbUpdate === 'function') dbUpdate('deals', dealId, { sid: next.id });
+  if (typeof saveActivityToEntity === 'function') {
+    saveActivityToEntity(dealId, 'deal', {
+      id: 'a' + Date.now(), type: 'stage',
+      text: (oldStage ? oldStage.name : '?') + ' → ' + next.name,
+      date: new Date().toISOString().slice(0,10),
+      time: new Date().toTimeString().slice(0,5),
+      by: (getCurrentUser()||{name:'Admin'}).name,
+    });
+  }
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'deal', entityId:dealId, action:'deal.stage_changed',
+      summary:'Stage changed: ' + (oldStage ? oldStage.name : '?') + ' → ' + next.name,
+      before:{ sid: deal.sid }, after:{ sid: next.id },
+    });
+  }
+  addToast('Moved to ' + next.name, 'success');
+}
+
+// ── MOBILE: typed-note modal ─────────────────────────────────────────────────
+// Lightweight bottom-sheet replacement for the desktop notes-tab inline form.
+// Lives in module state so a renderPage triggered by setState (e.g. realtime
+// echo) doesn't drop the user's typing.
+var _pendingMobileNote = null;          // { entityId, entityType, text }
+function openMobileNote(entityId, entityType) {
+  _pendingMobileNote = { entityId: entityId, entityType: entityType, text: '' };
+  renderPage();
+  setTimeout(function(){
+    var el = document.getElementById('mobNoteInput');
+    if (el) el.focus();
+  }, 60);
+}
+function cancelMobileNote() { _pendingMobileNote = null; renderPage(); }
+function setMobileNoteDraft(value) { if (_pendingMobileNote) _pendingMobileNote.text = value; }
+function saveMobileNote() {
+  if (!_pendingMobileNote) return;
+  var p = _pendingMobileNote;
+  var text = (p.text || '').trim();
+  if (!text) { addToast('Note is empty', 'warning'); return; }
+  if (typeof saveActivityToEntity === 'function') {
+    saveActivityToEntity(p.entityId, p.entityType, {
+      id: 'a' + Date.now(), type: 'note', text: text,
+      date: new Date().toISOString().slice(0,10),
+      time: new Date().toTimeString().slice(0,5),
+      by: (getCurrentUser()||{name:'Admin'}).name,
+    });
+  }
+  _pendingMobileNote = null;
+  addToast('Note saved', 'success');
+  renderPage();
+}
+function renderMobileNoteModal() {
+  if (!_pendingMobileNote) return '';
+  var p = _pendingMobileNote;
+  var safe = (p.text || '').replace(/</g, '&lt;');
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)cancelMobileNote()" style="z-index:300">'
+    +   '<div class="modal" style="max-width:480px;width:calc(100% - 24px)">'
+    +     '<div class="modal-header" style="padding:14px 18px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
+    +       '<h3 style="margin:0;font-size:15px;font-weight:700;font-family:Syne,sans-serif">Add a note</h3>'
+    +       '<button onclick="cancelMobileNote()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1;padding:0">×</button>'
+    +     '</div>'
+    +     '<div class="modal-body" style="padding:14px 18px">'
+    +       '<textarea id="mobNoteInput" rows="5" oninput="setMobileNoteDraft(this.value)" placeholder="What happened? Quick recap…" style="width:100%;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:14px;resize:vertical;outline:none;box-sizing:border-box;line-height:1.5">' + safe + '</textarea>'
+    +     '</div>'
+    +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px;justify-content:flex-end">'
+    +       '<button onclick="cancelMobileNote()" style="padding:9px 14px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit">Cancel</button>'
+    +       '<button onclick="saveMobileNote()" style="padding:9px 18px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Save note</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+}
+
 // ── MOBILE: Deal/Lead detail — boss's reference layout ───────────────────────
 // Closely follows SpartanSalesMobile.jsx LeadDetail/DealDetail: black hero,
 // quick action bar (Call/SMS/Email), flat key-value Details card, optional
@@ -2737,24 +2838,59 @@ function _renderEntityDetailMobile(opts) {
     ? sec('Notes') + '<div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:13px;color:#374151;white-space:pre-wrap;line-height:1.6">' + entity.notes + '</div>'
     : '';
 
-  // Bottom actions (per type).
+  // Bottom actions (per type). Common across both: a + Note button for typed
+  // notes. Editing is desktop-only — sales reps on mobile log activity, they
+  // don't tweak deal fields.
   var bottomActions = '';
-  var actions = [];
+  var noteBtn = '<button onclick="openMobileNote(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="flex:1;padding:11px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:700;color:#374151;cursor:pointer;font-family:inherit">+ Note</button>';
+  var rows = [];
   if (entityType === 'lead') {
     var canEdit = typeof canEditLead === 'function' && canEditLead(entity);
-    if (canEdit) actions.push('<button onclick="openLeadEditDrawer(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:700;color:#374151;cursor:pointer;font-family:inherit">✎ Edit</button>');
+    var actions = [noteBtn];
     if (!entity.owner && !entity.converted && canEdit) {
       actions.push('<button onclick="claimLead(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">+ Claim this lead</button>');
     } else if (!entity.converted) {
       actions.push('<button onclick="openConvertLeadModal(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Convert to Deal →</button>');
     }
+    rows.push(actions);
   } else {
-    actions.push('<button onclick="openDealEdit(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:700;color:#374151;cursor:pointer;font-family:inherit">✎ Edit</button>');
-    if (!entity.won && !entity.lost) {
-      actions.push('<button onclick="markDealWon(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#22c55e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">✓ Mark Won</button>');
+    // Deal: three-button row.
+    //   - Mark Lost (red)        — opens existing reason+note modal
+    //   - + Note (white)         — typed note sheet
+    //   - Advance / Won / Reopen (green) — depends on deal state
+    var pl2 = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === entity.pid; });
+    var stages2 = pl2 ? pl2.stages.slice().sort(function(a,b){ return a.ord - b.ord; }).filter(function(s){ return !s.isLost; }) : [];
+    var curIdx2 = stages2.findIndex(function(s){ return s.id === entity.sid; });
+    var nextStage = curIdx2 >= 0 ? stages2[curIdx2 + 1] : null;
+    var greenBtn;
+    if (entity.won) {
+      // Reopen — admin-only per existing unwindDealWon policy. Hide for non-admins.
+      var cu = getCurrentUser() || {};
+      if (cu.role === 'admin') {
+        greenBtn = '<button onclick="unwindDealWon(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#0a0a0a;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">↺ Reopen Deal</button>';
+      } else {
+        greenBtn = '';
+      }
+    } else if (entity.lost) {
+      greenBtn = '';   // Lost is terminal at the moment; reopening lost is desktop-only.
+    } else if (nextStage && nextStage.isWon) {
+      greenBtn = '<button onclick="markDealWon(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#22c55e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">✓ Mark Won</button>';
+    } else if (nextStage) {
+      greenBtn = '<button onclick="advanceDealStageMobile(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#22c55e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">→ ' + nextStage.name + '</button>';
+    } else {
+      greenBtn = '';
     }
+    var lostBtn = (!entity.won && !entity.lost)
+      ? '<button onclick="markDealLost(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#fef2f2;color:#b91c1c;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid #fecaca">✗ Mark Lost</button>'
+      : '';
+    var dealRow = [lostBtn, noteBtn, greenBtn].filter(Boolean);
+    if (dealRow.length) rows.push(dealRow);
   }
-  if (actions.length) bottomActions = '<div style="margin-top:18px;display:flex;gap:8px">' + actions.join('') + '</div>';
+  if (rows.length) {
+    bottomActions = rows.map(function(r){
+      return '<div style="margin-top:12px;display:flex;gap:8px">' + r.join('') + '</div>';
+    }).join('');
+  }
 
   // Compose. Hero pulls -12px to extend edge-to-edge over main's padding.
   return '' +
