@@ -350,6 +350,7 @@ function renderJobDetail() {
     +'</div>';
 
   // Tabs
+  var jobToolsCount = (typeof getJobTools === 'function') ? (getJobTools(job.id) || []).length : 0;
   var tabs = [
     {key:'overview', label:'Overview'},
     {key:'design', label:'Original Design'},
@@ -357,6 +358,7 @@ function renderJobDetail() {
     {key:'final_design', label:'Final Design'},
     {key:'progress_claims', label:'Progress Claims'},
     {key:'installation', label:'Installation'},
+    {key:'tools', label: 'Tools' + (jobToolsCount > 0 ? ' (' + jobToolsCount + ')' : '')},
     {key:'costing', label:'Job Costing'},
     {key:'files', label:'Files'},
     {key:'audit_log', label:'Audit Log'},
@@ -810,6 +812,80 @@ function renderJobDetail() {
         tabContent += '</div>';
       }
     }
+    tabContent += '</div>';
+  } else if (tab === 'tools') {
+    // ── Tools tab — per-job required-tool selector ───────────────────────────
+    // Per Phoenix's Capacity Planner spec: prominent "Required" toggle per tool
+    // from the global registry. Persists immediately to setJobTools (a simple
+    // array of tool IDs — id-in-array means required). The Smart Scheduler
+    // diffs this against the assigned crew's owned tools to flag missing ones.
+    var allTools  = (typeof getTools === 'function') ? (getTools() || []) : [];
+    var jobTools  = (typeof getJobTools === 'function') ? (getJobTools(job.id) || []) : [];
+    var requiredSet = {}; jobTools.forEach(function(tid){ requiredSet[tid] = true; });
+    var toolsSearch = getState().jobToolsSearch || '';
+    var qLower = toolsSearch.toLowerCase();
+    var filteredTools = qLower
+      ? allTools.filter(function(t){ return ((t.name||'') + ' ' + (t.category||'')).toLowerCase().indexOf(qLower) >= 0; })
+      : allTools.slice();
+    // Group by category for readability
+    var byCat = {};
+    filteredTools.forEach(function(t) {
+      var c = t.category || 'other';
+      (byCat[c] = byCat[c] || []).push(t);
+    });
+    var catLabels = {
+      power_tool:      'Power Tools',
+      access_equipment:'Access Equipment',
+      lifting_gear:    'Lifting Gear',
+      licence:         'Licences',
+      consumable:      'Consumables',
+      other:           'Other',
+    };
+    var requiredCount = jobTools.length;
+
+    tabContent = '<div class="card" style="padding:20px;margin-bottom:14px">'
+      +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">'
+      +'<div><h4 style="font-size:16px;font-weight:700;margin:0">🛠️ Tools Required for This Job</h4>'
+      +'<p style="color:#6b7280;font-size:12px;margin:4px 0 0">Tap <strong>Required</strong> to flag a tool. The Smart Scheduler will warn if the assigned crew is missing any required tool.</p></div>'
+      +'<div style="text-align:right"><div style="font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase">Required</div>'
+      +'<div style="font-size:24px;font-weight:800;font-family:Syne,sans-serif;color:'+(requiredCount>0?'#c41230':'#9ca3af')+';margin-top:2px">'+requiredCount+'</div></div>'
+      +'</div>';
+
+    if (allTools.length === 0) {
+      tabContent += '<div style="padding:30px;text-align:center;color:#9ca3af;font-size:13px">'
+        +'No tools registered yet. Add tools in <a href="#" onclick="event.preventDefault();setState({page:\'jobsettings\',jobSettingsTab:\'tools\'})" style="color:#c41230">Settings → Tools</a>.'
+        +'</div>';
+    } else {
+      tabContent += '<input type="text" id="jobToolsSearch" placeholder="Search tools…" value="'+toolsSearch.replace(/"/g,'&quot;')+'" oninput="setState({jobToolsSearch:this.value})" class="inp" style="width:100%;padding:8px 12px;font-size:13px;margin-bottom:14px">';
+
+      // Render each category as a sub-card
+      var orderedCats = ['power_tool','access_equipment','lifting_gear','licence','consumable','other'];
+      orderedCats.forEach(function(cat) {
+        var list = byCat[cat] || [];
+        if (list.length === 0) return;
+        tabContent += '<div style="margin-bottom:14px">'
+          +'<div style="font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">'+(catLabels[cat]||cat)+'</div>';
+        list.forEach(function(t) {
+          var on = !!requiredSet[t.id];
+          tabContent += '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:'+(on?'#fef2f2':'#f9fafb')+';border:1px solid '+(on?'#fecaca':'#f3f4f6')+';border-radius:8px;margin-bottom:6px">'
+            +'<div style="flex:1;min-width:0">'
+            +'<div style="font-size:13px;font-weight:600;color:#111">'+(t.name||'Unnamed tool')+'</div>'
+            + (t.notes ? '<div style="font-size:11px;color:#9ca3af;margin-top:2px">'+t.notes+'</div>' : '')
+            +'</div>'
+            +'<button onclick="(function(){var jt=getJobTools(\''+job.id+'\')||[];var s={};jt.forEach(function(id){s[id]=1;});if(s[\''+t.id+'\']){delete s[\''+t.id+'\'];}else{s[\''+t.id+'\']=1;}setJobTools(\''+job.id+'\',Object.keys(s));renderPage();})()" '
+            +  'class="'+(on?'btn-r':'btn-w')+'" style="font-size:12px;padding:6px 16px;font-weight:600;flex-shrink:0;'+(on?'':'color:#6b7280;border-color:#e5e7eb')+'">'
+            +  (on ? '✓ Required' : 'Required')
+            +'</button>'
+            +'</div>';
+        });
+        tabContent += '</div>';
+      });
+
+      if (filteredTools.length === 0) {
+        tabContent += '<div style="padding:20px;text-align:center;color:#9ca3af;font-size:12px">No tools match your search.</div>';
+      }
+    }
+
     tabContent += '</div>';
   } else if (tab === 'costing') {
     var cs = calcJobCostSummary(job);
