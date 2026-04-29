@@ -388,7 +388,80 @@ function renderJobDetail() {
         testActions.push({icon:'💰', label:'Mark 45% Payment Received', source:'Accounts CRM (Xero)', onclick:'markPaymentReceived(\''+jid+'\',\'cl_cm\',\'c1_final_sign_off\',\'45% received — moving to Final Sign Off\')'});
         break;
       case 'c1_final_sign_off':
-        testActions.push({icon:'✍️', label:'Customer Signs Final Design DocuSign', source:'DocuSign Connect webhook', onclick:'transitionJobStatus(\''+jid+'\',\'c2_order_schedule_standard\',\'Customer signed — testing\');renderPage();'});
+        // Manual §6.3 – §6.6: sequenced Final Sign-Off flow. External events
+        // (CAD save, Sales CRM variation quote, DocuSign webhooks) are mocked
+        // by these triggers so the workflow can be exercised end-to-end
+        // before those integrations exist. Each step is gated by its
+        // prerequisites — clicking out of order is blocked.
+        var hasFinalCAD_t = !!(job.cadFinalData && Array.isArray(job.cadFinalData.projectItems) && job.cadFinalData.projectItems.length > 0);
+        var origItems_t = (job.cadData && Array.isArray(job.cadData.projectItems)) ? job.cadData.projectItems : [];
+        var measItems_t = (job.cadSurveyData && Array.isArray(job.cadSurveyData.projectItems)) ? job.cadSurveyData.projectItems : [];
+        var hasMajorVar_t = false;
+        if (origItems_t.length > 0 && measItems_t.length > 0) {
+          var byId_t = {};
+          origItems_t.forEach(function(o){ if (o && o.id) byId_t[o.id] = o; });
+          for (var ti=0; ti<measItems_t.length && !hasMajorVar_t; ti++) {
+            var m_t = measItems_t[ti];
+            var o_t = (m_t.id && byId_t[m_t.id]) || origItems_t[ti];
+            if (!o_t) continue;
+            var oW_t = +o_t.widthMm||+o_t.width||0, oH_t = +o_t.heightMm||+o_t.height||0;
+            var mW_t = +m_t.widthMm||+m_t.width||0, mH_t = +m_t.heightMm||+m_t.height||0;
+            if (oW_t<=0 || oH_t<=0) continue;
+            var dW_t = mW_t - oW_t, dH_t = mH_t - oH_t;
+            var pW_t = Math.abs(dW_t)/oW_t, pH_t = Math.abs(dH_t)/oH_t;
+            if ((Math.abs(dW_t)>20 && pW_t>0.05) || (Math.abs(dH_t)>20 && pH_t>0.05)) hasMajorVar_t = true;
+          }
+        }
+        var vStatus_t = job.variationStatus || (hasMajorVar_t ? 'awaiting_quote' : 'none');
+        var variationResolved_t = (vStatus_t === 'signed' || vStatus_t === 'not_material' || vStatus_t === 'none');
+        var finalSent_t = !!job.finalEnvelopeSentAt;
+
+        // Step 1 — Lock Final Design (CAD save) §6.4
+        testActions.push({
+          icon:'🔒', label:'Lock Final Design (CAD Final-mode save)', source:'Sales Manager + SpartanCAD',
+          disabled: hasFinalCAD_t,
+          disabledReason: hasFinalCAD_t ? 'Already locked' : '',
+          onclick: 'devMockLockFinalDesign(\''+jid+'\');',
+        });
+
+        // Steps 2/3/4 — only if major variances per §6.3
+        if (hasMajorVar_t) {
+          testActions.push({
+            icon:'📐', label:'Generate Variation Quote (price-affecting variance)', source:'Sales CRM (Sales Manager)',
+            disabled: vStatus_t !== 'awaiting_quote',
+            disabledReason: vStatus_t === 'awaiting_signature' ? 'Already generated — awaiting customer signature' : (vStatus_t === 'signed' ? 'Already signed' : (vStatus_t === 'not_material' ? 'Marked non-material — no variation needed' : '')),
+            onclick: 'devMockGenerateVariation(\''+jid+'\');',
+          });
+          testActions.push({
+            icon:'⚖️', label:'Mark Variances as Non-Material (no price impact)', source:'Sales Manager judgment',
+            disabled: vStatus_t !== 'awaiting_quote',
+            disabledReason: vStatus_t === 'awaiting_signature' ? 'Variation already in progress' : (vStatus_t === 'signed' ? 'Variation already signed' : (vStatus_t === 'not_material' ? 'Already marked non-material' : '')),
+            onclick: 'devMockMarkVariationNonMaterial(\''+jid+'\');',
+          });
+          testActions.push({
+            icon:'✍️', label:'Customer Signs Variation DocuSign', source:'DocuSign Connect webhook',
+            disabled: vStatus_t !== 'awaiting_signature',
+            disabledReason: vStatus_t === 'awaiting_quote' ? 'Variation Quote must be generated first' : (vStatus_t === 'signed' ? 'Already signed' : (vStatus_t === 'not_material' ? 'Marked non-material — no signature needed' : '')),
+            onclick: 'devMockSignVariation(\''+jid+'\');',
+          });
+        }
+
+        // Step 5 — Send Final Design DocuSign §6.5
+        testActions.push({
+          icon:'📨', label:'Send Final Design DocuSign to Customer', source:'Sales Manager → DocuSign API',
+          disabled: !hasFinalCAD_t || !variationResolved_t || finalSent_t,
+          disabledReason: !hasFinalCAD_t ? 'Lock Final Design first' : (!variationResolved_t ? 'Resolve variation first (Generate Quote → Sign, OR Mark Non-Material)' : (finalSent_t ? 'Already sent — awaiting customer signature' : '')),
+          onclick: 'devMockSendFinalDocuSign(\''+jid+'\');',
+        });
+
+        // Step 6 — Customer signs Final Design DocuSign §6.6 → c2
+        testActions.push({
+          icon:'✍️', label:'Customer Signs Final Design DocuSign → Auto-advance to Order & Schedule', source:'DocuSign Connect webhook',
+          disabled: !finalSent_t,
+          disabledReason: !finalSent_t ? 'Final Design DocuSign must be sent first' : '',
+          onclick: 'devMockSignFinalDocuSign(\''+jid+'\');',
+          primary: true,
+        });
         break;
       case 'c2_order_schedule_standard':
       case 'c3_order_schedule_service':
@@ -433,14 +506,27 @@ function renderJobDetail() {
         +'<div style="font-size:11px;color:#6d28d9;margin-top:2px">In production, these status changes auto-fire from the listed system. Until those integrations ship, click to advance manually.</div></div>'
         +'</div>'
         +'<div style="padding:14px 16px;display:flex;flex-direction:column;gap:8px">';
-      testActions.forEach(function(a){
-        workflowCard += '<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:#f9fafb;border:1px solid #f3f4f6;border-radius:8px">'
+      testActions.forEach(function(a, idx){
+        var disabled = !!a.disabled;
+        var rowBg = disabled ? '#f3f4f6' : '#f9fafb';
+        var rowOpacity = disabled ? '0.55' : '1';
+        var btnBg, btnBorder, btnColor, btnLabel;
+        if (disabled) {
+          btnBg = '#e5e7eb'; btnBorder = '#d1d5db'; btnColor = '#9ca3af'; btnLabel = '🔒 Locked';
+        } else {
+          btnBg = a.primary?'#c41230':'#fff'; btnBorder = a.primary?'#c41230':'#e5e7eb'; btnColor = a.primary?'#fff':'#374151'; btnLabel = 'Fire →';
+        }
+        var stepNum = (idx+1) + '.';
+        var disabledReason = disabled && a.disabledReason ? '<div style="font-size:10px;color:#9ca3af;margin-top:2px;font-style:italic">🔒 '+a.disabledReason+'</div>' : '';
+        workflowCard += '<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:'+rowBg+';border:1px solid #f3f4f6;border-radius:8px;opacity:'+rowOpacity+'"'+(disabled?' title="'+(a.disabledReason||'Prerequisites not met')+'"':'')+'>'
+          +'<span style="font-size:11px;font-weight:700;color:#9ca3af;min-width:18px;text-align:right">'+stepNum+'</span>'
           +'<span style="font-size:22px;flex-shrink:0">'+a.icon+'</span>'
           +'<div style="flex:1;min-width:0">'
-          +'<div style="font-size:13px;font-weight:600;color:#111">'+a.label+'</div>'
+          +'<div style="font-size:13px;font-weight:600;color:'+(disabled?'#6b7280':'#111')+'">'+a.label+'</div>'
           +'<div style="font-size:11px;color:#9ca3af;margin-top:2px">Will be auto-fired by: <strong style="color:#6d28d9">'+a.source+'</strong></div>'
+          +disabledReason
           +'</div>'
-          +'<button onclick="'+a.onclick+'" class="'+(a.primary?'btn-r':'btn-w')+'" style="font-size:12px;padding:7px 14px;font-weight:600;white-space:nowrap;flex-shrink:0">Fire →</button>'
+          +'<button '+(disabled?'disabled':'onclick="'+a.onclick+'"')+' style="font-size:12px;padding:7px 14px;font-weight:600;white-space:nowrap;flex-shrink:0;background:'+btnBg+';border:1px solid '+btnBorder+';color:'+btnColor+';border-radius:6px;cursor:'+(disabled?'not-allowed':'pointer')+'">'+btnLabel+'</button>'
           +'</div>';
       });
       workflowCard += '</div></div>';
@@ -1684,4 +1770,137 @@ function renderJobDetail() {
     + '</div>'
     + '</div>';
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Dev-mode mocks for the Final Sign-Off workflow (Manual §6.3 – §6.6).
+// Each helper represents an external event (CAD save, Sales CRM action,
+// DocuSign webhook) that doesn't have a real integration yet. Every helper
+// re-renders so the sequenced trigger panel updates immediately.
+// Production users never see these — they're only invoked from the
+// dev-mode-only Workflow Test Buttons card.
+// ════════════════════════════════════════════════════════════════════════════
+
+// §6.4 — Sales Manager opens CAD in Final mode and saves.
+window.devMockLockFinalDesign = function(jobId) {
+  var jobs = getState().jobs || [];
+  var job = jobs.find(function(j){ return j.id === jobId; });
+  if (!job) { addToast('Job not found','error'); return; }
+  var src = (job.cadFinalData && job.cadFinalData.projectItems) ? job.cadFinalData
+          : (job.cadSurveyData && job.cadSurveyData.projectItems) ? {projectItems:job.cadSurveyData.projectItems.slice()}
+          : (job.cadData && job.cadData.projectItems) ? {projectItems:job.cadData.projectItems.slice()}
+          : {projectItems:[]};
+  if (!src.projectItems || src.projectItems.length === 0) {
+    addToast('Cannot lock — no CAD data on the job to copy from','error');
+    return;
+  }
+  var now = new Date().toISOString();
+  var finalData = { projectItems: src.projectItems, savedAt: now };
+  setState({jobs: getState().jobs.map(function(j){ return j.id === jobId ? Object.assign({}, j, {cadFinalData: finalData}) : j; })});
+  if (typeof dbUpdate === 'function') { try { dbUpdate('jobs', jobId, { cad_final_data: finalData }); } catch(e){} }
+  if (typeof logJobAudit === 'function') logJobAudit(jobId, 'Final Design Locked', 'Dev mock — Sales Manager saved CAD Final mode (' + finalData.projectItems.length + ' frames).');
+  addToast('🔒 Final Design locked', 'success');
+  renderPage();
+};
+
+// §6.3 — Sales Manager generates a Variation Quote when variances are
+// price-affecting. Real flow uses Sales CRM; here we just stamp the job.
+window.devMockGenerateVariation = function(jobId) {
+  var amt = prompt('Variation amount ($, customer-payable extra OR negative for credit). Sales Manager judges based on the variance details:', '');
+  if (amt === null) return;
+  var amount = parseFloat(amt);
+  if (isNaN(amount)) { addToast('Invalid amount','error'); return; }
+  var notes = prompt('Notes (e.g. "Larger glass IGU on W01-W03"):', '') || '';
+  var now = new Date().toISOString();
+  setState({jobs: (getState().jobs||[]).map(function(j){
+    return j.id === jobId ? Object.assign({}, j, {
+      hasVariation: true,
+      variationStatus: 'awaiting_signature',
+      variationAmount: amount,
+      variationNotes: notes,
+      variationGeneratedAt: now,
+    }) : j;
+  })});
+  if (typeof dbUpdate === 'function') { try { dbUpdate('jobs', jobId, { has_variation: true, variation_status: 'awaiting_signature', variation_amount: amount, variation_notes: notes, variation_generated_at: now }); } catch(e){} }
+  if (typeof logJobAudit === 'function') logJobAudit(jobId, 'Variation Quote Generated', 'Dev mock — $' + amount + (notes ? ' — ' + notes : ''));
+  addToast('📐 Variation Quote generated · $' + amount, 'success');
+  renderPage();
+};
+
+// §6.3 — Sales Manager judges the variances do not move the price.
+// No Variation DocuSign needed; flow continues straight to Final Design DocuSign.
+window.devMockMarkVariationNonMaterial = function(jobId) {
+  if (!confirm('Mark variances as NON-MATERIAL?\n\nThis means the Sales Manager has reviewed and confirmed the variances do not affect price (e.g. still in the same glass-size band). No Variation DocuSign will be required.')) return;
+  var now = new Date().toISOString();
+  setState({jobs: (getState().jobs||[]).map(function(j){
+    return j.id === jobId ? Object.assign({}, j, {
+      variationStatus: 'not_material',
+      variationResolvedAt: now,
+    }) : j;
+  })});
+  if (typeof dbUpdate === 'function') { try { dbUpdate('jobs', jobId, { variation_status: 'not_material', variation_resolved_at: now }); } catch(e){} }
+  if (typeof logJobAudit === 'function') logJobAudit(jobId, 'Variances Marked Non-Material', 'Dev mock — Sales Manager judged no price impact.');
+  addToast('⚖️ Variances marked non-material', 'success');
+  renderPage();
+};
+
+// §6.3 — Customer signs the Variation DocuSign. Real flow comes from
+// DocuSign Connect webhook on the variation envelope.
+window.devMockSignVariation = function(jobId) {
+  var now = new Date().toISOString();
+  setState({jobs: (getState().jobs||[]).map(function(j){
+    return j.id === jobId ? Object.assign({}, j, {
+      variationStatus: 'signed',
+      variationSignedAt: now,
+    }) : j;
+  })});
+  if (typeof dbUpdate === 'function') { try { dbUpdate('jobs', jobId, { variation_status: 'signed', variation_signed_at: now }); } catch(e){} }
+  if (typeof logJobAudit === 'function') logJobAudit(jobId, 'Variation Signed', 'Dev mock — Customer signed Variation DocuSign.');
+  addToast('✍️ Variation signed', 'success');
+  renderPage();
+};
+
+// §6.5 — Sales Manager sends the Final Design DocuSign. Real flow uses
+// the existing sendFinalDesignDocuSign function which calls DocuSign API.
+// Dev mock just stamps the sent timestamp without hitting the API.
+window.devMockSendFinalDocuSign = function(jobId) {
+  var now = new Date().toISOString();
+  setState({jobs: (getState().jobs||[]).map(function(j){
+    return j.id === jobId ? Object.assign({}, j, { finalEnvelopeSentAt: now }) : j;
+  })});
+  if (typeof dbUpdate === 'function') { try { dbUpdate('jobs', jobId, { final_envelope_sent_at: now }); } catch(e){} }
+  if (typeof logJobAudit === 'function') logJobAudit(jobId, 'Final Design DocuSign Sent', 'Dev mock — envelope sent (no real API call).');
+  addToast('📨 Final Design DocuSign sent', 'success');
+  renderPage();
+};
+
+// §6.6 — Customer signs the Final Design DocuSign. Real flow comes from
+// DocuSign Connect webhook. Stamps every applicable clause's signedAt
+// (so canTransition's clause check passes) + finalSignedAt, then advances
+// the job to c2_order_schedule_standard.
+window.devMockSignFinalDocuSign = function(jobId) {
+  var jobs = getState().jobs || [];
+  var job = jobs.find(function(j){ return j.id === jobId; });
+  if (!job) { addToast('Job not found','error'); return; }
+  var now = new Date().toISOString();
+  var sigs = Object.assign({}, job.signatures || {});
+  // Stamp every applicable clause so canTransition passes. Conditional clauses
+  // only stamp when the matching flag is set on the job (per FINAL_SIGNOFF_CLAUSES).
+  if (typeof FINAL_SIGNOFF_CLAUSES !== 'undefined' && Array.isArray(FINAL_SIGNOFF_CLAUSES)) {
+    FINAL_SIGNOFF_CLAUSES.forEach(function(cl){
+      if (cl.conditional && !job[cl.conditional]) return;
+      sigs[cl.key] = { signedAt: now, by: 'customer' };
+    });
+  }
+  setState({jobs: getState().jobs.map(function(j){
+    return j.id === jobId ? Object.assign({}, j, { signatures: sigs, finalSignedAt: now }) : j;
+  })});
+  if (typeof dbUpdate === 'function') { try { dbUpdate('jobs', jobId, { signatures: sigs, final_signed_at: now }); } catch(e){} }
+  if (typeof logJobAudit === 'function') logJobAudit(jobId, 'Final Design Signed', 'Dev mock — Customer signed all applicable clauses.');
+  // Now advance to c2 — canTransition will see all clauses signed.
+  if (typeof transitionJobStatus === 'function') {
+    transitionJobStatus(jobId, 'c2_order_schedule_standard', 'Customer signed Final Design DocuSign (dev mock)');
+  }
+  addToast('✍️ Final Design signed → Order & Schedule', 'success');
+  renderPage();
+};
 
