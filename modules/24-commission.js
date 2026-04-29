@@ -1030,8 +1030,587 @@ function toggleCommissionPaid(dealId) {
     });
   }
   addToast('Commission ' + (newState === 'paid' ? 'paid' : 'reverted to realised'), newState === 'paid' ? 'success' : 'warning');
+  // Brief 4 Phase 7: legacy per-deal toggle stays as a one-off override
+  // for admin/accounts. After the action completes, hint that Pay Runs
+  // are the recommended path for normal payments. Skip when reverting
+  // (paid → realised) since that's typically corrective rather than a
+  // bulk-payment shortcut.
+  if (newState === 'paid') {
+    setTimeout(function () {
+      try { addToast('💡 Use Pay Runs for normal commission payments — see Commission → Pay Runs', 'info'); } catch (e) {}
+    }, 1200);
+  }
   renderPage();
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// PAY RUN TRACKER (Brief 4 Phase 7)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Bundles realised-but-unpaid commissions into a single auditable
+// payment event. Replaces the binary toggleCommissionPaid as the primary
+// way commissions get paid; the per-deal toggle stays as an admin-only
+// one-off override (with a warning toast directing users to Pay Runs
+// for normal payments).
+//
+// Storage: spartan_commission_pay_runs holds an array of pay-run records.
+// Each record:
+//   id              — 'pr_' + Date.now()
+//   runNumber       — sequential integer (PR-001, PR-002, …); never reused
+//                     even after voids
+//   runDate         — ISO date when finalised
+//   runBy / runById — admin or accounts user who confirmed it
+//   periodStart     — ISO date defining what realised-date range covered
+//   periodEnd       — ISO date end of period
+//   dealIds         — array of deal IDs included in this run
+//   linesByRep      — denormalised per-rep totals at finalisation time
+//                     {[repName]: {dealCount, totalAmount, dealIds}}
+//   totalAmount     — sum across all included deals (AUD ex-GST)
+//   status          — 'finalised' | 'reconciled' | 'voided'
+//   paymentMethod   — free text ('EFT batch 18-Apr', 'Manual', …)
+//   paymentReference — bank/Xero reference (nullable until reconciled)
+//   xeroBillId      — schema field reserved; Xero export skipped per
+//                     project decision (see Brief 4 cross-brief notes)
+//   notes           — free-text from the admin
+//   createdAt       — ISO timestamp at finalisation
+//   voidedAt        — ISO timestamp at void (null otherwise)
+//   voidedBy        — user name who voided (null otherwise)
+//   voidReason      — text from the void modal
+//   metadata        — { backfilled?: true } for historical-record runs
+//
+// On every deal in spartan_commission_status, payRunId is set when the
+// deal is included in a finalised run. Voiding clears it back to null.
+// The Phase 3 status record already carries the payRunId field.
+
+var COMMISSION_PAY_RUNS_KEY = 'spartan_commission_pay_runs';
+
+function getPayRuns(filter) {
+  filter = filter || {};
+  var raw = null;
+  try { raw = localStorage.getItem(COMMISSION_PAY_RUNS_KEY); } catch (e) {}
+  var all = [];
+  try { all = raw ? JSON.parse(raw) : []; } catch (e) { all = []; }
+  if (!Array.isArray(all)) all = [];
+  var out = all.filter(function (r) {
+    if (filter.status && r.status !== filter.status) return false;
+    if (filter.periodFrom && r.runDate && r.runDate < filter.periodFrom) return false;
+    if (filter.periodTo   && r.runDate && r.runDate > filter.periodTo)   return false;
+    if (filter.repName) {
+      var lines = r.linesByRep || {};
+      if (!lines[filter.repName]) return false;
+    }
+    return true;
+  });
+  // Newest first by runNumber, then by createdAt as tiebreaker
+  out.sort(function (a, b) {
+    var ra = a.runNumber || 0, rb = b.runNumber || 0;
+    if (ra !== rb) return rb - ra;
+    return (b.createdAt || '').localeCompare(a.createdAt || '');
+  });
+  return out;
+}
+
+function getPayRunById(id) {
+  var all = getPayRuns();
+  return all.find(function (r) { return r.id === id; }) || null;
+}
+
+// Read the highest existing runNumber across ALL statuses (finalised,
+// voided, reconciled) so numbers are never reused after a void. Returns
+// the next integer.
+function nextPayRunNumber() {
+  var all = getPayRuns();
+  var max = 0;
+  all.forEach(function (r) { if (typeof r.runNumber === 'number' && r.runNumber > max) max = r.runNumber; });
+  return max + 1;
+}
+
+function savePayRuns(arr) {
+  try { localStorage.setItem(COMMISSION_PAY_RUNS_KEY, JSON.stringify(arr || [])); } catch (e) {}
+}
+
+// Build the linesByRep denormalisation from a list of deal IDs. Used at
+// finalisation time so historical pay-runs render fast even if the
+// underlying deal data drifts later. Reads exGst from the deal's
+// `val / 1.1` directly — same convention as calcDealCommission's
+// breakdown.
+function _buildPayRunLinesByRep(dealIds) {
+  if (!Array.isArray(dealIds)) return {};
+  var deals = (typeof getState === 'function' && getState().deals) ? getState().deals : [];
+  var lines = {};
+  dealIds.forEach(function (did) {
+    var d = deals.find(function (x) { return x.id === did; });
+    if (!d) return;
+    var rep = d.rep || 'Unassigned';
+    var commission = 0;
+    if (typeof calcDealCommission === 'function') {
+      try { commission = calcDealCommission(d).commission || 0; } catch (e) { commission = (d.val || 0) / 1.1 * 0.05; }
+    } else {
+      commission = (d.val || 0) / 1.1 * 0.05;
+    }
+    if (!lines[rep]) lines[rep] = { dealCount: 0, totalAmount: 0, dealIds: [] };
+    lines[rep].dealCount++;
+    lines[rep].totalAmount += commission;
+    lines[rep].dealIds.push(did);
+  });
+  return lines;
+}
+
+// Query realised-but-unpaid commissions where realisedAt falls in the
+// period. opts.includeBackfill=true relaxes the filter to ALSO include
+// already-paid records with payRunId === null — these are the orphan
+// paid commissions from Phase 3's legacy migration that Phase 7's
+// historical-backfill flow buckets into recorded pay runs.
+function getEligibleCommissionsForPayRun(periodStart, periodEnd, opts) {
+  opts = opts || {};
+  var status = getCommissionStatus();
+  var deals = (typeof getState === 'function' && getState().deals) ? getState().deals : [];
+  var dealById = {};
+  deals.forEach(function (d) { dealById[d.id] = d; });
+  var out = [];
+  Object.keys(status).forEach(function (dealId) {
+    var rec = status[dealId];
+    if (!rec) return;
+    if (rec.payRunId) return; // already in a finalised pay run — skip
+    var stateOk = opts.includeBackfill
+      ? (rec.state === 'realised' || rec.state === 'paid')
+      : (rec.state === 'realised');
+    if (!stateOk) return;
+    // Period filter on the realisedAt timestamp (or paidAt for
+    // backfill-paid records). Skip if outside the requested range.
+    var anchorIso = (rec.state === 'realised' ? rec.realisedAt : rec.paidAt) || rec.accruedAt;
+    if (!anchorIso) return;
+    var anchorDate = String(anchorIso).slice(0, 10);
+    if (periodStart && anchorDate < periodStart) return;
+    if (periodEnd   && anchorDate > periodEnd)   return;
+    var deal = dealById[dealId];
+    if (!deal) return; // orphan status without a deal — skip
+    var commission = 0;
+    if (typeof calcDealCommission === 'function') {
+      try { commission = calcDealCommission(deal).commission || 0; } catch (e) {}
+    }
+    out.push({
+      dealId: dealId,
+      deal: deal,
+      status: rec,
+      commission: commission,
+      anchorDate: anchorDate,
+    });
+  });
+  // Sort by rep then anchorDate for stable display
+  out.sort(function (a, b) {
+    var ra = a.deal.rep || 'Unassigned', rb = b.deal.rep || 'Unassigned';
+    if (ra !== rb) return ra.localeCompare(rb);
+    return a.anchorDate.localeCompare(b.anchorDate);
+  });
+  return out;
+}
+
+// Finalise a pay run from a draft record. Builds linesByRep, persists
+// the run, flips every included deal's status to paid+payRunId, writes
+// a single audit entry. opts.backfilled=true distinguishes historical
+// records (different audit action key + metadata flag).
+function finalisePayRun(payRunData, opts) {
+  opts = opts || {};
+  if (!payRunData || !Array.isArray(payRunData.dealIds) || payRunData.dealIds.length === 0) {
+    addToast('Pay run requires at least one deal', 'error');
+    return null;
+  }
+  var cu = getCurrentUser() || {};
+  if (cu.role !== 'admin' && cu.role !== 'accounts') {
+    addToast('Only Admin or Accounts can finalise a Pay Run', 'error');
+    return null;
+  }
+
+  var nowIso = new Date().toISOString();
+  var runDate = payRunData.runDate || nowIso.slice(0, 10);
+  var runNumber = nextPayRunNumber();
+  var lines = _buildPayRunLinesByRep(payRunData.dealIds);
+  var totalAmount = 0;
+  Object.keys(lines).forEach(function (k) { totalAmount += lines[k].totalAmount; });
+
+  var run = {
+    id: 'pr_' + Date.now(),
+    runNumber: runNumber,
+    runDate: runDate,
+    runBy: cu.name || 'Unknown',
+    runById: cu.id || null,
+    periodStart: payRunData.periodStart || null,
+    periodEnd:   payRunData.periodEnd || null,
+    dealIds: payRunData.dealIds.slice(),
+    linesByRep: lines,
+    totalAmount: totalAmount,
+    status: 'finalised',
+    paymentMethod: payRunData.paymentMethod || 'EFT',
+    paymentReference: null,
+    xeroBillId: null,
+    notes: payRunData.notes || '',
+    createdAt: nowIso,
+    voidedAt: null,
+    voidedBy: null,
+    voidReason: null,
+    metadata: opts.backfilled ? { backfilled: true } : {},
+  };
+
+  // Persist the run record
+  var allRuns = getPayRuns();
+  // Prepend the new run, but resort newest-first via the next read
+  allRuns.push(run);
+  savePayRuns(allRuns);
+
+  // Flip every included deal's commission status to paid+payRunId
+  var status = getCommissionStatus();
+  payRunData.dealIds.forEach(function (dealId) {
+    var rec = status[dealId];
+    if (!rec) return;
+    rec.state = 'paid';
+    rec.paidAt = runDate + 'T00:00:00Z';
+    rec.paidBy = cu.name || 'Unknown';
+    rec.payRunId = run.id;
+    if (opts.backfilled && !rec.gateUsed) rec.gateUsed = 'historical_backfill';
+    status[dealId] = rec;
+  });
+  saveCommissionStatus(status);
+
+  // Single audit entry. Action key differs for historical vs ordinary runs.
+  if (typeof appendAuditEntry === 'function') {
+    try {
+      var repCount = Object.keys(lines).length;
+      appendAuditEntry({
+        entityType: 'commission', entityId: run.id,
+        action: opts.backfilled ? 'commission.pay_run_backfilled' : 'commission.pay_run_finalised',
+        summary: 'PR-' + String(runNumber).padStart(3, '0') + ' ' +
+          (opts.backfilled ? 'backfilled' : 'finalised') + ' — $' +
+          totalAmount.toFixed(2) + ' across ' + run.dealIds.length + ' deal' +
+          (run.dealIds.length !== 1 ? 's' : '') + ' (' + repCount + ' rep' + (repCount !== 1 ? 's' : '') + ')',
+        after: { runId: run.id, runNumber: runNumber, totalAmount: totalAmount, dealCount: run.dealIds.length },
+        metadata: { backfilled: !!opts.backfilled, dealIds: run.dealIds, periodStart: run.periodStart, periodEnd: run.periodEnd },
+      });
+    } catch (e) {}
+  }
+  return run;
+}
+
+// Void a finalised pay run. Admin-only (NOT accounts — destructive).
+// Flips every included deal back to realised-unpaid (clearing payRunId,
+// paidAt, paidBy). The run record stays in history with status='voided'
+// + voidedAt + voidedBy + voidReason for the audit trail.
+function voidPayRun(runId, voidReason) {
+  var cu = getCurrentUser() || {};
+  if (cu.role !== 'admin') {
+    addToast('Only Admin can void a Pay Run (Accounts cannot)', 'error');
+    return false;
+  }
+  var allRuns = getPayRuns();
+  var idx = allRuns.findIndex(function (r) { return r.id === runId; });
+  if (idx < 0) { addToast('Pay run not found', 'error'); return false; }
+  var run = allRuns[idx];
+  if (run.status === 'voided') { addToast('Pay run already voided', 'warning'); return false; }
+  if (!voidReason || !String(voidReason).trim()) {
+    addToast('Void reason is required', 'error');
+    return false;
+  }
+
+  var nowIso = new Date().toISOString();
+  // Revert every deal's commission status back to realised-unpaid
+  var status = getCommissionStatus();
+  (run.dealIds || []).forEach(function (dealId) {
+    var rec = status[dealId];
+    if (!rec) return;
+    if (rec.payRunId !== run.id) return; // moved to a different run somehow — leave alone
+    rec.state = 'realised';
+    rec.paidAt = null;
+    rec.paidBy = null;
+    rec.payRunId = null;
+    status[dealId] = rec;
+  });
+  saveCommissionStatus(status);
+
+  // Update the run record in place
+  run.status = 'voided';
+  run.voidedAt = nowIso;
+  run.voidedBy = cu.name || 'Unknown';
+  run.voidReason = String(voidReason).trim();
+  allRuns[idx] = run;
+  savePayRuns(allRuns);
+
+  if (typeof appendAuditEntry === 'function') {
+    try {
+      appendAuditEntry({
+        entityType: 'commission', entityId: run.id,
+        action: 'commission.pay_run_voided',
+        summary: 'PR-' + String(run.runNumber).padStart(3, '0') + ' voided by ' + (cu.name || 'Unknown') + ' — reason: ' + String(voidReason).trim(),
+        before: { status: 'finalised', dealCount: run.dealIds.length },
+        after:  { status: 'voided', voidedAt: nowIso, voidedBy: cu.name || 'Unknown', voidReason: String(voidReason).trim() },
+        metadata: { runId: run.id, runNumber: run.runNumber, dealIds: run.dealIds },
+      });
+    } catch (e) {}
+  }
+  addToast('PR-' + String(run.runNumber).padStart(3, '0') + ' voided', 'warning');
+  return true;
+}
+
+// Period-preset helper. Returns {start, end} ISO dates (YYYY-MM-DD) for
+// a named preset. Falls back to the same date today/today for unknown
+// presets so the UI doesn't crash.
+function _payRunPeriodFromPreset(preset) {
+  var today = new Date();
+  var todayIso = today.toISOString().slice(0, 10);
+  function iso(d) { return d.toISOString().slice(0, 10); }
+  function addDays(d, n) { var x = new Date(d); x.setDate(x.getDate() + n); return x; }
+  function startOfWeek(d) {
+    // Mon = 1 in our locale; JS getDay returns 0 (Sun) - 6 (Sat)
+    var day = d.getDay();
+    var diff = day === 0 ? -6 : 1 - day; // shift Sunday to "previous Monday"
+    return addDays(d, diff);
+  }
+  function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+  function endOfMonth(d)   { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
+  switch (preset) {
+    case 'this_week': {
+      var s = startOfWeek(today); return { start: iso(s), end: iso(addDays(s, 6)) };
+    }
+    case 'last_week': {
+      var s2 = startOfWeek(today); return { start: iso(addDays(s2, -7)), end: iso(addDays(s2, -1)) };
+    }
+    case 'this_fortnight':
+      // Last 14 days ending today (inclusive). Predictable for AU pay cycles.
+      return { start: iso(addDays(today, -13)), end: todayIso };
+    case 'last_fortnight':
+      return { start: iso(addDays(today, -27)), end: iso(addDays(today, -14)) };
+    case 'this_month':
+      return { start: iso(startOfMonth(today)), end: iso(endOfMonth(today)) };
+    case 'last_month': {
+      var lm = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      return { start: iso(startOfMonth(lm)), end: iso(endOfMonth(lm)) };
+    }
+    default:
+      return { start: todayIso, end: todayIso };
+  }
+}
+
+// Per-rep slice of a pay run — what one rep sees in their My Payment
+// History. Returns { run, lines, deals } where lines = run.linesByRep[rep]
+// and deals = the actual deal records for that rep within the run.
+function getPayRunSliceForRep(runId, repName) {
+  var run = getPayRunById(runId);
+  if (!run || !repName) return null;
+  var lines = (run.linesByRep || {})[repName];
+  if (!lines) return null;
+  var deals = (typeof getState === 'function' && getState().deals) ? getState().deals : [];
+  var repDeals = deals.filter(function (d) { return lines.dealIds.indexOf(d.id) >= 0; });
+  return { run: run, lines: lines, deals: repDeals };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// PAY RUN MODAL FLOW (Brief 4 Phase 7 — UI orchestration)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// _pendingPayRun drives a 3-step modal: period select → deal select →
+// review & confirm. mode='backfill' uses the same flow but relaxes the
+// eligibility query to include already-paid orphan records (legacy
+// migration leftovers) for bucketing into historical pay runs.
+//
+// _pendingPayRunVoid drives the void confirmation modal.
+// _pendingPayRunDetailId opens the read-only detail view for a finalised
+// or voided run.
+
+var _pendingPayRun = null;
+var _pendingPayRunVoid = null;
+var _pendingPayRunDetailId = null;
+
+function openNewPayRunModal() {
+  var cu = getCurrentUser() || {};
+  if (cu.role !== 'admin' && cu.role !== 'accounts') {
+    addToast('Only Admin or Accounts can create a Pay Run', 'error');
+    return;
+  }
+  var period = _payRunPeriodFromPreset('this_fortnight');
+  _pendingPayRun = {
+    step: 1,
+    mode: 'normal',
+    periodPreset: 'this_fortnight',
+    periodStart: period.start,
+    periodEnd: period.end,
+    selectedDealIds: {}, // map of dealId → true for O(1) toggle
+    paymentMethod: 'EFT',
+    notes: '',
+    runDate: new Date().toISOString().slice(0, 10),
+  };
+  // Default-select all eligible deals on entry
+  _payRunRefreshEligible();
+  renderPage();
+}
+function openHistoricalPayRunModal() {
+  var cu = getCurrentUser() || {};
+  if (cu.role !== 'admin') {
+    addToast('Only Admin can record historical Pay Runs', 'error');
+    return;
+  }
+  // Backfill mode shows ALL paid+payRunId=null records, regardless of
+  // when they were realised. Default period range is "all time" (no
+  // bounds) for the eligibility query.
+  _pendingPayRun = {
+    step: 2, // skip period select for backfill — show eligible immediately
+    mode: 'backfill',
+    periodPreset: 'all',
+    periodStart: null,
+    periodEnd: null,
+    selectedDealIds: {},
+    paymentMethod: 'Manual',
+    notes: 'Historical backfill — recorded after-the-fact',
+    runDate: new Date().toISOString().slice(0, 10),
+  };
+  _payRunRefreshEligible();
+  renderPage();
+}
+function closePayRunModal() { _pendingPayRun = null; renderPage(); }
+function payRunSetStep(step) {
+  if (!_pendingPayRun) return;
+  _pendingPayRun.step = Math.max(1, Math.min(3, step));
+  renderPage();
+}
+function payRunSetPeriodPreset(preset) {
+  if (!_pendingPayRun) return;
+  _pendingPayRun.periodPreset = preset;
+  if (preset !== 'custom') {
+    var p = _payRunPeriodFromPreset(preset);
+    _pendingPayRun.periodStart = p.start;
+    _pendingPayRun.periodEnd = p.end;
+  }
+  _payRunRefreshEligible();
+  renderPage();
+}
+function payRunSetCustomPeriod(field, value) {
+  if (!_pendingPayRun) return;
+  if (field === 'start') _pendingPayRun.periodStart = value;
+  if (field === 'end')   _pendingPayRun.periodEnd   = value;
+  _payRunRefreshEligible();
+  renderPage();
+}
+function payRunSetRunDate(value) {
+  if (!_pendingPayRun) return;
+  _pendingPayRun.runDate = value;
+  renderPage();
+}
+function _payRunRefreshEligible() {
+  if (!_pendingPayRun) return;
+  var includeBackfill = _pendingPayRun.mode === 'backfill';
+  var elig = getEligibleCommissionsForPayRun(
+    includeBackfill ? null : _pendingPayRun.periodStart,
+    includeBackfill ? null : _pendingPayRun.periodEnd,
+    { includeBackfill: includeBackfill }
+  );
+  _pendingPayRun.eligibleDeals = elig;
+  // Default all selected on first entry / period change
+  _pendingPayRun.selectedDealIds = {};
+  elig.forEach(function (e) { _pendingPayRun.selectedDealIds[e.dealId] = true; });
+}
+function payRunToggleDeal(dealId) {
+  if (!_pendingPayRun) return;
+  if (_pendingPayRun.selectedDealIds[dealId]) {
+    delete _pendingPayRun.selectedDealIds[dealId];
+  } else {
+    _pendingPayRun.selectedDealIds[dealId] = true;
+  }
+  renderPage();
+}
+function payRunSelectAll() {
+  if (!_pendingPayRun) return;
+  _pendingPayRun.selectedDealIds = {};
+  (_pendingPayRun.eligibleDeals || []).forEach(function (e) { _pendingPayRun.selectedDealIds[e.dealId] = true; });
+  renderPage();
+}
+function payRunSelectNone() {
+  if (!_pendingPayRun) return;
+  _pendingPayRun.selectedDealIds = {};
+  renderPage();
+}
+function payRunSetPaymentMethod(method) {
+  if (!_pendingPayRun) return;
+  _pendingPayRun.paymentMethod = method;
+  renderPage();
+}
+function payRunSetNotes(text) {
+  if (!_pendingPayRun) return;
+  _pendingPayRun.notes = text;
+  // Don't renderPage on every keystroke — preserves textarea cursor.
+}
+function payRunFinalise() {
+  if (!_pendingPayRun) return;
+  var dealIds = Object.keys(_pendingPayRun.selectedDealIds || {});
+  if (dealIds.length === 0) { addToast('Select at least one deal', 'error'); return; }
+  var run = finalisePayRun({
+    dealIds: dealIds,
+    periodStart: _pendingPayRun.periodStart,
+    periodEnd: _pendingPayRun.periodEnd,
+    paymentMethod: _pendingPayRun.paymentMethod,
+    notes: _pendingPayRun.notes,
+    runDate: _pendingPayRun.runDate,
+  }, { backfilled: _pendingPayRun.mode === 'backfill' });
+  if (!run) return;
+  _pendingPayRun = null;
+  // Land on the new run's detail view + Pay Run History tab
+  _pendingPayRunDetailId = run.id;
+  commTab = 'payruns';
+  addToast('PR-' + String(run.runNumber).padStart(3, '0') + ' finalised — ' + (run.dealIds.length) + ' deals paid', 'success');
+  renderPage();
+}
+
+// Void modal
+function openVoidPayRunModal(runId) {
+  var cu = getCurrentUser() || {};
+  if (cu.role !== 'admin') { addToast('Only Admin can void a Pay Run', 'error'); return; }
+  _pendingPayRunVoid = { runId: runId, voidReason: '' };
+  renderPage();
+}
+function closeVoidPayRunModal() { _pendingPayRunVoid = null; renderPage(); }
+function payRunVoidSetReason(text) {
+  if (!_pendingPayRunVoid) return;
+  _pendingPayRunVoid.voidReason = text;
+}
+function confirmVoidPayRun() {
+  if (!_pendingPayRunVoid) return;
+  var ok = voidPayRun(_pendingPayRunVoid.runId, _pendingPayRunVoid.voidReason);
+  if (!ok) return;
+  _pendingPayRunVoid = null;
+  renderPage();
+}
+
+// Detail view open/close
+function openPayRunDetail(runId) { _pendingPayRunDetailId = runId; renderPage(); }
+function closePayRunDetail() { _pendingPayRunDetailId = null; renderPage(); }
+
+// Mark-as-reconciled (a small status flip from finalised → reconciled
+// once the bank shows the payment. Optional reference field.)
+function markPayRunReconciled(runId, reference) {
+  var cu = getCurrentUser() || {};
+  if (cu.role !== 'admin' && cu.role !== 'accounts') { addToast('Permission denied', 'error'); return; }
+  var allRuns = getPayRuns();
+  var idx = allRuns.findIndex(function (r) { return r.id === runId; });
+  if (idx < 0) return;
+  if (allRuns[idx].status === 'voided') { addToast('Cannot reconcile a voided run', 'error'); return; }
+  allRuns[idx].status = 'reconciled';
+  allRuns[idx].paymentReference = reference || allRuns[idx].paymentReference || null;
+  savePayRuns(allRuns);
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType: 'commission', entityId: runId,
+      action: 'commission.rules_updated', // closest existing — narrower would need a new vocab key
+      summary: 'PR-' + String(allRuns[idx].runNumber).padStart(3, '0') + ' marked reconciled',
+      after: { status: 'reconciled', paymentReference: reference || null },
+      metadata: { kind: 'pay_run_reconciled', runId: runId },
+    });
+  }
+  addToast('Pay run reconciled', 'success');
+  renderPage();
+}
+
+// Pay Run History filter state (separate from commTab + commRepFilter
+// since the page shares those for other tabs)
+var _payRunHistoryFilter = { status: 'all', search: '' };
+function payRunHistorySetStatus(s) { _payRunHistoryFilter.status = s; renderPage(); }
+function payRunHistorySetSearch(s) { _payRunHistoryFilter.search = s; renderPage(); }
 
 // Commission page state
 var commRepFilter = 'all';
@@ -1280,10 +1859,19 @@ function renderCommissionPage() {
     ratesHtml+='</tbody></table></div><div style="margin-top:14px;padding:14px 18px;background:#fef9c3;border:1px solid #fde68a;border-radius:10px;font-size:12px;color:#92400e">\u26a0\ufe0f <strong>GST Note:</strong> Commission = (deal value \u00f7 1.1) \u00d7 rate%.</div>';
   }
 
+  // PAY RUN HISTORY TAB (Brief 4 Phase 7) \u2014 visible to admin / accounts /
+  // sales_manager / sales_rep. Reps see runs filtered to their slice only.
+  var payrunsHtml = '';
+  if (commTab === 'payruns') {
+    payrunsHtml = _renderPayRunHistoryTab(cu, isAdmin, isManager, isRep);
+  }
+
   // BUILD TABS
   var tabs=[];
-  if(isAdmin) tabs=[{id:'overview',label:'\ud83d\udcca Deals & Payments'},{id:'override',label:'\ud83d\udcb5 Manager Override'},{id:'rates',label:'\u2699\ufe0f Commission Rates'},{id:'audit',label:'\ud83d\udcdd Audit Log'}];
-  else if(isManager) tabs=[{id:'overview',label:'\ud83d\udcb0 My Commission'},{id:'override',label:'\ud83d\udcb5 My Override'}];
+  if(isAdmin) tabs=[{id:'overview',label:'\ud83d\udcca Deals & Payments'},{id:'payruns',label:'\ud83d\udcb8 Pay Runs'},{id:'override',label:'\ud83d\udcb5 Manager Override'},{id:'rates',label:'\u2699\ufe0f Commission Rates'},{id:'audit',label:'\ud83d\udcdd Audit Log'}];
+  else if(isManager) tabs=[{id:'overview',label:'\ud83d\udcb0 My Commission'},{id:'payruns',label:'\ud83d\udcb8 Pay Runs'},{id:'override',label:'\ud83d\udcb5 My Override'}];
+  else if(isRep) tabs=[{id:'overview',label:'\ud83d\udcb0 My Commission'},{id:'payruns',label:'\ud83d\udcb8 My Payment History'}];
+  else if(cu.role === 'accounts') tabs=[{id:'overview',label:'\ud83d\udcca Deals & Payments'},{id:'payruns',label:'\ud83d\udcb8 Pay Runs'},{id:'audit',label:'\ud83d\udcdd Audit Log'}];
 
   var title=isAdmin?'Commission Management':isManager?'My Commission & Override':isRep?'My Commission':'Commission';
 
@@ -1297,8 +1885,418 @@ function renderCommissionPage() {
     +(tabs.length>0?'<div style="display:flex;gap:8px;margin-bottom:16px">'+tabs.map(function(t){return '<button onclick="commTab=\''+t.id+'\';renderPage()" class="pill'+(commTab===t.id?' on':'')+'" style="font-family:inherit;font-size:13px">'+t.label+'</button>';}).join('')+'</div>':'')
     +(commTab==='overview'?'<div class="card" style="padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><select class="sel" style="width:auto;font-size:12px" onchange="commDateFilter=this.value;renderPage()"><option value="all"'+(commDateFilter==='all'?' selected':'')+'>All Time</option><option value="thisMonth"'+(commDateFilter==='thisMonth'?' selected':'')+'>This Month</option><option value="lastMonth"'+(commDateFilter==='lastMonth'?' selected':'')+'>Last Month</option><option value="thisQuarter"'+(commDateFilter==='thisQuarter'?' selected':'')+'>This Quarter</option><option value="last6"'+(commDateFilter==='last6'?' selected':'')+'>Last 6 Months</option><option value="thisYear"'+(commDateFilter==='thisYear'?' selected':'')+'>This Year</option></select>'+(isAdmin?'<select class="sel" style="width:auto;font-size:12px" onchange="commRepFilter=this.value;renderPage()"><option value="all"'+(commRepFilter==='all'?' selected':'')+'>All Reps</option>'+reps.map(function(r){return '<option value="'+r+'"'+(commRepFilter===r?' selected':'')+'>'+r+'</option>';}).join('')+'</select>':'')+'<select class="sel" style="width:auto;font-size:12px" onchange="commStatusFilter=this.value;renderPage()"><option value="all"'+(commStatusFilter==='all'?' selected':'')+'>All Status</option><option value="paid"'+(commStatusFilter==='paid'?' selected':'')+'>Paid</option><option value="due"'+(commStatusFilter==='due'?' selected':'')+'>Due (Ready to Pay)</option><option value="pending"'+(commStatusFilter==='pending'?' selected':'')+'>Pending (Not Yet Due)</option><option value="unpaid"'+(commStatusFilter==='unpaid'?' selected':'')+'>All Unpaid</option></select></div>':'')
     +repCards
-    +(commTab==='overview'?table:commTab==='override'?overrideHtml:commTab==='audit'?auditHtml:ratesHtml)
-    +(!isAdmin&&!isManager&&!isRep?'<div class="card" style="padding:40px;text-align:center"><div style="font-size:28px;margin-bottom:8px">\ud83d\udd12</div><div style="font-size:14px;color:#6b7280">Commission data is restricted.</div></div>':'')
+    +(commTab==='overview'?table:commTab==='override'?overrideHtml:commTab==='audit'?auditHtml:commTab==='payruns'?payrunsHtml:ratesHtml)
+    +(!isAdmin&&!isManager&&!isRep&&cu.role!=='accounts'?'<div class="card" style="padding:40px;text-align:center"><div style="font-size:28px;margin-bottom:8px">\ud83d\udd12</div><div style="font-size:14px;color:#6b7280">Commission data is restricted.</div></div>':'')
     +'</div>';
+}
+
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+// PAY RUN UI RENDERERS (Brief 4 Phase 7)
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+
+// Pay Run History tab body. Different views for admin/accounts vs sales
+// rep \u2014 the rep view filters runs to ones containing their deals and
+// shows a per-rep slice rather than the full team breakdown.
+function _renderPayRunHistoryTab(cu, isAdmin, isManager, isRep) {
+  var canCreate = cu.role === 'admin' || cu.role === 'accounts';
+  var canBackfill = cu.role === 'admin';
+  var f = _payRunHistoryFilter || { status: 'all', search: '' };
+  var allRuns = getPayRuns();
+
+  // Rep filter: only show runs that include the rep's deals
+  if (isRep) {
+    allRuns = allRuns.filter(function (r) { return (r.linesByRep || {})[cu.name]; });
+  }
+  // Status filter
+  if (f.status !== 'all') allRuns = allRuns.filter(function (r) { return r.status === f.status; });
+  // Search by run number / paymentMethod / notes
+  if (f.search) {
+    var q = String(f.search).toLowerCase();
+    allRuns = allRuns.filter(function (r) {
+      var nLabel = 'pr-' + String(r.runNumber).padStart(3, '0');
+      return nLabel.indexOf(q) >= 0
+        || String(r.paymentMethod || '').toLowerCase().indexOf(q) >= 0
+        || String(r.notes || '').toLowerCase().indexOf(q) >= 0
+        || String(r.runBy || '').toLowerCase().indexOf(q) >= 0;
+    });
+  }
+
+  // Top action bar
+  var html = ''
+    + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
+    + (canCreate ? '<button onclick="openNewPayRunModal()" class="btn-r" style="font-size:13px;padding:8px 14px">+ New Pay Run</button>' : '')
+    + (canBackfill ? '<button onclick="openHistoricalPayRunModal()" class="btn-w" style="font-size:12px;padding:7px 12px;color:#6b7280">\ud83d\udccb Record Historical</button>' : '')
+    + '<div style="flex:1"></div>'
+    + '<select class="sel" style="width:auto;font-size:12px" onchange="payRunHistorySetStatus(this.value)">'
+    +   '<option value="all"' + (f.status==='all'?' selected':'') + '>All status</option>'
+    +   '<option value="finalised"' + (f.status==='finalised'?' selected':'') + '>Finalised</option>'
+    +   '<option value="reconciled"' + (f.status==='reconciled'?' selected':'') + '>Reconciled</option>'
+    +   '<option value="voided"' + (f.status==='voided'?' selected':'') + '>Voided</option>'
+    + '</select>'
+    + '<input class="inp" placeholder="Search PR-### / method / notes / run by" oninput="payRunHistorySetSearch(this.value)" value="' + (f.search ? String(f.search).replace(/"/g,'&quot;') : '') + '" style="flex:1;min-width:200px;font-size:12px">'
+    + '</div>';
+
+  // Empty state
+  if (allRuns.length === 0) {
+    html += '<div class="card" style="padding:40px;text-align:center;color:#9ca3af">'
+      + '<div style="font-size:36px;margin-bottom:10px">\ud83d\udcb8</div>'
+      + '<div style="font-size:14px;font-weight:600;color:#6b7280;margin-bottom:6px">No pay runs ' + (isRep ? 'in your history yet' : 'yet') + '</div>'
+      + (canCreate
+          ? '<div style="font-size:12px;color:#9ca3af;margin-bottom:16px">Bundle realised commissions into a single auditable payment event.</div><button onclick="openNewPayRunModal()" class="btn-r" style="font-size:13px">+ Create your first Pay Run</button>'
+          : '<div style="font-size:12px;color:#9ca3af">Pay runs will appear here once admin creates them.</div>')
+      + '</div>';
+    return html;
+  }
+
+  // Table \u2014 different for rep vs admin
+  if (isRep) {
+    // Rep view: card list with their slice of each run
+    html += '<div style="display:flex;flex-direction:column;gap:10px">';
+    allRuns.forEach(function (r) {
+      var lines = r.linesByRep[cu.name];
+      if (!lines) return;
+      var voided = r.status === 'voided';
+      var label = 'PR-' + String(r.runNumber).padStart(3, '0');
+      var col = voided ? '#9ca3af' : (r.status === 'reconciled' ? '#15803d' : '#3b82f6');
+      var bg = voided ? '#f9fafb' : (r.status === 'reconciled' ? '#f0fdf4' : '#eff6ff');
+      html += '<div class="card" style="padding:14px 16px;cursor:pointer;border-left:4px solid ' + col + (voided ? ';opacity:0.6;text-decoration:line-through' : '') + '" onclick="openPayRunDetail(\'' + r.id + '\')">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center">'
+        +   '<div><div style="font-size:14px;font-weight:700;font-family:Syne,sans-serif">' + label + '</div>'
+        +     '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + r.runDate + ' \u00b7 ' + (r.paymentMethod || '\u2014') + (r.metadata && r.metadata.backfilled ? ' \u00b7 backfilled' : '') + '</div></div>'
+        +   '<div style="text-align:right">'
+        +     '<div style="font-size:18px;font-weight:800;color:' + col + ';font-family:Syne,sans-serif">' + fmt$(lines.totalAmount) + '</div>'
+        +     '<div style="font-size:11px;color:#9ca3af">' + lines.dealCount + ' deal' + (lines.dealCount !== 1 ? 's' : '') + '</div>'
+        +   '</div>'
+        + '</div></div>';
+    });
+    html += '</div>';
+  } else {
+    // Admin/manager/accounts view: table
+    html += '<div class="card" style="overflow:hidden;padding:0"><table style="width:100%;border-collapse:collapse">'
+      + '<thead><tr>'
+      + '<th class="th">Run #</th><th class="th">Run Date</th><th class="th">Period</th><th class="th">Run By</th>'
+      + '<th class="th" style="text-align:center">Reps</th><th class="th" style="text-align:center">Deals</th>'
+      + '<th class="th" style="text-align:right">Total $</th><th class="th">Status</th><th class="th">Method</th>'
+      + '</tr></thead><tbody>';
+    allRuns.forEach(function (r) {
+      var voided = r.status === 'voided';
+      var label = 'PR-' + String(r.runNumber).padStart(3, '0');
+      var statusColor = voided ? '#6b7280' : (r.status === 'reconciled' ? '#15803d' : '#3b82f6');
+      var statusBg    = voided ? '#f3f4f6' : (r.status === 'reconciled' ? '#dcfce7' : '#dbeafe');
+      var period = (r.periodStart && r.periodEnd) ? (r.periodStart + ' \u2192 ' + r.periodEnd) : (r.metadata && r.metadata.backfilled ? 'all (backfill)' : '\u2014');
+      var repCount = Object.keys(r.linesByRep || {}).length;
+      html += '<tr style="cursor:pointer' + (voided ? ';opacity:0.55' : '') + '" onclick="openPayRunDetail(\'' + r.id + '\')" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'\'">'
+        + '<td class="td"><div style="font-weight:700;color:' + statusColor + ';font-family:Syne,sans-serif' + (voided ? ';text-decoration:line-through' : '') + '">' + label + '</div>'
+        +   (r.metadata && r.metadata.backfilled ? '<div style="font-size:10px;color:#9ca3af">backfilled</div>' : '')
+        + '</td>'
+        + '<td class="td" style="font-size:12px">' + r.runDate + '</td>'
+        + '<td class="td" style="font-size:11px;color:#6b7280">' + period + '</td>'
+        + '<td class="td" style="font-size:12px">' + (r.runBy || '\u2014') + '</td>'
+        + '<td class="td" style="text-align:center;font-size:13px">' + repCount + '</td>'
+        + '<td class="td" style="text-align:center;font-size:13px">' + (r.dealIds || []).length + '</td>'
+        + '<td class="td" style="text-align:right;font-size:14px;font-weight:700;color:' + statusColor + ';font-family:Syne,sans-serif">' + fmt$(r.totalAmount || 0) + '</td>'
+        + '<td class="td"><span style="font-size:11px;font-weight:600;padding:3px 8px;border-radius:20px;background:' + statusBg + ';color:' + statusColor + '">' + r.status.toUpperCase() + '</span></td>'
+        + '<td class="td" style="font-size:11px;color:#6b7280">' + (r.paymentMethod || '\u2014') + '</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+  return html;
+}
+
+// Pay Run creation modal \u2014 3-step wizard. Rendered when _pendingPayRun is set.
+function renderPayRunModal() {
+  if (!_pendingPayRun) return '';
+  var p = _pendingPayRun;
+  var titlePrefix = p.mode === 'backfill' ? 'Record Historical Pay Run' : 'New Pay Run';
+  var stepLabel = 'Step ' + p.step + ' of 3 \u2014 ' + (p.step === 1 ? 'Period' : p.step === 2 ? 'Select deals' : 'Review & confirm');
+
+  var inner = '';
+  if (p.step === 1) {
+    inner = _renderPayRunStep1Period(p);
+  } else if (p.step === 2) {
+    inner = _renderPayRunStep2Deals(p);
+  } else if (p.step === 3) {
+    inner = _renderPayRunStep3Review(p);
+  }
+  // Footer buttons
+  var canBack = p.step > 1 && p.mode !== 'backfill'; // backfill skips step 1
+  var canBack2 = p.step > 2; // backfill can still go back from 3 to 2
+  var backBtn = (canBack || canBack2)
+    ? '<button class="btn-w" onclick="payRunSetStep(' + (p.step - 1) + ')" style="font-size:12px">\u2190 Back</button>'
+    : '<span></span>';
+  var nextBtn;
+  if (p.step < 3) {
+    var selectedCount = Object.keys(p.selectedDealIds || {}).length;
+    var disabled = (p.step === 2 && selectedCount === 0);
+    nextBtn = '<button class="btn-r" onclick="payRunSetStep(' + (p.step + 1) + ')" ' + (disabled ? 'disabled style="opacity:0.5;font-size:12px"' : 'style="font-size:12px"') + '>Next \u2192</button>';
+  } else {
+    var prNum = nextPayRunNumber();
+    var label = 'PR-' + String(prNum).padStart(3, '0');
+    nextBtn = '<button class="btn-r" onclick="payRunFinalise()" style="font-size:13px;padding:8px 16px">Finalise ' + label + '</button>';
+  }
+
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)closePayRunModal()">'
+    +   '<div class="modal" style="max-width:880px;max-height:90vh;display:flex;flex-direction:column">'
+    +     '<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
+    +       '<div><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">' + titlePrefix + '</h3>'
+    +         '<div style="font-size:12px;color:#6b7280;margin-top:2px">' + stepLabel + '</div></div>'
+    +       '<button onclick="closePayRunModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button>'
+    +     '</div>'
+    +     '<div style="flex:1;overflow-y:auto;padding:24px">' + inner + '</div>'
+    +     '<div style="padding:14px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;display:flex;justify-content:space-between;align-items:center">'
+    +       backBtn + nextBtn
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+}
+
+function _renderPayRunStep1Period(p) {
+  var presets = [
+    ['this_week', 'This week'],
+    ['last_week', 'Last week'],
+    ['this_fortnight', 'This fortnight'],
+    ['last_fortnight', 'Last fortnight'],
+    ['this_month', 'This month'],
+    ['last_month', 'Last month'],
+    ['custom', 'Custom range'],
+  ];
+  var html = '<div style="font-size:13px;color:#374151;margin-bottom:14px">Select the period of realised commissions to bundle into this Pay Run. Realised dates are determined by each deal\'s configured gate (Won / Final Sign-Off / Final Payment).</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:18px">';
+  presets.forEach(function (pp) {
+    var on = p.periodPreset === pp[0];
+    html += '<button onclick="payRunSetPeriodPreset(\'' + pp[0] + '\')" style="padding:14px;border:2px solid ' + (on?'#c41230':'#e5e7eb') + ';border-radius:10px;background:' + (on?'#fff5f6':'#fff') + ';cursor:pointer;font-family:inherit;text-align:left">'
+      + '<div style="font-size:13px;font-weight:600;color:#1a1a1a">' + pp[1] + '</div>'
+      + (on && pp[0] !== 'custom' ? '<div style="font-size:11px;color:#6b7280;margin-top:4px">' + p.periodStart + ' \u2192 ' + p.periodEnd + '</div>' : '')
+      + '</button>';
+  });
+  html += '</div>';
+  if (p.periodPreset === 'custom') {
+    html += '<div style="display:flex;gap:12px;margin-bottom:14px">'
+      + '<div style="flex:1"><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Start date</label>'
+      + '<input type="date" class="inp" value="' + (p.periodStart || '') + '" onchange="payRunSetCustomPeriod(\'start\',this.value)"></div>'
+      + '<div style="flex:1"><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">End date</label>'
+      + '<input type="date" class="inp" value="' + (p.periodEnd || '') + '" onchange="payRunSetCustomPeriod(\'end\',this.value)"></div>'
+      + '</div>';
+  }
+  var elig = p.eligibleDeals || [];
+  html += '<div style="padding:14px 16px;background:' + (elig.length>0?'#f0fdf4':'#fef9c3') + ';border:1px solid ' + (elig.length>0?'#86efac':'#fde68a') + ';border-radius:10px;font-size:12px;color:' + (elig.length>0?'#166534':'#92400e') + '">'
+    + (elig.length > 0
+        ? '\u2713 <strong>' + elig.length + '</strong> realised commission' + (elig.length!==1?'s':'') + ' available in this period (' + fmt$(elig.reduce(function(s,e){return s+(e.commission||0);},0)) + ' total). Click <strong>Next \u2192</strong> to choose which to include.'
+        : '\u26a0\ufe0f No realised commissions in this period. Check that deals have hit their realisation gate, or pick a different range.')
+    + '</div>';
+  return html;
+}
+
+function _renderPayRunStep2Deals(p) {
+  var elig = p.eligibleDeals || [];
+  if (elig.length === 0) {
+    return '<div style="padding:40px;text-align:center;color:#9ca3af"><div style="font-size:36px;margin-bottom:8px">\ud83d\udced</div><div style="font-size:14px;color:#6b7280">No eligible commissions for this period.</div><div style="font-size:12px;margin-top:6px">Go back and pick a different range.</div></div>';
+  }
+  // Group by rep
+  var byRep = {};
+  elig.forEach(function (e) {
+    var r = e.deal.rep || 'Unassigned';
+    if (!byRep[r]) byRep[r] = [];
+    byRep[r].push(e);
+  });
+  var totalSelected = 0, totalAmount = 0;
+  Object.keys(p.selectedDealIds).forEach(function (did) {
+    var found = elig.find(function (e) { return e.dealId === did; });
+    if (found) { totalSelected++; totalAmount += found.commission || 0; }
+  });
+
+  var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
+    + '<div style="font-size:13px;color:#374151"><strong>' + totalSelected + '</strong> of ' + elig.length + ' selected \u00b7 <strong>' + fmt$(totalAmount) + '</strong></div>'
+    + '<div style="display:flex;gap:6px"><button onclick="payRunSelectAll()" class="btn-w" style="font-size:11px;padding:4px 10px">Select all</button><button onclick="payRunSelectNone()" class="btn-w" style="font-size:11px;padding:4px 10px">Clear</button></div>'
+    + '</div>';
+
+  Object.keys(byRep).sort().forEach(function (rep) {
+    var rows = byRep[rep];
+    var repTotal = rows.reduce(function (s, e) { return p.selectedDealIds[e.dealId] ? s + (e.commission || 0) : s; }, 0);
+    var repSelected = rows.filter(function (e) { return p.selectedDealIds[e.dealId]; }).length;
+    html += '<div style="margin-bottom:14px">'
+      + '<div style="display:flex;justify-content:space-between;padding:8px 12px;background:#f9fafb;border-radius:8px 8px 0 0;border:1px solid #e5e7eb;border-bottom:none">'
+      +   '<div style="font-size:12px;font-weight:700">' + rep + ' <span style="color:#9ca3af;font-weight:400">\u2014 ' + repSelected + '/' + rows.length + ' deals</span></div>'
+      +   '<div style="font-size:12px;font-weight:700;font-family:Syne,sans-serif">' + fmt$(repTotal) + '</div>'
+      + '</div>'
+      + '<div style="border:1px solid #e5e7eb;border-radius:0 0 8px 8px">';
+    rows.forEach(function (e) {
+      var checked = !!p.selectedDealIds[e.dealId];
+      html += '<label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid #f3f4f6;cursor:pointer">'
+        + '<input type="checkbox"' + (checked?' checked':'') + ' onchange="payRunToggleDeal(\'' + e.dealId + '\')">'
+        + '<div style="flex:1;font-size:13px">' + (e.deal.title || e.dealId)
+        +   '<div style="font-size:11px;color:#9ca3af">' + (e.deal.suburb || '') + ' \u00b7 realised ' + e.anchorDate + ' \u00b7 ' + (e.status.gateUsed || 'won') + '</div>'
+        + '</div>'
+        + '<div style="font-size:13px;font-weight:700;color:#15803d;font-family:Syne,sans-serif">' + fmt$(e.commission || 0) + '</div>'
+        + '</label>';
+    });
+    html += '</div></div>';
+  });
+  return html;
+}
+
+function _renderPayRunStep3Review(p) {
+  var elig = p.eligibleDeals || [];
+  var selectedIds = Object.keys(p.selectedDealIds);
+  var selectedDeals = elig.filter(function (e) { return p.selectedDealIds[e.dealId]; });
+  var totalAmount = selectedDeals.reduce(function (s, e) { return s + (e.commission || 0); }, 0);
+  var byRep = {};
+  selectedDeals.forEach(function (e) {
+    var r = e.deal.rep || 'Unassigned';
+    if (!byRep[r]) byRep[r] = { count: 0, total: 0 };
+    byRep[r].count++;
+    byRep[r].total += e.commission || 0;
+  });
+  var prNum = nextPayRunNumber();
+  var label = 'PR-' + String(prNum).padStart(3, '0');
+  var html = '<div style="background:#fff5f6;border:2px solid #fecaca;border-radius:12px;padding:20px;margin-bottom:18px;text-align:center">'
+    + '<div style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Pay run preview</div>'
+    + '<div style="font-size:32px;font-weight:800;color:#c41230;font-family:Syne,sans-serif;margin-bottom:6px">' + label + '</div>'
+    + '<div style="font-size:13px;color:#374151">' + selectedIds.length + ' deals \u00b7 ' + Object.keys(byRep).length + ' reps \u00b7 <strong>' + fmt$(totalAmount) + '</strong></div>'
+    + (p.periodStart && p.periodEnd ? '<div style="font-size:11px;color:#6b7280;margin-top:4px">' + p.periodStart + ' \u2192 ' + p.periodEnd + '</div>' : '')
+    + '</div>';
+
+  // Per-rep breakdown
+  html += '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:6px">Breakdown by rep</div>'
+    + '<div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">';
+  Object.keys(byRep).sort().forEach(function (r, i) {
+    html += '<div style="display:flex;justify-content:space-between;padding:8px 12px' + (i>0?';border-top:1px solid #f3f4f6':'') + '">'
+      + '<div style="font-size:12px;color:#374151">' + r + ' <span style="color:#9ca3af">(' + byRep[r].count + ' deal' + (byRep[r].count!==1?'s':'') + ')</span></div>'
+      + '<div style="font-size:13px;font-weight:700;font-family:Syne,sans-serif">' + fmt$(byRep[r].total) + '</div>'
+      + '</div>';
+  });
+  html += '</div></div>';
+
+  // Run-date + payment method + notes
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">'
+    + '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Run date</label>'
+    + '<input type="date" class="inp" value="' + (p.runDate || '') + '" onchange="payRunSetRunDate(this.value)"></div>'
+    + '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Payment method</label>'
+    + '<select class="sel" onchange="payRunSetPaymentMethod(this.value)">'
+    +   ['EFT','EFT batch','Manual','Other'].map(function(m){ return '<option value="' + m + '"' + (p.paymentMethod===m?' selected':'') + '>' + m + '</option>'; }).join('')
+    + '</select></div>'
+    + '</div>'
+    + '<div style="margin-bottom:12px"><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Notes (optional)</label>'
+    + '<textarea oninput="payRunSetNotes(this.value)" placeholder="e.g. Bank transfer Friday 25 Apr, batch ref 1234" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:12px;resize:vertical;min-height:60px">' + (p.notes || '').replace(/</g,'&lt;') + '</textarea></div>';
+  html += '<div style="padding:12px 14px;background:#fef9c3;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e">\u26a0\ufe0f Finalising will mark all ' + selectedIds.length + ' deals as <strong>paid</strong>. This action audit-logs and can be voided later if needed.</div>';
+  return html;
+}
+
+// Pay Run detail view modal \u2014 read-only summary of a finalised/voided
+// run with status-dependent action buttons (admin/accounts only).
+function renderPayRunDetailModal() {
+  if (!_pendingPayRunDetailId) return '';
+  var run = getPayRunById(_pendingPayRunDetailId);
+  if (!run) return '';
+  var cu = getCurrentUser() || {};
+  var isAdmin = cu.role === 'admin';
+  var canReconcile = (cu.role === 'admin' || cu.role === 'accounts');
+  var label = 'PR-' + String(run.runNumber).padStart(3, '0');
+  var voided = run.status === 'voided';
+  var statusColor = voided ? '#6b7280' : (run.status === 'reconciled' ? '#15803d' : '#3b82f6');
+  var deals = (typeof getState === 'function' && getState().deals) ? getState().deals : [];
+  var dealById = {}; deals.forEach(function (d) { dealById[d.id] = d; });
+
+  // For sales reps, scope the detail to their slice only
+  var isRep = cu.role === 'sales_rep';
+  var visibleReps = isRep ? [cu.name] : Object.keys(run.linesByRep || {}).sort();
+
+  var html = ''
+    + '<div class="modal-bg" onclick="if(event.target===this)closePayRunDetail()">'
+    +   '<div class="modal" style="max-width:840px;max-height:90vh;display:flex;flex-direction:column' + (voided ? ';opacity:0.85' : '') + '">'
+    +     '<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
+    +       '<div><h3 style="margin:0;font-size:18px;font-weight:800;font-family:Syne,sans-serif;color:' + statusColor + (voided ? ';text-decoration:line-through' : '') + '">' + label + '</h3>'
+    +         '<div style="font-size:12px;color:#6b7280;margin-top:4px">'
+    +           run.runDate + ' \u00b7 ' + (run.runBy || '\u2014') + ' \u00b7 ' + (run.paymentMethod || '\u2014')
+    +           (run.metadata && run.metadata.backfilled ? ' \u00b7 <span style="color:#92400e;background:#fef9c3;padding:1px 6px;border-radius:4px;font-size:10px">BACKFILLED</span>' : '')
+    +         '</div>'
+    +       '</div>'
+    +       '<div style="display:flex;gap:8px;align-items:center"><span style="font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;background:' + statusColor + '20;color:' + statusColor + '">' + run.status.toUpperCase() + '</span>'
+    +       '<button onclick="closePayRunDetail()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button></div>'
+    +     '</div>'
+    +     '<div style="flex:1;overflow-y:auto;padding:20px">';
+  if (voided) {
+    html += '<div style="padding:14px 16px;background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;margin-bottom:16px;font-size:12px;color:#991b1b">'
+      + '<strong>Voided</strong> by ' + (run.voidedBy || '?') + ' on ' + (run.voidedAt ? String(run.voidedAt).slice(0,10) : '?')
+      + (run.voidReason ? '<div style="margin-top:6px">Reason: ' + String(run.voidReason).replace(/</g,'&lt;') + '</div>' : '')
+      + '</div>';
+  }
+  if (run.periodStart && run.periodEnd) {
+    html += '<div style="font-size:12px;color:#6b7280;margin-bottom:14px">Period: ' + run.periodStart + ' \u2192 ' + run.periodEnd + '</div>';
+  }
+  if (run.notes) {
+    html += '<div style="padding:10px 12px;background:#f9fafb;border-radius:8px;font-size:12px;color:#374151;margin-bottom:14px">' + String(run.notes).replace(/</g,'&lt;') + '</div>';
+  }
+
+  // Per-rep breakdown
+  html += '<div style="font-size:12px;font-weight:700;color:#374151;margin-bottom:8px">Deals by rep</div>';
+  visibleReps.forEach(function (rep) {
+    var lines = (run.linesByRep || {})[rep];
+    if (!lines) return;
+    html += '<div style="margin-bottom:14px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">'
+      + '<div style="display:flex;justify-content:space-between;padding:8px 12px;background:#f9fafb;border-bottom:1px solid #e5e7eb">'
+      +   '<div style="font-size:12px;font-weight:700">' + rep + ' <span style="color:#9ca3af;font-weight:400">\u2014 ' + lines.dealCount + ' deal' + (lines.dealCount !== 1 ? 's' : '') + '</span></div>'
+      +   '<div style="font-size:13px;font-weight:700;font-family:Syne,sans-serif">' + fmt$(lines.totalAmount) + '</div>'
+      + '</div>';
+    (lines.dealIds || []).forEach(function (did) {
+      var d = dealById[did];
+      var commission = 0;
+      if (d && typeof calcDealCommission === 'function') { try { commission = calcDealCommission(d).commission || 0; } catch (e) {} }
+      html += '<div style="display:flex;justify-content:space-between;padding:6px 12px;border-bottom:1px solid #f3f4f6;font-size:12px">'
+        + '<div>' + (d ? d.title : did) + (d && d.wonDate ? '<span style="color:#9ca3af"> \u00b7 won ' + d.wonDate + '</span>' : '') + '</div>'
+        + '<div style="font-weight:600;font-family:Syne,sans-serif">' + fmt$(commission) + '</div>'
+        + '</div>';
+    });
+    html += '</div>';
+  });
+
+  // Total
+  if (!isRep) {
+    html += '<div style="display:flex;justify-content:space-between;padding:10px 14px;background:#fff5f6;border:2px solid #fecaca;border-radius:8px"><div style="font-size:13px;font-weight:700">Total</div><div style="font-size:18px;font-weight:800;font-family:Syne,sans-serif;color:#c41230">' + fmt$(run.totalAmount || 0) + '</div></div>';
+  }
+
+  html += '</div>';
+
+  // Footer actions \u2014 status-dependent
+  html += '<div style="padding:14px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;display:flex;justify-content:flex-end;gap:8px">';
+  if (run.status === 'finalised' && canReconcile) {
+    html += '<button class="btn-w" onclick="markPayRunReconciled(\'' + run.id + '\', prompt(\'Bank reference (optional):\') || null)" style="font-size:12px">Mark Reconciled</button>';
+  }
+  if (run.status !== 'voided' && isAdmin) {
+    html += '<button onclick="openVoidPayRunModal(\'' + run.id + '\')" class="btn-w" style="font-size:12px;color:#b91c1c;border-color:#fca5a5">Void</button>';
+  }
+  html += '<button onclick="closePayRunDetail()" class="btn-w" style="font-size:12px">Close</button></div>';
+  html += '</div></div>';
+  return html;
+}
+
+// Void confirmation modal \u2014 admin only. Requires non-empty void reason.
+function renderVoidPayRunModal() {
+  if (!_pendingPayRunVoid) return '';
+  var run = getPayRunById(_pendingPayRunVoid.runId);
+  if (!run) return '';
+  var label = 'PR-' + String(run.runNumber).padStart(3, '0');
+  var dealCount = (run.dealIds || []).length;
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)closeVoidPayRunModal()">'
+    +   '<div class="modal" style="max-width:520px">'
+    +     '<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0">'
+    +       '<h3 style="margin:0;font-size:16px;font-weight:700;color:#b91c1c">Void ' + label + '?</h3>'
+    +     '</div>'
+    +     '<div style="padding:22px">'
+    +       '<div style="padding:12px 14px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;font-size:12px;color:#991b1b;line-height:1.5;margin-bottom:14px">'
+    +         'This will mark all <strong>' + dealCount + ' deal' + (dealCount !== 1 ? 's' : '') + '</strong> as realised-unpaid again. Voided runs stay in history with strikethrough \u2014 they\'re never deleted.'
+    +       '</div>'
+    +       '<label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Reason (required)</label>'
+    +       '<textarea id="prv_reason" oninput="payRunVoidSetReason(this.value)" placeholder="e.g. Wrong period selected, Bank refused payment, \u2026" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:12px;resize:vertical;min-height:60px">' + (_pendingPayRunVoid.voidReason || '') + '</textarea>'
+    +     '</div>'
+    +     '<div style="padding:14px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;display:flex;justify-content:flex-end;gap:8px">'
+    +       '<button class="btn-w" onclick="closeVoidPayRunModal()" style="font-size:12px">Cancel</button>'
+    +       '<button class="btn-r" onclick="confirmVoidPayRun()" style="font-size:12px;background:#b91c1c;border-color:#b91c1c">Void Pay Run</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
 }
 
