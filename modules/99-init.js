@@ -128,6 +128,23 @@ function _restoreFocus(snap){
 }
 
 function renderPage(){
+  // Capacitor wrapper: lock crmMode to 'sales' and bounce any non-sales page
+  // to the dashboard. The module bar is hidden so the UI can't switch modes,
+  // but defensive routing here also catches programmatic navigations from
+  // notification handlers, deep links, or stale state on first paint.
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) {
+    var _wst = getState();
+    var _wpatch = null;
+    if (_wst.crmMode && _wst.crmMode !== 'sales') (_wpatch = _wpatch || {}).crmMode = 'sales';
+    if (_wst.page && SALES_WRAPPER_PAGES.indexOf(_wst.page) < 0) {
+      (_wpatch = _wpatch || {}).page = 'dashboard';
+      _wpatch.dealDetailId = null;
+      _wpatch.leadDetailId = null;
+      _wpatch.contactDetailId = null;
+      _wpatch.jobDetailId = null;
+    }
+    if (_wpatch) { setState(_wpatch); return; }   // setState retriggers renderPage via subscribe
+  }
   var _focusSnap = _captureFocus();
   const {page,sidebarOpen,dealDetailId,leadDetailId,contactDetailId,jobDetailId}=getState();
   const offset=sidebarOpen?220:64;

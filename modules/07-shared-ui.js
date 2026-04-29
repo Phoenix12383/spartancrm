@@ -116,7 +116,11 @@ function renderToasts(){
 let topbarSearchTimer=null;
 // ── Module Bar (top-level red bar for Sales CRM / Job CRM / future modules) ─
 var MODULE_BAR_HEIGHT = 40;
+// Capacitor wrapper: hide the red module bar entirely. Collapse the height
+// constant so renderPage's top offset doesn't leave a blank strip.
+if (typeof isNativeWrapper === 'function' && isNativeWrapper()) MODULE_BAR_HEIGHT = 0;
 function renderModuleBar(){
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) return '';
   const mode = getState().crmMode || 'sales';
   const modules = [
     {key:'sales', label:'Sales CRM', icon:'deals'},

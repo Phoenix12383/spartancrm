@@ -4,6 +4,17 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// True when the app is running inside the Capacitor Android/iOS wrapper.
+// Render functions read this to lock the wrapper to Sales-CRM-only navigation.
+function isNativeWrapper() {
+  return !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+}
+
+// Pages reachable in the mobile wrapper. Mirrors the Sales CRM sidebar in
+// 07-shared-ui.js plus 'profile' (reachable from the sidebar user-card).
+// renderPage bounces anything else to 'dashboard'.
+var SALES_WRAPPER_PAGES = ['dashboard','contacts','leads','deals','won','calendar','invoicing','commission','email','phone','reports','audit','map','settings','profile'];
+
 // ══════════════════════════════════════════════════════════════════════════════
 // UNIFIED AUDIT LOG (Module 01 — primitive only, Brief 2 Phase 1)
 // ══════════════════════════════════════════════════════════════════════════════
