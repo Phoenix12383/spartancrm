@@ -1119,6 +1119,49 @@ function renderJobDetail() {
       +'<div style="font-size:10px;color:#9ca3af;margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6">ℹ️ Date, time and crew are set via the Smart Install Scheduler — the Installation Schedule page runs capacity, vehicle and glass-timing checks.</div>'
       +'</div>';
 
+    // ── Tool coverage (Capacity Planner spec §5.3) ──────────────────────────
+    // Diff the job's required-tool list (set on the Tools tab) against the
+    // assigned crew's owned tools. Warn if any required tool isn't covered
+    // by anyone in the crew. No crew assigned yet → just show the required
+    // list; no warnings until somebody is on the job.
+    if (typeof getJobToolCoverage === 'function') {
+      var coverage = getJobToolCoverage(job.id, crewIds);
+      if (coverage.required.length > 0) {
+        var hasCrew    = crewIds.length > 0;
+        var allCovered = hasCrew && coverage.missing.length === 0;
+        var noCrew     = !hasCrew;
+        var headerCol  = allCovered ? '#15803d' : noCrew ? '#6b7280' : '#b91c1c';
+        var headerBg   = allCovered ? '#f0fdf4' : noCrew ? '#f9fafb' : '#fef2f2';
+        var headerIcon = allCovered ? '✅' : noCrew ? 'ℹ️' : '⚠️';
+        var headerMsg  = allCovered
+          ? 'All required tools covered by the assigned crew'
+          : noCrew
+            ? 'Tool coverage will check once a crew is assigned'
+            : coverage.missing.length + ' required tool' + (coverage.missing.length === 1 ? '' : 's') + ' missing from crew';
+        tabContent += '<div class="card" style="padding:14px;margin-bottom:14px;border:1px solid '+headerCol+'33">'
+          +'<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-radius:6px;background:'+headerBg+';margin-bottom:'+(noCrew && coverage.missing.length === 0 ? '0' : '12')+'px">'
+          +'<div style="font-size:12px;font-weight:700;color:'+headerCol+'">'+headerIcon+' '+headerMsg+'</div>'
+          +'<a href="#" onclick="event.preventDefault();setState({jobDetailTab:\'tools\'})" style="font-size:11px;color:'+headerCol+';text-decoration:underline">Edit on Tools tab →</a>'
+          +'</div>';
+        if (hasCrew && coverage.missing.length > 0) {
+          tabContent += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
+            +'<div><div style="font-size:10px;font-weight:700;color:#b91c1c;text-transform:uppercase;margin-bottom:4px">Missing ('+coverage.missing.length+')</div>'
+            +coverage.missing.map(function(t){
+              return '<div style="font-size:12px;padding:4px 10px;background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;border-radius:6px;margin-bottom:4px">⚠ '+t.name+'</div>';
+            }).join('')
+            +'</div>'
+            +'<div><div style="font-size:10px;font-weight:700;color:#15803d;text-transform:uppercase;margin-bottom:4px">Covered ('+coverage.covered.length+')</div>'
+            +(coverage.covered.length === 0
+              ? '<div style="font-size:11px;color:#9ca3af">None of the required tools yet</div>'
+              : coverage.covered.map(function(t){
+                  return '<div style="font-size:12px;padding:4px 10px;background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d;border-radius:6px;margin-bottom:4px">✓ '+t.name+'</div>';
+                }).join(''))
+            +'</div></div>';
+        }
+        tabContent += '</div>';
+      }
+    }
+
     // Site Conditions
     tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
       +'<h5 style="font-size:13px;font-weight:700;margin:0 0 10px">Site Conditions</h5>'

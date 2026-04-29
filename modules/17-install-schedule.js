@@ -172,6 +172,47 @@ function setJobTools(jobId, toolIds) {
 }
 window.getJobTools = getJobTools; window.setJobTools = setJobTools;
 
+// ── Tool coverage diff (Capacity Planner spec §5.3) ─────────────────────────
+// Pulls the job's required-tool list (§4.3 in Phoenix's spec) and diffs it
+// against the union of every assigned installer's owned toolIds. Returns:
+//   {
+//     required: [{id, name}],          // every tool the job marked Required
+//     covered:  [{id, name}],          // required tools at least one crew has
+//     missing:  [{id, name}],          // required tools NO crew member owns
+//   }
+// Two ownership signals:
+//   - inst.toolIds[]  — Phoenix's spec shape (array of tool registry ids)
+//   - inst.tools[].id — current Settings → Installer Tools card shape
+// We accept either; same tool registry ids in both.
+function getJobToolCoverage(jobId, crewIds) {
+  var requiredIds = (typeof getJobTools === 'function' ? getJobTools(jobId) : []) || [];
+  var allTools    = (typeof getTools === 'function' ? getTools() : []) || [];
+  var byId        = {};
+  allTools.forEach(function(t) { byId[t.id] = t; });
+
+  var crew = (Array.isArray(crewIds) ? crewIds : []).filter(Boolean);
+  var installers = getInstallers();
+  var owned = {};
+  crew.forEach(function(uid) {
+    var inst = installers.find(function(i) { return i.id === uid; });
+    if (!inst) return;
+    // Phoenix's spec shape (toolIds[])
+    if (Array.isArray(inst.toolIds)) inst.toolIds.forEach(function(id) { owned[id] = true; });
+    // Existing Settings card shape (tools[].id)
+    if (Array.isArray(inst.tools))   inst.tools.forEach(function(t) { if (t && t.id) owned[t.id] = true; });
+  });
+
+  var required = [], covered = [], missing = [];
+  requiredIds.forEach(function(id) {
+    var t = byId[id] || { id: id, name: id };
+    var entry = { id: t.id, name: t.name || id };
+    required.push(entry);
+    if (owned[id]) covered.push(entry); else missing.push(entry);
+  });
+  return { required: required, covered: covered, missing: missing };
+}
+window.getJobToolCoverage = getJobToolCoverage;
+
 // ── Install Progress Tracking (TESTING — pre-mobile app stand-in) ───────────
 // Per the manual §7.5: each frame moves through 7 stages on install day:
 //   0=Not Started · 1=Demo'd · 2=Fitted · 3=Foamed · 4=Trimmed
