@@ -55,7 +55,17 @@ function jobToDb(j) {
     docusign_envelope_id:j.docusignEnvelopeId||null,
     docusign_status:j.docusignStatus||null,
     docusign_completed_at:j.docusignCompletedAt||null,
-    docusign_declined_at:j.docusignDeclinedAt||null};
+    docusign_declined_at:j.docusignDeclinedAt||null,
+    // Variation flow (Manual §6.3) — separate envelope from Final Design.
+    has_variation:!!j.hasVariation,
+    variation_status:j.variationStatus||null,
+    variation_amount:(typeof j.variationAmount === 'number') ? j.variationAmount : null,
+    variation_notes:j.variationNotes||null,
+    variation_envelope_id:j.variationEnvelopeId||null,
+    variation_sent_at:j.variationSentAt||null,
+    variation_signed_at:j.variationSignedAt||null,
+    variation_resolved_at:j.variationResolvedAt||null,
+    final_envelope_sent_at:j.finalEnvelopeSentAt||null};
 }
 function dbToJob(r) {
   return {id:r.id, jobNumber:r.job_number, dealId:r.deal_id, contactId:r.contact_id,
@@ -85,6 +95,17 @@ function dbToJob(r) {
     docusignStatus:r.docusign_status||null,
     docusignCompletedAt:r.docusign_completed_at||null,
     docusignDeclinedAt:r.docusign_declined_at||null,
+    // Variation flow round-trip — without these, the webhook's update to
+    // variation_status='signed' never surfaces in the browser.
+    hasVariation:!!r.has_variation,
+    variationStatus:r.variation_status||null,
+    variationAmount:(typeof r.variation_amount === 'number') ? r.variation_amount : (r.variation_amount != null ? Number(r.variation_amount) : null),
+    variationNotes:r.variation_notes||null,
+    variationEnvelopeId:r.variation_envelope_id||null,
+    variationSentAt:r.variation_sent_at||null,
+    variationSignedAt:r.variation_signed_at||null,
+    variationResolvedAt:r.variation_resolved_at||null,
+    finalEnvelopeSentAt:r.final_envelope_sent_at||null,
     created:r.created_at};
 }
 
