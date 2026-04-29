@@ -116,9 +116,14 @@ function renderToasts(){
 let topbarSearchTimer=null;
 // ── Module Bar (top-level red bar for Sales CRM / Job CRM / future modules) ─
 var MODULE_BAR_HEIGHT = 40;
-// Capacitor wrapper: hide the red module bar entirely. Collapse the height
-// constant so renderPage's top offset doesn't leave a blank strip.
-if (typeof isNativeWrapper === 'function' && isNativeWrapper()) MODULE_BAR_HEIGHT = 0;
+var TOPBAR_HEIGHT = 56;
+// Capacitor wrapper: hide the red module bar entirely (collapse the height
+// so renderPage's top offset doesn't leave a blank strip), and shrink the
+// top bar to a more compact 40px.
+if (typeof isNativeWrapper === 'function' && isNativeWrapper()) {
+  MODULE_BAR_HEIGHT = 0;
+  TOPBAR_HEIGHT = 40;
+}
 function renderModuleBar(){
   if (typeof isNativeWrapper === 'function' && isNativeWrapper()) return '';
   const mode = getState().crmMode || 'sales';
@@ -145,21 +150,29 @@ function renderModuleBar(){
 
 function renderTopBar(){
   const {sidebarOpen,branch,notifs}=getState();
-  const offset=sidebarOpen?220:64;
+  const native = typeof isNativeWrapper === 'function' && isNativeWrapper();
+  // On native the sidebar is an overlay drawer — no left offset for content.
+  const offset = native ? 0 : (sidebarOpen ? 220 : 64);
   const unread=notifs.filter(n=>!n.read).length;
   const dev = (typeof isDevMode === 'function') && isDevMode();
-  const devBadge = dev
+  const devBadge = (dev && !native)
     ? `<span title="Dev mode is on — stand-in trigger buttons are visible. Add ?dev=0 to URL to disable." style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:11px;font-weight:700;color:#92400e;padding:4px 10px;cursor:help;letter-spacing:.5px">🧪 DEV</span>`
     : '';
-  return `<header id="topbar" style="position:fixed;top:${MODULE_BAR_HEIGHT}px;left:${offset}px;right:0;height:56px;background:#fff;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;padding:0 24px;gap:16px;z-index:20;transition:left .2s">
+  // Hamburger toggles the drawer on native. Lives in the top-left where users
+  // expect it on a phone.
+  const hamburger = native
+    ? `<button onclick="setState({sidebarOpen:!getState().sidebarOpen})" aria-label="Menu" style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:none;background:none;cursor:pointer;color:#374151;border-radius:6px;font-size:20px;line-height:1;padding:0;flex-shrink:0" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">☰</button>`
+    : '';
+  return `<header id="topbar" style="position:fixed;top:${MODULE_BAR_HEIGHT}px;left:${offset}px;right:0;height:${TOPBAR_HEIGHT}px;background:#fff;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;padding:0 ${native ? '8' : '24'}px;gap:${native ? '8' : '16'}px;z-index:20;transition:left .2s">
+    ${hamburger}
     ${devBadge}
-    <div style="position:relative;flex:1;max-width:400px">
+    <div style="position:relative;flex:1;${native ? '' : 'max-width:400px'}">
       <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:#9ca3af">${Icon({n:'search',size:14})}</span>
-      <input id="topSearch" placeholder="Search contacts, deals, leads... (/)" style="width:100%;padding:7px 10px 7px 32px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;outline:none;font-family:inherit" oninput="handleTopSearch(this.value)" onfocus="document.getElementById('searchDrop').style.display='block'" onblur="setTimeout(()=>{const d=document.getElementById('searchDrop');if(d)d.style.display='none'},200)">
+      <input id="topSearch" placeholder="${native ? 'Search…' : 'Search contacts, deals, leads... (/)'}" style="width:100%;padding:7px 10px 7px 32px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;outline:none;font-family:inherit" oninput="handleTopSearch(this.value)" onfocus="document.getElementById('searchDrop').style.display='block'" onblur="setTimeout(()=>{const d=document.getElementById('searchDrop');if(d)d.style.display='none'},200)">
       <div id="searchDrop" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.1);z-index:100;max-height:320px;overflow-y:auto"></div>
     </div>
-    <div style="display:flex;align-items:center;gap:8px">
-      <div style="position:relative">
+    <div style="display:flex;align-items:center;gap:${native ? '4' : '8'}px">
+      ${native ? '' : `<div style="position:relative">
         <button onclick="toggleBranchDrop()" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">
           <span style="width:8px;height:8px;background:#c41230;border-radius:50%;display:inline-block"></span>
           ${branch==='all'?'All Branches':branch}
@@ -168,8 +181,8 @@ function renderTopBar(){
         <div id="branchDrop" style="display:none;position:absolute;right:0;top:calc(100%+4px);background:#fff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.1);z-index:100;min-width:140px;padding:4px">
           ${['all','VIC','ACT','SA'].map(b=>`<div onclick="setState({branch:'${b}'});hideBranchDrop()" style="padding:8px 14px;font-size:13px;cursor:pointer;border-radius:6px;font-weight:${branch===b?'700':'400'};color:${branch===b?'#c41230':'#333'}" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background=''">${b==='all'?'All Branches':b}</div>`).join('')}
         </div>
-      </div>
-      ${(function(){
+      </div>`}
+      ${native ? '' : (function(){
         // Voicemail badge — only renders when there's at least one unread voicemail.
         // Click navigates to the Phone page where the voicemails section lives.
         if (typeof unreadVoicemailCount !== 'function') return '';
@@ -199,12 +212,12 @@ function renderTopBar(){
           </div>
         </div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;padding-left:8px;border-left:1px solid #f0f0f0;position:relative;cursor:pointer" onclick="toggleProfileDrop()">
+      <div style="display:flex;align-items:center;gap:8px;${native ? '' : 'padding-left:8px;border-left:1px solid #f0f0f0;'}position:relative;cursor:pointer" onclick="toggleProfileDrop()">
         <div style="width:30px;height:30px;background:#c41230;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">${(getCurrentUser()||{initials:"AD"}).initials}</div>
-        <div><div style="font-size:12px;font-weight:600;color:#111;line-height:1.2">${(getCurrentUser()||{name:"Admin"}).name}</div><div style="font-size:10px;color:#9ca3af">${(getCurrentUser()||{role:"admin"}).role}</div></div>
-        <span style="font-size:10px;color:#9ca3af;margin-left:2px">▾</span>
+        ${native ? '' : `<div><div style="font-size:12px;font-weight:600;color:#111;line-height:1.2">${(getCurrentUser()||{name:"Admin"}).name}</div><div style="font-size:10px;color:#9ca3af">${(getCurrentUser()||{role:"admin"}).role}</div></div>
+        <span style="font-size:10px;color:#9ca3af;margin-left:2px">▾</span>`}
         <!-- Profile dropdown -->
-        <div id="profileDrop" style="display:none;position:absolute;top:44px;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.12);z-index:200;width:220px;overflow:hidden" onclick="event.stopPropagation()">
+        <div id="profileDrop" style="display:none;position:absolute;top:${native ? '36' : '44'}px;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.12);z-index:200;width:220px;overflow:hidden" onclick="event.stopPropagation()">
           <div style="padding:14px 16px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;gap:10px">
             <div style="width:32px;height:32px;background:#c41230;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">${(getCurrentUser()||{initials:'AD'}).initials}</div>
             <div><div style="font-size:13px;font-weight:600">${(getCurrentUser()||{name:'Admin'}).name}</div><div style="font-size:11px;color:#6b7280">${(getCurrentUser()||{email:''}).email}</div></div>
@@ -434,7 +447,11 @@ function handleTopSearch(q){
 
 function renderSidebar(){
   const {page,sidebarOpen,dealDetailId,leadDetailId,contactDetailId,jobDetailId,leads,crmMode}=getState();
-  const w=sidebarOpen?220:64;
+  const native = typeof isNativeWrapper === 'function' && isNativeWrapper();
+  // On native the sidebar is an overlay drawer. Width is fixed at 220 and
+  // transform translates it off-screen when closed; on desktop the existing
+  // collapsed-icon mode (64px) is preserved.
+  const w = native ? 220 : (sidebarOpen ? 220 : 64);
   const mode = crmMode || 'sales';
   const salesNav=[
     ['dashboard','Dashboard'],['contacts','Contacts'],['leads','Leads'],['deals','Deals'],['won','Won Deals'],['calendar','Calendar'],['invoicing','Invoicing'],['commission','Commission'],
@@ -455,11 +472,16 @@ function renderSidebar(){
   const nav = mode === 'jobs' ? jobsNav : mode === 'service' ? serviceNav : mode === 'factory' ? factoryNav : mode === 'accounts' ? accountsNav : salesNav;
   // Filter nav items by permissions
   const filteredNav = nav.filter(function(n){ return canAccessPage(n[0]); });
-  return `<div id="sidebar" style="position:fixed;top:${MODULE_BAR_HEIGHT}px;left:0;width:${w}px;height:calc(100vh - ${MODULE_BAR_HEIGHT}px);background:#1a1a1a;z-index:30;display:flex;flex-direction:column;transition:width .2s">
+  // On native: drawer overlays from top:0 covering the topbar area, slides
+  // in via transform. On desktop: traditional always-visible sidebar.
+  const sbTop = native ? 0 : MODULE_BAR_HEIGHT;
+  const sbHeight = native ? '100vh' : `calc(100vh - ${MODULE_BAR_HEIGHT}px)`;
+  const sbTransform = native ? `transform:translateX(${sidebarOpen ? '0' : '-100%'});` : '';
+  return `<div id="sidebar" style="position:fixed;top:${sbTop}px;left:0;width:${w}px;height:${sbHeight};background:#1a1a1a;z-index:30;display:flex;flex-direction:column;transition:width .2s,transform .2s;${sbTransform}">
     <div style="display:flex;align-items:center;padding:0 12px;height:56px;border-bottom:1px solid rgba(255,255,255,.08);gap:12px">
       <img src="data:image/png;base64,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" style="width:32px;height:32px;border-radius:8px;flex-shrink:0;object-fit:contain" alt="Spartan DG">
       ${sidebarOpen?`<div style="min-width:0"><div style="font-family:Syne,sans-serif;font-weight:800;color:#fff;font-size:14px;white-space:nowrap">SPARTAN</div><div style="font-size:10px;color:#666;white-space:nowrap">DOUBLE GLAZING CRM</div></div>`:''}
-      <button onclick="setState({sidebarOpen:!getState().sidebarOpen})" style="margin-left:auto;background:none;border:none;cursor:pointer;color:#555;padding:4px;border-radius:6px;display:flex" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#555'">${Icon({n:sidebarOpen?'left':'right',size:14})}</button>
+      ${native ? '' : `<button onclick="setState({sidebarOpen:!getState().sidebarOpen})" style="margin-left:auto;background:none;border:none;cursor:pointer;color:#555;padding:4px;border-radius:6px;display:flex" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#555'">${Icon({n:sidebarOpen?'left':'right',size:14})}</button>`}
     </div>
     <nav style="flex:1;overflow-y:auto;padding:8px">
       ${filteredNav.map(([id,label])=>{
@@ -468,7 +490,7 @@ function renderSidebar(){
         const newLeads=id==='leads'?leads.filter(l=>l.status==='New'&&!l.converted).length:0;
         const wonCount=id==='won'?getState().deals.filter(d=>d.won).length:0;
         const jobCount=id==='jobs'?(getState().jobs||[]).length:0;
-        return `<div class="nav-item${on?' on':''}" onclick="setState({page:'${id}',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null})" title="${!sidebarOpen?label:''}">
+        return `<div class="nav-item${on?' on':''}" onclick="setState({page:'${id}',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null${native ? ',sidebarOpen:false' : ''}})" title="${!sidebarOpen?label:''}">
           ${Icon({n:id,size:17})}
           ${sidebarOpen?`<span style="flex:1">${label}</span>`:''}
           ${sidebarOpen&&newLeads>0?`<span style="background:#c41230;color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${newLeads}</span>`:''}
@@ -479,13 +501,14 @@ function renderSidebar(){
       }).join('')}
     </nav>
     <div style="padding:8px;border-top:1px solid rgba(255,255,255,.08)">
-      <div class="nav-item" style="cursor:pointer" onclick="setState({page:'profile',dealDetailId:null,leadDetailId:null,contactDetailId:null})">
+      <div class="nav-item" style="cursor:pointer" onclick="setState({page:'profile',dealDetailId:null,leadDetailId:null,contactDetailId:null${native ? ',sidebarOpen:false' : ''}})">
         <div style="width:28px;height:28px;background:#c41230;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:700;flex-shrink:0">${(getCurrentUser()||{initials:'AD'}).initials}</div>
         ${sidebarOpen?`<div><div style="font-size:12px;font-weight:600;color:#fff">${(getCurrentUser()||{name:'Admin'}).name}</div><div style="font-size:10px;color:#555">${(getCurrentUser()||{role:'admin'}).role} · ${(getCurrentUser()||{branch:'All'}).branch}</div></div>`:''}
       </div>
       ${sidebarOpen?`<button onclick="logout()" style="width:100%;margin-top:4px;padding:6px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:#9ca3af;font-size:11px;cursor:pointer;font-family:inherit">Sign Out</button>`:''}
     </div>
-  </div>`;
+  </div>
+  ${native && sidebarOpen ? `<div onclick="setState({sidebarOpen:false})" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25"></div>` : ''}`;
 }
 
 

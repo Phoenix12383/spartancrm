@@ -147,7 +147,11 @@ function renderPage(){
   }
   var _focusSnap = _captureFocus();
   const {page,sidebarOpen,dealDetailId,leadDetailId,contactDetailId,jobDetailId}=getState();
-  const offset=sidebarOpen?220:64;
+  // Native wrapper: sidebar is a drawer overlay, content has no left offset
+  // and uses tighter padding to claw back screen real estate.
+  const _native = typeof isNativeWrapper === 'function' && isNativeWrapper();
+  const offset = _native ? 0 : (sidebarOpen?220:64);
+  const _mainPad = _native ? 12 : 24;
   const pageRenderers={
     dashboard:renderDashboard,contacts:renderContacts,leads:renderLeads,deals:renderDeals,won:renderWonPage,jobs:renderJobsPage,jobdashboard:renderJobDashboard,weeklyrev:renderWeeklyRevenue,finalsignoff:renderFinalSignOff,schedule:renderInstallSchedule,capacity:renderCapacityPlanning,cmmap:renderCMMapPage,jobsettings:renderJobSettings,factorydash:renderFactoryDash,prodqueue:renderProdQueue,prodboard:renderProdBoard,factorybom:renderFactoryBOM,factorycap:renderFactoryCapacity,factorydispatch:renderFactoryDispatch,accdash:renderAccDash,accoutstanding:renderAccOutstanding,acccashflow:renderAccCashFlow,accrecon:renderAccRecon,accbills:renderAccBills,accweekly:renderAccWeekly,accbranch:renderAccBranch,accxero:renderAccXero,servicelist:renderServiceList,servicemap:renderServiceMap,svcschedule:renderSvcSchedule,calendar:renderCalendarPage,invoicing:renderInvoicingPage,commission:renderCommissionPage,
     email:renderEmailPage,phone:renderPhonePage,reports:renderReports,map:renderMapPage,settings:renderSettings,profile:renderProfilePage,
@@ -162,7 +166,7 @@ function renderPage(){
     ${renderModuleBar()}
     ${renderSidebar()}
     ${renderTopBar()}
-    <main style="margin-left:${offset}px;margin-top:${56 + MODULE_BAR_HEIGHT}px;padding:24px;min-height:calc(100vh - ${56 + MODULE_BAR_HEIGHT}px);transition:margin-left .2s;background:#f2f2f2">
+    <main style="margin-left:${offset}px;margin-top:${TOPBAR_HEIGHT + MODULE_BAR_HEIGHT}px;padding:${_mainPad}px;min-height:calc(100vh - ${TOPBAR_HEIGHT + MODULE_BAR_HEIGHT}px);transition:margin-left .2s;background:#f2f2f2">
       <div style="${effectivePage==='email' ? 'width:100%' : 'max-width:1400px;margin:0 auto'}">
         ${fn()}
       </div>

@@ -134,6 +134,14 @@ function renderDashboard() {
   </div>
 
   <!-- ══ BRANCH SWITCHER ══ -->
+  ${(typeof isNativeWrapper === 'function' && isNativeWrapper()) ? `
+  <div style="display:flex;gap:6px;margin-bottom:14px;overflow-x:auto;padding-bottom:2px">
+    ${BRANCHES.map(br => {
+      const isActive = B === br.id;
+      return `<button onclick="setState({branch:'${br.id}'})" style="flex-shrink:0;padding:6px 14px;border-radius:18px;border:1px solid ${isActive ? br.col : '#e5e7eb'};background:${isActive ? br.col : '#fff'};color:${isActive ? '#fff' : '#1a1a1a'};font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap">${br.label}</button>`;
+    }).join('')}
+  </div>
+  ` : `
   <div style="display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap">
     ${BRANCHES.map(br => {
     const brDeals = deals.filter(d => br.id === 'all' || d.branch === br.id);
@@ -152,6 +160,7 @@ function renderDashboard() {
       </button>`;
   }).join('')}
   </div>
+  `}
 
   <!-- ══ KPI CARDS ══ -->
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:14px;margin-bottom:18px">
@@ -889,6 +898,10 @@ let kanbanEditModal = null;
 // ── DEAL KANBAN FILTER STATE ──────────────────────────────────────────────────
 let kFilterOwners = [], kFilterStages = [], kFilterSource = [], kFilterValMin = '', kFilterValMax = '', kFilterOpen = false;
 
+// Mobile wrapper: which stage is currently visible in the vertical deal list.
+// Null = falls back to the first stage at render time.
+let _mobileDealStageId = null;
+
 
 // ── Kanban edit functions ─────────────────────────────────────────────────────
 function openStageEdit(stageId) {
@@ -1264,7 +1277,58 @@ function renderDeals() {
     </div>
   </div>
 
-  <!-- Kanban board -->
+  ${(typeof isNativeWrapper === 'function' && isNativeWrapper()) ? (function(){
+    // Mobile: stage chip selector + vertical deal list. Drag/drop kept
+    // intact on each card markup but is functionally inert on touch — moving
+    // a deal between stages on mobile uses the ✎ quick-edit modal instead.
+    const sel = (_mobileDealStageId && byStage[_mobileDealStageId]) ? _mobileDealStageId : stages[0].id;
+    const sd = (byStage[sel] || []);
+    const stage = stages.find(s => s.id === sel) || stages[0];
+    const stVal = sd.filter(d => !d.won && !d.lost).reduce((s, d) => s + d.val, 0);
+    return `
+    <div style="display:flex;gap:6px;overflow-x:auto;margin-bottom:10px;padding-bottom:4px">
+      ${stages.map(st => {
+        const c = (byStage[st.id]||[]).length;
+        const a = st.id === sel;
+        return `<button onclick="_mobileDealStageId='${st.id}';renderPage()" style="flex-shrink:0;padding:6px 12px;border-radius:16px;border:1px solid ${a ? st.col : '#e5e7eb'};background:${a ? st.col : '#fff'};color:${a ? '#fff' : '#1a1a1a'};font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap;display:inline-flex;align-items:center;gap:6px">${st.name}<span style="background:${a ? 'rgba(255,255,255,.25)' : '#e5e7eb'};color:${a ? '#fff' : '#6b7280'};border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${c}</span></button>`;
+      }).join('')}
+    </div>
+    <div style="font-size:11px;color:#6b7280;margin-bottom:8px;padding-left:2px">${sd.length} deal${sd.length===1?'':'s'} · ${fmt$(stVal)}</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${sd.length === 0 ? '<div style="text-align:center;padding:30px 20px;color:#9ca3af;font-size:13px;background:#f8f9fa;border-radius:10px">No deals in this stage</div>' : sd.map(d => {
+        const c = contacts.find(x => x.id === d.cid);
+        const passes = matchesFilter(d);
+        const sent = getState().emailSent.filter(m => m.dealId === d.id || (c && m.to === c.email));
+        const opened = sent.filter(m => m.opened);
+        const isNP = !!stage.isLost;
+        return `<div onclick="setState({dealDetailId:'${d.id}'})" style="background:#fff;border-radius:10px;padding:12px;border:1px solid #e5e7eb;border-left:3px solid ${_dealTypeStripeColor(d)};cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.06);opacity:${activeFilters > 0 && !passes ? .3 : (isNP ? .7 : 1)};position:relative">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:5px">
+            <div style="font-size:13px;font-weight:600;line-height:1.3;color:#1a1a1a;flex:1">${d.title}</div>
+            <button onclick="event.stopPropagation();openDealEdit('${d.id}')" style="width:24px;height:24px;border-radius:5px;border:none;background:transparent;cursor:pointer;color:#9ca3af;font-size:14px;flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:0;line-height:1" title="Quick edit">✎</button>
+          </div>
+          ${c ? `<div style="display:flex;align-items:center;gap:5px;margin-bottom:7px">
+            <div style="width:16px;height:16px;background:#c41230;border-radius:50%;color:#fff;font-size:6px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${avatar(c.fn + ' ' + c.ln)}</div>
+            <span style="font-size:11px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.fn} ${c.ln}</span>
+          </div>` : ''}
+          <div style="font-size:15px;font-weight:800;color:#1a1a1a;font-family:Syne,sans-serif;margin-bottom:6px">${fmt$(d.val)}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div style="display:flex;align-items:center;gap:4px">
+              ${Badge(d.branch, 'gray')}
+              ${d.age > 7 ? `<span style="font-size:10px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:10px;font-weight:600">🔥${d.age}d</span>` : ''}
+            </div>
+            <div style="display:flex;align-items:center;gap:4px">
+              ${sent.length > 0 ? `<span style="font-size:10px;color:${opened.length > 0 ? '#15803d' : '#9ca3af'};background:${opened.length > 0 ? '#f0fdf4' : '#f3f4f6'};padding:1px 6px;border-radius:10px">👁${opened.length}/${sent.length}</span>` : ''}
+              <button onclick="event.stopPropagation();emailFromDeal('${d.id}')" style="width:26px;height:26px;border-radius:6px;background:#ede9fe;border:none;cursor:pointer;font-size:12px" title="Email">✉️</button>
+            </div>
+          </div>
+          ${d.closeDate ? `<div style="margin-top:7px;font-size:10px;color:#9ca3af">📅 ${d.closeDate}</div>` : ''}
+          ${d.won ? `<div style="position:absolute;top:8px;right:36px;background:#22c55e;color:#fff;border-radius:20px;font-size:9px;font-weight:700;padding:2px 7px">WON</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>
+    `;
+  })() : `
+  <!-- Kanban board (desktop) -->
   <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:16px;align-items:flex-start">
     ${stages.map(st => {
     const sd = (byStage[st.id] || []);
@@ -1351,6 +1415,7 @@ function renderDeals() {
       </button>
     </div>
   </div>
+  `}
 
   ${kanbanEditModal ? renderKanbanModal() : ''}
   ${modal && modal.type === 'newDeal' ? renderNewDealModal() : ''}`;

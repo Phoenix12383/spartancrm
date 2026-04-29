@@ -1073,7 +1073,8 @@ let _state = {
   page: 'dashboard',
   crmMode: 'sales', // 'sales' or 'jobs'
   branch: 'all',
-  sidebarOpen: true,
+  // Sidebar starts open on desktop, hidden (drawer) on the Capacitor wrapper.
+  sidebarOpen: !isNativeWrapper(),
   deals: JSON.parse(JSON.stringify(DEALS)).map(d=>{
     const seed=DEAL_ACTIVITIES_SEED[d.id];
     return seed?{...d,activities:JSON.parse(JSON.stringify(seed))}:{...d,activities:[]};
