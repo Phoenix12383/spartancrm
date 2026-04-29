@@ -1143,9 +1143,9 @@ function renderJobDetail() {
       +'</div>'
       +'<div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:12px;font-size:12px">'
       +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:3px">Install Date</div>'
-      +'<div style="font-weight:600">'+(job.installDate?new Date(job.installDate+'T12:00').toLocaleDateString('en-AU',{weekday:'short',day:'numeric',month:'short',year:'numeric'}):'<span style="color:#9ca3af;font-weight:400">— not scheduled —</span>')+'</div></div>'
+      +'<input type="date" class="inp" value="'+(job.installDate||'')+'" style="font-size:12px;padding:6px 8px;font-weight:600;width:100%" onchange="var v=this.value;if(v){scheduleJobToDate(\''+job.id+'\',v);}else if(typeof unscheduleJob===\'function\'){unscheduleJob(\''+job.id+'\');}renderPage();"></div>'
       +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:3px">Arrival Time</div>'
-      +'<div style="font-weight:600">'+(job.installTime?formatTime12(job.installTime):'<span style="color:#9ca3af;font-weight:400">—</span>')+'</div></div>'
+      +'<input type="time" class="inp" value="'+(job.installTime||'')+'" style="font-size:12px;padding:6px 8px;font-weight:600;width:100%" onchange="updateJobField(\''+job.id+'\',\'installTime\',this.value);renderPage();"></div>'
       +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:3px">Install Crew</div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
       +(crewIds.length===0?'<span style="color:#9ca3af;font-weight:400">— no crew assigned —</span>':crewIds.map(function(cid,idx){var inst=installerById[cid]||{name:'Unknown',colour:'#9ca3af'};return '<span style="display:inline-flex;align-items:center;gap:4px;background:'+inst.colour+'18;border:1px solid '+inst.colour+'66;color:'+inst.colour+';padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">'+(idx===0?'👑 ':'')+inst.name+'</span>';}).join(''))
