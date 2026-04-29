@@ -1220,10 +1220,38 @@ function renderJobDetail() {
           tabContent += '<div style="font-size:11px;color:#374151;margin-top:4px">'+dims+(rec.fit && rec.fit.borderline ? ' · <span style="color:#d97706;font-weight:600">⚠ tight fit (>85%)</span>' : '')+'</div>';
         } else if (rec.reason === 'no_vehicles') {
           tabContent += '<div style="font-size:11px;color:#7f1d1d;margin-top:4px">No active vehicles in fleet. Add one in Settings → Vehicles.</div>';
+        } else if (rec.split && rec.split.ok) {
+          tabContent += '<div style="font-size:11px;color:#92400e;margin-top:4px">Job won\'t fit any single vehicle — split delivery proposed below.</div>';
+        } else if (rec.split && rec.split.reason === 'frame_too_big') {
+          var bf = rec.split.blockingFrame;
+          var bL = bf ? Math.max(bf.widthMm, bf.heightMm) : 0;
+          var bT = bf ? Math.min(bf.widthMm, bf.heightMm) : 0;
+          tabContent += '<div style="font-size:11px;color:#7f1d1d;margin-top:4px">A single frame ('+bL+'×'+bT+'mm) exceeds every vehicle\'s bed. Won\'t fit even with a split — consider a larger truck or sub-contracted crane.</div>';
+        } else if (rec.split && rec.split.reason === 'fleet_too_small') {
+          tabContent += '<div style="font-size:11px;color:#7f1d1d;margin-top:4px">Even using every vehicle, '+rec.split.remainingFrames+' frame'+(rec.split.remainingFrames!==1?'s':'')+' wouldn\'t fit. Add more capacity or split the install across two days.</div>';
         } else {
           tabContent += '<div style="font-size:11px;color:#7f1d1d;margin-top:4px">Job won\'t fit any single vehicle — consider splitting the delivery across two vehicles.</div>';
         }
         tabContent += '</div>';
+        // Split-delivery plan (spec §7.3): when no single truck fits, surface
+        // the proposed allocation so the dispatcher knows which truck takes
+        // which frames.
+        if (!rec.recommended && rec.split && rec.split.ok && rec.split.plan && rec.split.plan.length > 1) {
+          tabContent += '<div style="margin-bottom:10px;padding:10px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px">'
+            +'<div style="font-size:12px;font-weight:700;color:#92400e;margin-bottom:6px">📋 Proposed Split — '+rec.split.summary+'</div>'
+            +'<div style="display:flex;flex-direction:column;gap:6px">';
+          rec.split.plan.forEach(function(slot, idx){
+            var sv = slot.vehicle;
+            var dims = (sv.internal && sv.internal.lengthMm > 0) ? sv.internal.lengthMm+'×'+sv.internal.widthMm+'×'+sv.internal.heightMm+'mm' : (sv.maxFrames+' frame max');
+            var tightBadge = slot.usagePct > 0.85 ? ' <span style="color:#d97706;font-weight:600;font-size:10px">tight</span>' : '';
+            tabContent += '<div style="display:flex;align-items:center;gap:10px;padding:6px 10px;background:#fff;border:1px solid #fde68a;border-radius:4px">'
+              +'<span style="font-weight:700;color:#374151;min-width:24px">'+(idx+1)+'.</span>'
+              +'<div style="flex:1"><div style="font-size:12px;font-weight:600">'+sv.name+(sv.rego?' <span style="font-family:monospace;font-size:10px;color:#6b7280">'+sv.rego+'</span>':'')+'</div>'
+              +'<div style="font-size:10px;color:#9ca3af">'+dims+' · '+slot.frames.length+' frame'+(slot.frames.length!==1?'s':'')+' · '+Math.round(slot.usagePct*100)+'% used'+tightBadge+'</div></div>'
+              +'</div>';
+          });
+          tabContent += '</div></div>';
+        }
         // Show all vehicles evaluated (collapsible-like list).
         if (rec.evaluated.length > 1) {
           tabContent += '<div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;margin-bottom:6px">All Vehicles</div>'

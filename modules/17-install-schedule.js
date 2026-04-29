@@ -342,9 +342,92 @@ function recommendVehicleForJob(job) {
   var sorted = vehicles.slice().sort(function(a,b){ return _vehicleVolume(a) - _vehicleVolume(b); });
   var evaluated = sorted.map(function(v){ var fit = vehicleFitsFrames(frames, v); return { vehicle: v, fit: fit }; });
   var firstFit = evaluated.find(function(e){ return e.fit.fits; });
-  return { frames: frames, recommended: firstFit ? firstFit.vehicle : null, fit: firstFit ? firstFit.fit : null, evaluated: evaluated };
+  // No single vehicle fits — try a split across multiple vehicles per spec §7.3.
+  var split = firstFit ? null : proposeSplitDelivery(frames, vehicles);
+  return { frames: frames, recommended: firstFit ? firstFit.vehicle : null, fit: firstFit ? firstFit.fit : null, evaluated: evaluated, split: split };
 }
 window.recommendVehicleForJob = recommendVehicleForJob;
+
+// ── Split-delivery proposer (Capacity Planner spec §7.3) ────────────────────
+// Greedy bin-pack across the largest available vehicles when no single truck
+// fits the whole load. Returns:
+//   { ok: true, plan: [{vehicle, frames:[...], usagePct}], summary }   — viable
+//   { ok: false, reason, blockingFrame? }                              — not viable
+// "Not viable" cases: a single frame is too long/tall for ANY vehicle, or
+// total stacked depth exceeds the sum of all vehicles' bed widths.
+function proposeSplitDelivery(frames, vehicles) {
+  if (!frames || frames.length === 0) return { ok: false, reason: 'no_frames' };
+  if (!vehicles || vehicles.length === 0) return { ok: false, reason: 'no_vehicles' };
+  // Sort vehicles largest → smallest so we fill big trucks first (fewest
+  // splits). Then sort frames longest-edge desc so the long ones go into
+  // whichever truck can take them.
+  var poolDesc = vehicles.slice().sort(function(a,b){ return _vehicleVolume(b) - _vehicleVolume(a); });
+  var framesDesc = frames.slice().sort(function(a,b){
+    return Math.max(b.widthMm, b.heightMm) - Math.max(a.widthMm, a.heightMm);
+  });
+  // Reject upfront if any single frame is irreparably too big (no vehicle in
+  // the fleet could ever take it). Surfaces the actual blocker rather than
+  // letting the caller see a confusing partial plan.
+  for (var i = 0; i < framesDesc.length; i++) {
+    var f = framesDesc[i];
+    var fits = poolDesc.some(function(v){
+      if (_vehicleHas3DDims(v)) {
+        return Math.max(f.widthMm, f.heightMm) <= v.internal.lengthMm
+            && Math.min(f.widthMm, f.heightMm) <= v.internal.heightMm
+            && FRAME_DEPTH_MM <= v.internal.widthMm;
+      }
+      return (+v.maxFrames || 0) >= 1;
+    });
+    if (!fits) return { ok: false, reason: 'frame_too_big', blockingFrame: f };
+  }
+  // Allocate trucks one by one (largest first) and pack frames in.
+  var plan = [];
+  var pendingFrames = framesDesc.slice();
+  var pendingPool = poolDesc.slice();
+  while (pendingFrames.length > 0 && pendingPool.length > 0) {
+    var v = pendingPool.shift();
+    var loaded = [];
+    var has3D = _vehicleHas3DDims(v);
+    var capDepth = has3D ? v.internal.widthMm : null;          // for stacked-depth check
+    var capLen   = has3D ? v.internal.lengthMm : null;
+    var capH     = has3D ? v.internal.heightMm : null;
+    var capCount = has3D ? null : (+v.maxFrames || 0);
+    var usedDepth = 0;
+    // Walk pending frames; take ones that fit in this truck.
+    var still = [];
+    pendingFrames.forEach(function(fr){
+      if (has3D) {
+        var longest = Math.max(fr.widthMm, fr.heightMm);
+        var tallest = Math.min(fr.widthMm, fr.heightMm);
+        if (longest <= capLen && tallest <= capH && (usedDepth + FRAME_DEPTH_MM) <= capDepth) {
+          loaded.push(fr); usedDepth += FRAME_DEPTH_MM;
+        } else {
+          still.push(fr);
+        }
+      } else {
+        if (loaded.length < capCount) loaded.push(fr); else still.push(fr);
+      }
+    });
+    if (loaded.length === 0) {
+      // Truck couldn't take anything (size/dim mismatch with the remaining
+      // largest frame). Skip it but keep frames in pending.
+      pendingFrames = still;
+      continue;
+    }
+    var usagePct = has3D ? (usedDepth / capDepth) : (loaded.length / capCount);
+    plan.push({ vehicle: v, frames: loaded, usagePct: usagePct });
+    pendingFrames = still;
+  }
+  if (pendingFrames.length > 0) {
+    return { ok: false, reason: 'fleet_too_small', remainingFrames: pendingFrames.length };
+  }
+  return {
+    ok: true,
+    plan: plan,
+    summary: plan.length + ' vehicle' + (plan.length !== 1 ? 's' : '') + ' needed for ' + frames.length + ' frame' + (frames.length !== 1 ? 's' : ''),
+  };
+}
+window.proposeSplitDelivery = proposeSplitDelivery;
 
 // ── Installer availability exceptions (Capacity Planner spec §4.5) ──────────
 // Side-store in localStorage. Each entry shape:
