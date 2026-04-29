@@ -4,8 +4,208 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ── MOBILE: TODAY HOME SCREEN ─────────────────────────────────────────────────
+// Black hero strip + 2×2 stat grid + Today's appointments + Recent open deals.
+// Designed for the Capacitor wrapper; rendered via renderDashboard() when
+// isNativeWrapper() is true. Layout follows SpartanSalesMobile.jsx's TodayScreen
+// pattern but uses our brand red (#c41230) and existing data shapes.
+function renderTodayMobile() {
+  var st = getState();
+  var deals = st.deals || [];
+  var cu = getCurrentUser() || { name:'Admin', role:'admin', branch:'All' };
+  var myName = cu.name || 'User';
+  var role = cu.role || 'sales_rep';
+  var branch = cu.branch || '';
+  var isManager = role === 'admin' || role === 'sales_manager' || role === 'accounts';
+
+  var today = new Date();
+  var todayStr = today.toISOString().slice(0, 10);
+
+  // Today's appointments (MOCK_APPOINTMENTS persisted in localStorage; real
+  // calendar events aren't loaded on mobile because Calendar OAuth is desktop-only).
+  var apptsAll = (typeof MOCK_APPOINTMENTS !== 'undefined' && MOCK_APPOINTMENTS) ? MOCK_APPOINTMENTS : [];
+  var todaysAppts = apptsAll.filter(function(a){
+    return a.date === todayStr && (isManager || a.rep === myName);
+  }).sort(function(a,b){ return (a.time||'').localeCompare(b.time||''); });
+
+  // Visible-to-me deals (manager/admin sees all; reps see their own).
+  var visibleDeals = deals.filter(function(d){ return isManager || d.rep === myName; });
+  var myOpenDeals = visibleDeals.filter(function(d){ return !d.won && !d.lost; })
+    .sort(function(a,b){ return (b.val||0) - (a.val||0); });
+  var myOpenValue = myOpenDeals.reduce(function(s,d){ return s + (d.val||0); }, 0);
+
+  // Wins this week (last 7 days)
+  var weekStart = Date.now() - 7 * 86400000;
+  var weekWon = visibleDeals.filter(function(d){
+    return d.won && d.wonDate && new Date(d.wonDate).getTime() >= weekStart;
+  });
+  var weekWonValue = weekWon.reduce(function(s,d){ return s + (d.val||0); }, 0);
+
+  // Commission MTD — rough 5% of GST-exclusive won-this-month value.
+  var monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+  var monthWon = visibleDeals.filter(function(d){
+    return d.won && d.wonDate && new Date(d.wonDate).getTime() >= monthStart.getTime();
+  });
+  var monthCommission = monthWon.reduce(function(s,d){ return s + ((d.val||0)/1.1)*0.05; }, 0);
+
+  // Greeting + role label
+  var h = today.getHours();
+  var greet = h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
+  var fname = (myName.split(' ')[0]) || 'User';
+  var roleLabel = ({admin:'Admin',sales_manager:'Sales Manager',sales_rep:'Sales Rep',accounts:'Accounts',installer:'Installer',production_manager:'Production Manager',service_staff:'Service Staff'})[role] || role;
+  var dateStr = today.toLocaleDateString('en-AU', { weekday:'long', day:'numeric', month:'short' });
+
+  // $-formatter that compacts to k/M for stat tiles.
+  function fmtK(n) {
+    var v = Number(n) || 0;
+    if (v >= 1000000) return '$' + (v/1000000).toFixed(1) + 'M';
+    if (v >= 1000) return '$' + Math.round(v/1000) + 'k';
+    return '$' + v.toFixed(0);
+  }
+  function fmtTime12(t) {
+    if (!t) return '';
+    var p = t.split(':'); var hh = parseInt(p[0]); var mm = p[1] || '00';
+    var ap = hh >= 12 ? 'pm' : 'am'; var h12 = hh % 12 || 12;
+    return h12 + ':' + mm + ap;
+  }
+  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+
+  // Stat-card builder
+  function stat(label, val, sub, accent, onclick) {
+    var clickable = onclick ? 'cursor:pointer' : '';
+    var tag = onclick ? 'button' : 'div';
+    return '<' + tag + (onclick ? ' onclick="' + onclick + '"' : '') + ' style="background:#fff;border-radius:12px;padding:12px;text-align:left;border:none;font-family:inherit;width:100%;box-shadow:0 1px 3px rgba(0,0,0,.06);' + clickable + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px"><span style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;font-weight:700">' + label + '</span><span style="width:6px;height:6px;border-radius:50%;background:' + (accent || '#c41230') + ';margin-top:5px"></span></div>' +
+      '<div style="font-size:20px;font-weight:800;color:#0a0a0a;font-family:Syne,sans-serif;line-height:1">' + val + '</div>' +
+      (sub ? '<div style="font-size:10px;color:#6b7280;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + sub + '</div>' : '') +
+    '</' + tag + '>';
+  }
+
+  // Appointment card — Navigate / Call / SMS direct-action buttons baked in.
+  function apptCard(a) {
+    var addr = [a.street, a.suburb, a.state].filter(Boolean).join(', ');
+    var nameLine = a.client || a.subject || 'Appointment';
+    var navUrl = addr ? 'https://maps.google.com/?q=' + encodeURIComponent(addr) : '';
+    var phone = a.phone || '';
+    return '<div style="background:#fff;border-radius:12px;overflow:hidden;margin-bottom:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);display:flex">' +
+      '<div style="width:5px;background:#c41230;flex-shrink:0"></div>' +
+      '<div style="flex:1;padding:12px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">' +
+          '<span style="font-size:13px;font-weight:700;color:#1a1a1a">⏰ ' + (fmtTime12(a.time) || 'All day') + '</span>' +
+          (a.dealId ? '<button onclick="setState({dealDetailId:\'' + _esc(a.dealId) + '\'})" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;border:none;background:#fef2f4;color:#c41230;cursor:pointer;font-family:inherit">Open Deal</button>' : '') +
+        '</div>' +
+        '<div style="font-size:14px;font-weight:700;color:#1a1a1a;margin-bottom:2px">' + nameLine + '</div>' +
+        (addr ? '<div style="font-size:11px;color:#6b7280;margin-bottom:8px;display:flex;align-items:center;gap:4px">📍 ' + addr + '</div>' : '<div style="margin-bottom:8px"></div>') +
+        '<div style="display:flex;gap:6px">' +
+          (navUrl ? '<a href="' + navUrl + '" target="_blank" rel="noopener" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#0a0a0a;color:#fff;font-size:11px;font-weight:700;text-decoration:none">↗ Navigate</a>' : '') +
+          (phone ? '<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#22c55e;color:#fff;font-size:11px;font-weight:700;text-decoration:none">☎ Call</a>' : '') +
+          (phone ? '<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#3b82f6;color:#fff;font-size:11px;font-weight:700;text-decoration:none">💬 SMS</a>' : '') +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  // Compact deal card for the "Recent open deals" list.
+  function dealCardCompact(d) {
+    var c = (st.contacts || []).find(function(x){ return x.id === d.cid; });
+    var name = c ? (c.fn + ' ' + c.ln) : d.title;
+    var stage = null;
+    try {
+      var pl = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === d.pid; });
+      if (pl) stage = pl.stages.find(function(s){ return s.id === d.sid; });
+    } catch(e){}
+    return '<button onclick="setState({dealDetailId:\'' + _esc(d.id) + '\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ' + (stage ? stage.col : '#c41230') + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:14px;font-weight:700;color:#1a1a1a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
+          '<div style="font-size:11px;color:#6b7280;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (d.suburb || '') + (d.postcode ? ' · ' + d.postcode : '') + '</div>' +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0">' +
+          '<div style="font-size:14px;font-weight:800;font-family:Syne,sans-serif">' + fmtK(d.val) + '</div>' +
+          (stage ? '<div style="font-size:10px;font-weight:600;margin-top:2px;color:' + stage.col + '">' + stage.name + '</div>' : '') +
+        '</div>' +
+      '</div>' +
+    '</button>';
+  }
+
+  // Section heading with count badge.
+  function sectionTitle(title, count) {
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:0 4px;margin:18px 0 8px"><h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin:0">' + title + '</h2>' + (count !== undefined ? '<span style="font-size:11px;font-weight:700;color:#9ca3af">' + count + '</span>' : '') + '</div>';
+  }
+
+  return '' +
+    // Black hero — extends edge-to-edge by pulling out the 12px main padding.
+    '<div style="margin:-12px -12px 0;padding:18px 16px 22px;background:#0a0a0a;color:#fff">' +
+      '<div style="font-size:12px;opacity:.6;margin-bottom:2px">Good ' + greet + ', ' + fname + '</div>' +
+      '<h1 style="font-size:22px;font-weight:800;margin:0;font-family:Syne,sans-serif">' + dateStr + '</h1>' +
+      '<div style="font-size:11px;opacity:.5;margin-top:4px">' + roleLabel + ' · ' + branch + '</div>' +
+    '</div>' +
+
+    // 2×2 stat grid — pulls up so cards overlap the hero edge slightly.
+    '<div style="margin-top:-10px">' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px">' +
+        stat("Today's appts", todaysAppts.length, todaysAppts.length === 0 ? 'None scheduled' : 'Next: ' + (fmtTime12(todaysAppts[0].time) || 'TBD'), '#c41230', "setState({page:'calendar'})") +
+        stat('Open deals', myOpenDeals.length, fmtK(myOpenValue), '#0a0a0a', "setState({page:'deals'})") +
+        stat('Wins this week', weekWon.length, fmtK(weekWonValue), '#22c55e', null) +
+        stat('Commission MTD', fmtK(monthCommission), monthWon.length + ' win' + (monthWon.length === 1 ? '' : 's'), '#f59e0b', "setState({page:'commission'})") +
+      '</div>' +
+    '</div>' +
+
+    // Today's appointments
+    sectionTitle("Today's appointments", todaysAppts.length) +
+    (todaysAppts.length === 0
+      ? '<div style="padding:20px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:12px;font-style:italic">No appointments today.</div>'
+      : todaysAppts.map(apptCard).join('')) +
+
+    // Recent open deals (top 5)
+    sectionTitle('Recent open deals', myOpenDeals.length) +
+    (myOpenDeals.length === 0
+      ? '<div style="padding:20px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:12px;font-style:italic">No open deals — your queue is clean.</div>'
+      : myOpenDeals.slice(0, 5).map(dealCardCompact).join(''));
+}
+
+// ── MOBILE: MORE menu ─────────────────────────────────────────────────────────
+// Tap-target list of pages that don't fit in the 7 bottom-nav tabs.
+function renderMore() {
+  var items = [
+    {id:'won',       label:'Won Deals',     icon:'won'},
+    {id:'contacts',  label:'Contacts',      icon:'contacts'},
+    {id:'invoicing', label:'Invoicing',     icon:'invoicing'},
+    {id:'reports',   label:'Reports',       icon:'reports'},
+    {id:'audit',     label:'Audit',         icon:'audit'},
+    {id:'map',       label:'Schedule Map',  icon:'map'},
+    {id:'phone',     label:'Phone',         icon:'phone'},
+    {id:'profile',   label:'My Profile',    icon:'contacts'},
+    {id:'settings',  label:'Settings',      icon:'settings'},
+  ].filter(function(it){
+    return typeof canAccessPage !== 'function' || canAccessPage(it.id);
+  });
+  return '' +
+    // Header strip flush to the edges — same pattern as Deals / Leads.
+    '<div style="margin:-12px -12px 12px;background:#fff;padding:12px 16px;border-bottom:1px solid #f0f0f0">' +
+      '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">More</h1>' +
+      '<div style="font-size:11px;color:#6b7280;margin-top:2px">Settings, profile, and other tools</div>' +
+    '</div>' +
+    '<div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)">' +
+      items.map(function(it, i){
+        return '<button onclick="setState({page:\'' + it.id + '\',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null})" style="width:100%;text-align:left;padding:14px 16px;background:#fff;border:none;' + (i>0?'border-top:1px solid #f3f4f6;':'') + 'cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:12px;font-size:14px;font-weight:600;color:#1a1a1a">' +
+          '<span style="color:#6b7280;display:inline-flex;width:20px;justify-content:center">' + Icon({n: it.icon, size: 16}) + '</span>' +
+          '<span style="flex:1">' + it.label + '</span>' +
+          '<span style="color:#9ca3af;font-size:18px;line-height:1">›</span>' +
+        '</button>';
+      }).join('') +
+    '</div>' +
+    '<button onclick="logout()" style="width:100%;text-align:center;padding:12px;background:#fff;border:1px solid #fecaca;border-radius:12px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;color:#b91c1c;margin-top:16px">Sign Out</button>';
+}
+
 // ── DASHBOARD ─────────────────────────────────────────────────────────────────
 function renderDashboard() {
+  // Native wrapper: replace the desktop dashboard with the mobile "Today"
+  // home screen — black hero, 2x2 stat grid, today's appointments, recent
+  // open deals. Desktop behaviour is unchanged below this branch.
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) {
+    return renderTodayMobile();
+  }
   const { deals, leads, emailSent, emailInbox, contacts } = getState();
   const now = new Date();
   const B = getState().branch || 'all'; // 'all' | 'VIC' | 'SA' | 'ACT'
@@ -134,6 +334,14 @@ function renderDashboard() {
   </div>
 
   <!-- ══ BRANCH SWITCHER ══ -->
+  ${(typeof isNativeWrapper === 'function' && isNativeWrapper()) ? `
+  <div style="display:flex;gap:6px;margin-bottom:14px;overflow-x:auto;padding-bottom:2px">
+    ${BRANCHES.map(br => {
+      const isActive = B === br.id;
+      return `<button onclick="setState({branch:'${br.id}'})" style="flex-shrink:0;padding:6px 14px;border-radius:18px;border:1px solid ${isActive ? br.col : '#e5e7eb'};background:${isActive ? br.col : '#fff'};color:${isActive ? '#fff' : '#1a1a1a'};font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap">${br.label}</button>`;
+    }).join('')}
+  </div>
+  ` : `
   <div style="display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap">
     ${BRANCHES.map(br => {
     const brDeals = deals.filter(d => br.id === 'all' || d.branch === br.id);
@@ -152,6 +360,7 @@ function renderDashboard() {
       </button>`;
   }).join('')}
   </div>
+  `}
 
   <!-- ══ KPI CARDS ══ -->
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:14px;margin-bottom:18px">
@@ -889,6 +1098,10 @@ let kanbanEditModal = null;
 // ── DEAL KANBAN FILTER STATE ──────────────────────────────────────────────────
 let kFilterOwners = [], kFilterStages = [], kFilterSource = [], kFilterValMin = '', kFilterValMax = '', kFilterOpen = false;
 
+// Mobile wrapper: which stage is currently visible in the vertical deal list.
+// Null = falls back to the first stage at render time.
+let _mobileDealStageId = null;
+
 
 // ── Kanban edit functions ─────────────────────────────────────────────────────
 function openStageEdit(stageId) {
@@ -1196,9 +1409,281 @@ function unhighlightAllCols() {
 }
 
 
+// ── MOBILE: DEALS — swipeable column layout ───────────────────────────────────
+// Pipeline switcher → filter chip + collapsible panel → stage tab strip →
+// full-width swipeable columns (CSS scroll-snap). Tabs and scroll position
+// stay in sync via _onDealsKanbanScroll (called on native scroll events) and
+// _restoreDealsKanbanScroll (called from renderPage after each innerHTML
+// write so scroll position survives state-driven re-renders).
+function renderDealsMobile() {
+  var st = getState();
+  var deals = st.deals || [];
+  var contacts = st.contacts || [];
+  var pl = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === dPipeline; });
+  if (!pl) pl = (typeof PIPELINES !== 'undefined' && PIPELINES[0]) || null;
+  if (!pl) return '<div style="padding:40px;text-align:center;color:#9ca3af">No pipeline configured</div>';
+  var stages = pl.stages.slice().sort(function(a,b){ return a.ord - b.ord; });
+  var pDeals = deals.filter(function(d){ return d.pid === dPipeline; });
+
+  // Apply filters (same shape as desktop's `matchesFilter`).
+  function matches(d) {
+    if (kFilterOwners.length > 0 && kFilterOwners.indexOf(d.rep) < 0) return false;
+    if (kFilterValMin !== '' && d.val < parseFloat(kFilterValMin)) return false;
+    if (kFilterValMax !== '' && d.val > parseFloat(kFilterValMax)) return false;
+    if (kFilterSource.length > 0) {
+      var c = contacts.find(function(x){ return x.id === d.cid; });
+      if (!c || kFilterSource.indexOf(c.source) < 0) return false;
+    }
+    return true;
+  }
+  var filteredDeals = pDeals.filter(matches);
+
+  var byStage = {};
+  stages.forEach(function(s){ byStage[s.id] = []; });
+  filteredDeals.forEach(function(d){ if (byStage[d.sid]) byStage[d.sid].push(d); });
+
+  // Each column sorted: stale first, then by value desc.
+  Object.keys(byStage).forEach(function(k){
+    byStage[k].sort(function(a, b){
+      var sA = (a.age || 0) > 7 ? 1 : 0;
+      var sB = (b.age || 0) > 7 ? 1 : 0;
+      if (sA !== sB) return sB - sA;
+      return (b.val || 0) - (a.val || 0);
+    });
+  });
+
+  // Default selection: first stage with deals, or first stage if all empty.
+  var sel = _mobileDealStageId;
+  if (!sel || !byStage[sel]) {
+    var firstWithDeals = stages.find(function(s){ return (byStage[s.id]||[]).length > 0; });
+    sel = (firstWithDeals || stages[0]).id;
+    _mobileDealStageId = sel;
+  }
+
+  var allOwners = Array.from(new Set(deals.map(function(d){ return d.rep; }).filter(Boolean))).sort();
+  var totalOpen = filteredDeals.filter(function(d){ return !d.won && !d.lost; });
+  var totalVal = totalOpen.reduce(function(s,d){ return s + (d.val||0); }, 0);
+  var activeFilters = kFilterOwners.length + (kFilterValMin?1:0) + (kFilterValMax?1:0);
+  var cu = getCurrentUser();
+  var isManager = cu && (cu.role === 'admin' || cu.role === 'sales_manager' || cu.role === 'accounts');
+
+  function fmtK(n) {
+    var v = Number(n) || 0;
+    if (v >= 1000000) return '$' + (v/1000000).toFixed(1) + 'M';
+    if (v >= 1000) return '$' + Math.round(v/1000) + 'k';
+    return '$' + v.toFixed(0);
+  }
+  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+  function _initials(name) {
+    return (name || '').split(' ').map(function(w){ return (w[0] || '').toUpperCase(); }).join('').slice(0,2);
+  }
+
+  // Card renderer — top row: name+address / value+quotes; bottom row:
+  // rep avatar, activity dot, source, stale clock. Red outline when very stale.
+  function dealCard(d, stage) {
+    var c = contacts.find(function(x){ return x.id === d.cid; });
+    var name = c ? (c.fn + ' ' + c.ln) : (d.title || 'Untitled');
+    var stale = (d.age || 0) > 7;
+    var veryStale = (d.age || 0) > 14;
+    var quoteCount = (d.quotes || []).length;
+    var hasRecentAct = (d.activities || []).some(function(a){
+      if (!a || !a.date) return false;
+      try { return (Date.now() - new Date(a.date).getTime()) < 48 * 3600 * 1000; }
+      catch(e) { return false; }
+    });
+    return '<button onclick="setState({dealDetailId:\'' + _esc(d.id) + '\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ' + stage.col + ';' + (veryStale ? 'outline:1px solid #fca5a5;outline-offset:-1px;' : '') + '">' +
+      // Top row
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:14px;font-weight:700;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
+          '<div style="font-size:11px;color:#6b7280;margin-top:2px;display:flex;align-items:center;gap:4px;overflow:hidden">' +
+            '\u{1f4cd}' +
+            (d.postcode ? ' <span style="font-weight:700">' + d.postcode + '</span>' : '') +
+            ' <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (d.suburb || '—') + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0">' +
+          '<div style="font-size:14px;font-weight:800;font-family:Syne,sans-serif;color:#0a0a0a">' + fmtK(d.val) + '</div>' +
+          (quoteCount > 0 ? '<div style="font-size:10px;color:#6b7280;margin-top:1px">' + quoteCount + ' quote' + (quoteCount===1?'':'s') + '</div>' : '') +
+        '</div>' +
+      '</div>' +
+      // Bottom row
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid #f3f4f6">' +
+        '<div style="display:flex;align-items:center;gap:6px;min-width:0">' +
+          (d.rep ? '<div title="' + _esc(d.rep) + '" style="width:20px;height:20px;border-radius:50%;background:#0a0a0a;color:#fff;font-size:9px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0">' + _initials(d.rep) + '</div>' : '') +
+          '<span title="' + (hasRecentAct ? 'Activity in last 48h' : 'Quiet') + '" style="width:6px;height:6px;border-radius:50%;background:' + (hasRecentAct ? '#22c55e' : '#cbd5e1') + ';flex-shrink:0"></span>' +
+          (c && c.source ? '<span style="font-size:10px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + c.source + '</span>' : '') +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:3px;flex-shrink:0;font-size:10px;font-weight:700;color:' + (stale ? '#dc2626' : '#9ca3af') + '">' +
+          (stale ? '⚠️ ' : '') +
+          '\u{1f553} ' + (d.age || 0) + 'd' +
+        '</div>' +
+      '</div>' +
+    '</button>';
+  }
+
+  // Column renderer — header + cards + swipe hint.
+  function stageColumn(stage) {
+    var cards = byStage[stage.id] || [];
+    var sumVal = cards.reduce(function(s,d){ return s + (d.val||0); }, 0);
+    return '<div data-stage-id="' + stage.id + '" style="flex-shrink:0;width:100%;height:100%;scroll-snap-align:start;padding:12px;overflow-y:auto;box-sizing:border-box">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;padding:0 2px">' +
+        '<div style="display:flex;align-items:center;gap:8px;min-width:0">' +
+          '<span style="width:8px;height:8px;border-radius:50%;background:' + stage.col + ';flex-shrink:0"></span>' +
+          '<span style="font-size:14px;font-weight:700;color:#0a0a0a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + stage.name + '</span>' +
+          '<span style="font-size:11px;color:#9ca3af;font-weight:700">' + cards.length + '</span>' +
+        '</div>' +
+        (sumVal > 0 ? '<span style="font-size:11px;color:#6b7280;font-weight:600;flex-shrink:0">' + fmtK(sumVal) + '</span>' : '') +
+      '</div>' +
+      (cards.length === 0
+        ? '<div style="text-align:center;padding:40px 20px;color:#9ca3af;font-size:12px;font-style:italic">No deals in ' + stage.name + '</div>'
+        : cards.map(function(d){ return dealCard(d, stage); }).join('')) +
+      (stages.length > 1 ? '<div style="text-align:center;font-size:10px;color:#9ca3af;font-style:italic;margin-top:8px;padding-bottom:8px">Swipe ← →</div>' : '') +
+    '</div>';
+  }
+
+  // Filter panel — collapsed by default; chips for value brackets, manager
+  // also gets rep chips. Reuses our existing kFilter* state.
+  function filterPanel() {
+    if (!kFilterOpen) return '';
+    var allBracket = !kFilterValMin && !kFilterValMax;
+    var bLow = kFilterValMax === '25000' && !kFilterValMin;
+    var bMid = kFilterValMin === '25000' && kFilterValMax === '75000';
+    var bHigh = kFilterValMin === '75000' && !kFilterValMax;
+    function chipBtn(label, active, onclick) {
+      return '<button onclick="' + onclick + '" style="padding:4px 10px;border-radius:14px;border:none;background:' + (active?'#c41230':'#f3f4f6') + ';color:' + (active?'#fff':'#374151') + ';font-size:10px;font-weight:700;cursor:pointer;font-family:inherit">' + label + '</button>';
+    }
+    return '<div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">' +
+      (isManager ?
+        '<div><div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin-bottom:4px">Rep</div>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:4px">' +
+            chipBtn('All reps', kFilterOwners.length===0, "kFilterOwners=[];renderPage()") +
+            allOwners.map(function(r){
+              return chipBtn(r, kFilterOwners.indexOf(r) >= 0, "kFilterOwners=['" + _esc(r) + "'];renderPage()");
+            }).join('') +
+          '</div></div>'
+        : '') +
+      '<div><div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin-bottom:4px">Value bracket</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:4px">' +
+          chipBtn('All', allBracket, "kFilterValMin='';kFilterValMax='';renderPage()") +
+          chipBtn('< $25k', bLow, "kFilterValMin='';kFilterValMax='25000';renderPage()") +
+          chipBtn('$25–75k', bMid, "kFilterValMin='25000';kFilterValMax='75000';renderPage()") +
+          chipBtn('$75k+', bHigh, "kFilterValMin='75000';kFilterValMax='';renderPage()") +
+        '</div></div>' +
+    '</div>';
+  }
+
+  var SHELL_PX = TOPBAR_HEIGHT + BOTTOMNAV_HEIGHT;
+  return '' +
+    // Outer flex column — fills the visible viewport between top and bottom chrome.
+    '<div style="display:flex;flex-direction:column;height:calc(100vh - ' + SHELL_PX + 'px);margin:-12px;background:#f4f5f7">' +
+      // Header chrome (title + filter chip + pipeline switcher + filter panel)
+      '<div style="background:#fff;padding:12px 16px;border-bottom:1px solid #f0f0f0;flex-shrink:0">' +
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">' +
+          '<div>' +
+            '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">Deals</h1>' +
+            '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + totalOpen.length + ' open · ' + fmtK(totalVal) + ' pipeline</div>' +
+          '</div>' +
+          '<button onclick="kFilterOpen=!kFilterOpen;renderPage()" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;border:none;background:' + (kFilterOpen ? '#c41230' : '#f3f4f6') + ';color:' + (kFilterOpen ? '#fff' : '#374151') + ';font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">' +
+            'Filter' + (activeFilters > 0 ? '<span style="width:6px;height:6px;border-radius:50%;background:' + (kFilterOpen ? '#fff' : '#c41230') + '"></span>' : '') +
+          '</button>' +
+        '</div>' +
+        // Pipeline segmented control
+        '<div style="display:flex;background:#f3f4f6;border-radius:8px;padding:3px;gap:3px">' +
+          PIPELINES.map(function(p){
+            var on = p.id === dPipeline;
+            return '<button onclick="dPipeline=\'' + _esc(p.id) + '\';_mobileDealStageId=null;renderPage()" style="flex:1;padding:6px;border-radius:6px;border:none;background:' + (on ? '#fff' : 'transparent') + ';color:' + (on ? '#0a0a0a' : '#6b7280') + ';font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;' + (on ? 'box-shadow:0 1px 2px rgba(0,0,0,.06)' : '') + '">' + p.name + '</button>';
+          }).join('') +
+        '</div>' +
+        filterPanel() +
+      '</div>' +
+      // Stage tab strip
+      '<div id="dealStageTabs" style="background:#fff;border-bottom:1px solid #e5e7eb;overflow-x:auto;-webkit-overflow-scrolling:touch;flex-shrink:0">' +
+        '<div style="display:flex">' +
+          stages.map(function(s){
+            var count = (byStage[s.id] || []).length;
+            var on = s.id === sel;
+            return '<button data-stage-id="' + s.id + '" data-stage-col="' + s.col + '" onclick="_jumpToDealStage(\'' + s.id + '\')" style="flex-shrink:0;min-width:80px;padding:8px 12px;border:none;background:none;cursor:pointer;border-bottom:2.5px solid ' + (on ? s.col : 'transparent') + ';display:flex;flex-direction:column;align-items:center;gap:2px;font-family:inherit">' +
+              '<div style="display:flex;align-items:center;gap:6px">' +
+                '<span style="width:7px;height:7px;border-radius:50%;background:' + s.col + '"></span>' +
+                '<span data-name style="font-size:11px;font-weight:700;color:' + (on ? '#0a0a0a' : '#6b7280') + ';white-space:nowrap">' + s.name + '</span>' +
+              '</div>' +
+              '<span style="font-size:9px;color:#9ca3af">' + count + '</span>' +
+            '</button>';
+          }).join('') +
+        '</div>' +
+      '</div>' +
+      // Swipeable column container — CSS scroll-snap locks each column to a
+      // viewport edge. _onDealsKanbanScroll syncs the tab strip on swipe.
+      '<div id="dealKanbanScroll" data-stage-ids="' + stages.map(function(s){return s.id;}).join(',') + '" onscroll="_onDealsKanbanScroll(event)" style="flex:1;display:flex;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch">' +
+        stages.map(stageColumn).join('') +
+      '</div>' +
+    '</div>';
+}
+
+// Tab click — programmatically navigate to a stage column.
+function _jumpToDealStage(stageId) {
+  _mobileDealStageId = stageId;
+  var el = document.getElementById('dealKanbanScroll');
+  if (!el) { renderPage(); return; }
+  var stages = (el.dataset.stageIds || '').split(',');
+  var idx = stages.indexOf(stageId);
+  if (idx < 0) idx = 0;
+  el.scrollTo({ left: idx * el.clientWidth, behavior: 'smooth' });
+  _updateDealStageTabsActive(stageId);
+}
+
+// Swipe-driven sync — fires on the container's native scroll. Updates the
+// active stage id and tab strip styling without triggering renderPage (which
+// would clobber scroll momentum and re-render every card).
+function _onDealsKanbanScroll(ev) {
+  var el = ev && ev.currentTarget;
+  if (!el) return;
+  var stages = (el.dataset.stageIds || '').split(',');
+  if (!stages.length) return;
+  var idx = Math.round(el.scrollLeft / Math.max(1, el.clientWidth));
+  var stageId = stages[idx];
+  if (!stageId || stageId === _mobileDealStageId) return;
+  _mobileDealStageId = stageId;
+  _updateDealStageTabsActive(stageId);
+}
+
+// Direct-DOM update of the stage tab strip's underline + name colour.
+function _updateDealStageTabsActive(stageId) {
+  var strip = document.getElementById('dealStageTabs');
+  if (!strip) return;
+  var btns = strip.querySelectorAll('button[data-stage-id]');
+  btns.forEach(function(btn) {
+    var on = btn.dataset.stageId === stageId;
+    btn.style.borderBottom = '2.5px solid ' + (on ? (btn.dataset.stageCol || '#c41230') : 'transparent');
+    var nameSpan = btn.querySelector('span[data-name]');
+    if (nameSpan) nameSpan.style.color = on ? '#0a0a0a' : '#6b7280';
+  });
+}
+
+// Called from renderPage after each innerHTML write to put the swipe
+// container back at the active stage. Without this every state-driven
+// re-render would snap back to the first column.
+function _restoreDealsKanbanScroll() {
+  var el = document.getElementById('dealKanbanScroll');
+  if (!el) return;
+  var stages = (el.dataset.stageIds || '').split(',');
+  var idx = stages.indexOf(_mobileDealStageId);
+  if (idx < 0) idx = 0;
+  // Use rAF so the scroll happens after layout has settled.
+  requestAnimationFrame(function(){ el.scrollLeft = idx * el.clientWidth; });
+}
+
 function renderDeals() {
   const { deals, contacts, modal, dealDetailId } = getState();
   if (dealDetailId) return renderDealDetail() + (getState().editingDealId ? renderEditDealDrawer() : '');
+
+  // Native wrapper: full mobile deals layout (pipeline switcher, filter
+  // panel, stage tab strip, swipeable horizontal columns). Desktop kanban
+  // is unchanged below.
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) {
+    return renderDealsMobile();
+  }
 
   const pl = PIPELINES.find(p => p.id === dPipeline);
   // Include the lost stage as a visible "Not Proceeding" column. It lives at
@@ -1264,7 +1749,58 @@ function renderDeals() {
     </div>
   </div>
 
-  <!-- Kanban board -->
+  ${(typeof isNativeWrapper === 'function' && isNativeWrapper()) ? (function(){
+    // Mobile: stage chip selector + vertical deal list. Drag/drop kept
+    // intact on each card markup but is functionally inert on touch — moving
+    // a deal between stages on mobile uses the ✎ quick-edit modal instead.
+    const sel = (_mobileDealStageId && byStage[_mobileDealStageId]) ? _mobileDealStageId : stages[0].id;
+    const sd = (byStage[sel] || []);
+    const stage = stages.find(s => s.id === sel) || stages[0];
+    const stVal = sd.filter(d => !d.won && !d.lost).reduce((s, d) => s + d.val, 0);
+    return `
+    <div style="display:flex;gap:6px;overflow-x:auto;margin-bottom:10px;padding-bottom:4px">
+      ${stages.map(st => {
+        const c = (byStage[st.id]||[]).length;
+        const a = st.id === sel;
+        return `<button onclick="_mobileDealStageId='${st.id}';renderPage()" style="flex-shrink:0;padding:6px 12px;border-radius:16px;border:1px solid ${a ? st.col : '#e5e7eb'};background:${a ? st.col : '#fff'};color:${a ? '#fff' : '#1a1a1a'};font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap;display:inline-flex;align-items:center;gap:6px">${st.name}<span style="background:${a ? 'rgba(255,255,255,.25)' : '#e5e7eb'};color:${a ? '#fff' : '#6b7280'};border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${c}</span></button>`;
+      }).join('')}
+    </div>
+    <div style="font-size:11px;color:#6b7280;margin-bottom:8px;padding-left:2px">${sd.length} deal${sd.length===1?'':'s'} · ${fmt$(stVal)}</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${sd.length === 0 ? '<div style="text-align:center;padding:30px 20px;color:#9ca3af;font-size:13px;background:#f8f9fa;border-radius:10px">No deals in this stage</div>' : sd.map(d => {
+        const c = contacts.find(x => x.id === d.cid);
+        const passes = matchesFilter(d);
+        const sent = getState().emailSent.filter(m => m.dealId === d.id || (c && m.to === c.email));
+        const opened = sent.filter(m => m.opened);
+        const isNP = !!stage.isLost;
+        return `<div onclick="setState({dealDetailId:'${d.id}'})" style="background:#fff;border-radius:10px;padding:12px;border:1px solid #e5e7eb;border-left:3px solid ${_dealTypeStripeColor(d)};cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.06);opacity:${activeFilters > 0 && !passes ? .3 : (isNP ? .7 : 1)};position:relative">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:5px">
+            <div style="font-size:13px;font-weight:600;line-height:1.3;color:#1a1a1a;flex:1">${d.title}</div>
+            <button onclick="event.stopPropagation();openDealEdit('${d.id}')" style="width:24px;height:24px;border-radius:5px;border:none;background:transparent;cursor:pointer;color:#9ca3af;font-size:14px;flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:0;line-height:1" title="Quick edit">✎</button>
+          </div>
+          ${c ? `<div style="display:flex;align-items:center;gap:5px;margin-bottom:7px">
+            <div style="width:16px;height:16px;background:#c41230;border-radius:50%;color:#fff;font-size:6px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${avatar(c.fn + ' ' + c.ln)}</div>
+            <span style="font-size:11px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.fn} ${c.ln}</span>
+          </div>` : ''}
+          <div style="font-size:15px;font-weight:800;color:#1a1a1a;font-family:Syne,sans-serif;margin-bottom:6px">${fmt$(d.val)}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div style="display:flex;align-items:center;gap:4px">
+              ${Badge(d.branch, 'gray')}
+              ${d.age > 7 ? `<span style="font-size:10px;background:#fef3c7;color:#b45309;padding:1px 6px;border-radius:10px;font-weight:600">🔥${d.age}d</span>` : ''}
+            </div>
+            <div style="display:flex;align-items:center;gap:4px">
+              ${sent.length > 0 ? `<span style="font-size:10px;color:${opened.length > 0 ? '#15803d' : '#9ca3af'};background:${opened.length > 0 ? '#f0fdf4' : '#f3f4f6'};padding:1px 6px;border-radius:10px">👁${opened.length}/${sent.length}</span>` : ''}
+              <button onclick="event.stopPropagation();emailFromDeal('${d.id}')" style="width:26px;height:26px;border-radius:6px;background:#ede9fe;border:none;cursor:pointer;font-size:12px" title="Email">✉️</button>
+            </div>
+          </div>
+          ${d.closeDate ? `<div style="margin-top:7px;font-size:10px;color:#9ca3af">📅 ${d.closeDate}</div>` : ''}
+          ${d.won ? `<div style="position:absolute;top:8px;right:36px;background:#22c55e;color:#fff;border-radius:20px;font-size:9px;font-weight:700;padding:2px 7px">WON</div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>
+    `;
+  })() : `
+  <!-- Kanban board (desktop) -->
   <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:16px;align-items:flex-start">
     ${stages.map(st => {
     const sd = (byStage[st.id] || []);
@@ -1351,6 +1887,7 @@ function renderDeals() {
       </button>
     </div>
   </div>
+  `}
 
   ${kanbanEditModal ? renderKanbanModal() : ''}
   ${modal && modal.type === 'newDeal' ? renderNewDealModal() : ''}`;
