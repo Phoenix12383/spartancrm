@@ -51,7 +51,19 @@ function mountLeadsGoogleMap() {
 function renderLeads(){
   const {leads,leadDetailId,emailSent}=getState();
   const statusColors={New:'#3b82f6',Contacted:'#f59e0b',Qualified:'#22c55e',Unqualified:'#9ca3af',Archived:'#6b7280'};
-  if(leadDetailId) return renderLeadDetail() + (getState().editingLeadId ? renderEditLeadDrawer() : '');
+  if(leadDetailId) {
+    // Brief 5 Phase 2: convertLead modal needs to render on the lead-
+    // detail page (where the Convert button lives). Look up the lead
+    // by leadDetailId, not by modal.lid, so the modal still works if
+    // the user navigates to a different lead while it's open (rare,
+    // but: closing modal on any nav is the alternative if we ever see
+    // breakage from this).
+    const _detailLead = leads.find(function (l) { return l.id === leadDetailId; });
+    const _modal = getState().modal;
+    return renderLeadDetail()
+      + (getState().editingLeadId ? renderEditLeadDrawer() : '')
+      + (_modal && _modal.type === 'convertLead' && _detailLead ? renderConvertLeadModal(_detailLead) : '');
+  }
 
   const statuses=['All','Unassigned','New','Contacted','Qualified','Unqualified','Archived'];
   // Additional colour used for the Unassigned pseudo-status filter pill.
@@ -491,19 +503,72 @@ function bookLeadAppointment(leadId) {
 }
 
 
+// Open the Convert-to-Deal modal for a specific lead. Replaces the
+// previous direct-convert flow (which silently auto-filled pipeline,
+// stage, value, and skipped deal-type entirely). Brief 5 Phase 2:
+// lead conversion now requires explicit dealType confirmation.
+function openConvertLeadModal(lid) {
+  var lead = getState().leads.find(function (l) { return l.id === lid; });
+  if (!lead) return;
+  if (lead.converted) { addToast('Already converted', 'warning'); return; }
+  setState({ modal: { type: 'convertLead', lid: lid } });
+}
+
+// Brief 5 Phase 2: deal-type radio-card helper for the convert modal.
+// Mirrors _ndDealTypeSelect from the New Deal modal — DOM-only update so
+// the rest of the modal's field values aren't lost on click.
+function _clDealTypeSelect(value) {
+  document.querySelectorAll('.cl-dealtype-card').forEach(function (card) {
+    var on = card.getAttribute('data-value') === value;
+    card.style.borderColor = on ? '#c41230' : '#e5e7eb';
+    card.style.background  = on ? '#fff5f6' : '#fff';
+    var radio = card.querySelector('input[type="radio"]');
+    if (radio) radio.checked = on;
+  });
+}
+
 function renderConvertLeadModal(lead){
   if(!lead)return'';
+  // Smart default: if the lead matches an existing contact and that
+  // contact is commercial, pre-select Commercial. Residential contacts
+  // and unmatched leads get no default — the user must click. This honours
+  // "no silent default" from the brief while saving a click for the
+  // common builder/body-corp follow-on case.
+  var _matchedContact = _findMatchingContactForLead(lead, getState().contacts);
+  var _suggested = (_matchedContact && _matchedContact.type === 'commercial') ? 'commercial' : null;
+  var _resOn = _suggested === 'residential';
+  var _comOn = _suggested === 'commercial';
   return `<div class="modal-bg" onclick="if(event.target===this)setState({modal:null})">
     <div class="modal">
       <div style="padding:20px 24px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">
         <h3 style="margin:0;font-size:16px;font-weight:700">Convert to Deal</h3>
         <button onclick="setState({modal:null})" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({n:'x',size:16})}</button>
       </div>
-      <div style="padding:24px;display:flex;flex-direction:column;gap:14px">
+      <div class="modal-body" style="padding:24px;display:flex;flex-direction:column;gap:14px">
         <div style="background:#f9fafb;border-radius:10px;padding:12px">
           <div style="font-size:14px;font-weight:600">${lead.fn} ${lead.ln}</div>
           <div style="font-size:12px;color:#6b7280;margin-top:2px">${lead.suburb||''} · ${lead.source} · ${fmt$(lead.val)}</div>
           ${lead.notes?`<div style="font-size:12px;color:#9ca3af;margin-top:4px">${lead.notes}</div>`:''}
+        </div>
+        <div>
+          <label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:6px">Deal Type *</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <label class="cl-dealtype-card" data-value="residential" onclick="_clDealTypeSelect('residential')" style="cursor:pointer;border:2px solid ${_resOn?'#c41230':'#e5e7eb'};border-radius:10px;padding:12px 14px;background:${_resOn?'#fff5f6':'#fff'};transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px">
+              <span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#1a1a1a">
+                <input type="radio" name="cl_dealType" value="residential" ${_resOn?'checked':''} style="margin:0">
+                Residential
+              </span>
+              <span style="font-size:11px;color:#6b7280;line-height:1.35">Single home, owner-occupied</span>
+            </label>
+            <label class="cl-dealtype-card" data-value="commercial" onclick="_clDealTypeSelect('commercial')" style="cursor:pointer;border:2px solid ${_comOn?'#c41230':'#e5e7eb'};border-radius:10px;padding:12px 14px;background:${_comOn?'#fff5f6':'#fff'};transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px">
+              <span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#1a1a1a">
+                <input type="radio" name="cl_dealType" value="commercial" ${_comOn?'checked':''} style="margin:0">
+                Commercial
+              </span>
+              <span style="font-size:11px;color:#6b7280;line-height:1.35">Builder, body corp, rental, retail</span>
+            </label>
+          </div>
+          ${_suggested ? `<div style="font-size:11px;color:#6b7280;margin-top:6px">Suggested from matched contact (${_matchedContact.fn} ${_matchedContact.ln} · ${_matchedContact.type}). Confirm or change.</div>` : `<div style="font-size:11px;color:#9ca3af;margin-top:6px">Affects commission rules, reports, and routing.</div>`}
         </div>
         <div><label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">Pipeline</label>
           <select class="sel" id="cl_pip">${PIPELINES.map(p=>`<option value="${p.id}">${p.name}</option>`).join('')}</select></div>
@@ -553,8 +618,16 @@ function _findMatchingContactForLead(lead, contacts) {
   return null;
 }
 
-// Shared conversion logic — used by both direct button and modal
-function _executeLead2Deal(lid, pipId, stageId, val) {
+// Shared conversion logic — used by both direct button and modal.
+// Brief 5 Phase 2: dealType is now a required parameter. Callers MUST
+// pass 'residential' or 'commercial' — defaulting silently here would
+// undermine the spec's "no silent default" requirement. Returns null
+// without writing anything if dealType is missing or invalid.
+function _executeLead2Deal(lid, pipId, stageId, val, dealType) {
+  if (dealType !== 'residential' && dealType !== 'commercial') {
+    addToast('Lead conversion is missing a deal type. Use the Convert modal.', 'error');
+    return null;
+  }
   const lead = getState().leads.find(l => l.id === lid);
   if (!lead) return;
 
@@ -584,10 +657,11 @@ function _executeLead2Deal(lid, pipId, stageId, val) {
   }
 
   const dealId = 'd' + Date.now();
+  const _typeLabel = dealType === 'commercial' ? 'Commercial' : 'Residential';
   const _createdAct = {
       id: 'a' + Date.now(),
       type: 'created',
-      text: 'Deal created from lead. Source: ' + lead.source + (lead.notes ? '. Notes: ' + lead.notes : ''),
+      text: 'Deal created from lead (' + _typeLabel + '). Source: ' + lead.source + (lead.notes ? '. Notes: ' + lead.notes : ''),
       date: new Date().toISOString().slice(0, 10),
       by: effectiveOwner,
       done: false, dueDate: '',
@@ -605,6 +679,10 @@ function _executeLead2Deal(lid, pipId, stageId, val) {
     age: 0,
     won: false, lost: false, wonDate: null,
     created: new Date().toISOString().slice(0, 10),
+    // Brief 5: deal-level type, captured at conversion time. The user picks
+    // it in the Convert modal; the smart default seeded from a matched
+    // contact's type doesn't bypass the explicit confirmation click.
+    dealType: dealType,
     tags: [],
     activities: [_createdAct],
     cadData: lead.cadData || null, // Carry design from lead
@@ -660,18 +738,31 @@ function _executeLead2Deal(lid, pipId, stageId, val) {
   return dealId;
 }
 
-// Direct one-click convert: uses first pipeline, first stage, lead's own value
-function directConvertLead(lid) {
+// Direct one-click convert: uses first pipeline, first stage, lead's own
+// value. Brief 5 Phase 2: callers MUST now pass dealType ('residential'
+// or 'commercial'). The user-facing button on lead detail no longer
+// calls this directly — it opens the modal via openConvertLeadModal.
+// Kept as a programmatic API for future bulk-convert / automation flows.
+function directConvertLead(lid, dealType) {
   const lead = getState().leads.find(l => l.id === lid);
   if (!lead) return;
   if (lead.converted) { addToast('Already converted', 'warning'); return; }
   const pip = PIPELINES[0];
   const firstStage = pip.stages.filter(s => !s.isLost && !s.isWon).sort((a, b) => a.ord - b.ord)[0];
-  _executeLead2Deal(lid, pip.id, firstStage.id, lead.val);
+  return _executeLead2Deal(lid, pip.id, firstStage.id, lead.val, dealType);
 }
 
-// Modal-based convert (still used by renderConvertLeadModal)
+// Modal-based convert (driven by renderConvertLeadModal). Brief 5 Phase
+// 2: reads the dealType radio and hard-gates submission on it.
 function doConvertLead(lid) {
+  // Brief 5 Phase 2: deal type is required. Read from the checked radio
+  // inside the card group; null if nothing picked.
+  const dealTypeEl = document.querySelector('input[name="cl_dealType"]:checked');
+  const dealType = dealTypeEl ? dealTypeEl.value : null;
+  if (dealType !== 'residential' && dealType !== 'commercial') {
+    addToast('Confirm whether this is a Residential or Commercial deal', 'error');
+    return;
+  }
   const pipId    = document.getElementById('cl_pip') ? document.getElementById('cl_pip').value : PIPELINES[0].id;
   const stageId  = document.getElementById('cl_stg') ? document.getElementById('cl_stg').value : PIPELINES[0].stages[0].id;
   const valEl    = document.getElementById('cl_val');
@@ -689,7 +780,7 @@ function doConvertLead(lid) {
   } else {
     val = lead ? lead.val : 0;
   }
-  _executeLead2Deal(lid, pipId, stageId, val);
+  _executeLead2Deal(lid, pipId, stageId, val, dealType);
 }
 
 
@@ -911,6 +1002,18 @@ function saveLeadEdit() {
   });
   // Persist the activity row alongside the lead (leads slice gets upserted via setState sync).
   try { dbInsert('activities', actToDb(actObj, 'lead', id)); } catch(e) {}
+
+  // Audit (Brief 2 Phase 2). Group all field changes into a single entry.
+  if (typeof appendAuditEntry === 'function') {
+    var beforeObj = {}; var afterObj = {};
+    changes.forEach(function (ch) { beforeObj[ch.field] = ch.from; afterObj[ch.field] = ch.to; });
+    appendAuditEntry({
+      entityType: 'lead', entityId: id, action: 'lead.field_edited',
+      summary: 'Edited ' + (lead.fn||'') + ' ' + (lead.ln||'') + ' — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : ''),
+      before: beforeObj, after: afterObj,
+      branch: updated.branch || null,
+    });
+  }
 
   addToast('Saved — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : '') + ' updated', 'success');
 }
@@ -1346,7 +1449,7 @@ function renderMapPage(){
   </div>`;
 }
 
-function renderPhonePage(){
-return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px"><div><h1 style="font-size:24px;font-weight:800;margin:0;font-family:Syne,sans-serif">\u{1F4DE} Phone System</h1><p style="font-size:13px;color:#6b7280;margin:2px 0 0">Calls, recordings, AI operator &amp; IVR</p></div></div><div class="card" style="padding:40px;text-align:center"><div style="font-size:48px;margin-bottom:12px">\u{1F4DE}</div><h2 style="font-size:18px;font-weight:800;margin:0 0 8px;font-family:Syne,sans-serif">Phone System \u2014 Phase 2</h2><p style="font-size:13px;color:#6b7280;line-height:1.6;max-width:500px;margin:0 auto">The phone system (VoIP, recording, IVR, AI operator) will be connected in the next phase via Twilio.</p><div style="display:flex;gap:8px;justify-content:center;margin-top:20px"><div style="padding:12px 16px;background:#f9fafb;border-radius:10px;text-align:center"><div style="font-size:11px;color:#6b7280">Status</div><div style="font-size:13px;font-weight:600;color:#f59e0b">Pending</div></div><div style="padding:12px 16px;background:#f9fafb;border-radius:10px;text-align:center"><div style="font-size:11px;color:#6b7280">Provider</div><div style="font-size:13px;font-weight:600">Twilio</div></div></div></div>';
-}
+// renderPhonePage moved to modules/28-twilio.js as part of stage 5.
+// The route in 99-init.js's pageRenderers map still points at `renderPhonePage`,
+// which is now defined globally by 28-twilio.js (loaded later in the order).
 

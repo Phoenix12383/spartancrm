@@ -20,8 +20,11 @@ tr:hover .td{background:#fafafa}
 .nav-item.on{color:#fff;background:#c41230}
 .ovl{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:40;display:flex;align-items:flex-start;justify-content:flex-end}
 .panel{background:#fff;height:100vh;overflow-y:auto;display:flex;flex-direction:column;box-shadow:-6px 0 24px rgba(0,0,0,.1)}
-.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:60;display:flex;align-items:center;justify-content:center;padding:20px}
-.modal{background:#fff;border-radius:16px;width:100%;max-width:520px;box-shadow:0 8px 40px rgba(0,0,0,.15)}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:60;display:flex;align-items:center;justify-content:center;padding:20px;overflow-y:auto}
+.modal{background:#fff;border-radius:16px;width:100%;max-width:520px;box-shadow:0 8px 40px rgba(0,0,0,.15);max-height:calc(100vh - 40px);display:flex;flex-direction:column;overflow:hidden}
+.modal-header{flex-shrink:0;padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center}
+.modal-body{flex:1 1 auto;overflow-y:auto;min-height:0;padding:20px}
+.modal-footer{flex-shrink:0;padding:14px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;border-radius:0 0 16px 16px;display:flex;justify-content:flex-end;gap:8px}
 .kanban-col{min-width:264px;max-width:264px;background:#f9fafb;border-radius:12px;border:1px solid #f0f0f0;display:flex;flex-direction:column;max-height:calc(100vh - 180px)}
 .deal-card{background:#fff;border-radius:10px;border:1px solid #f0f0f0;padding:12px;cursor:pointer;transition:box-shadow .15s}
 .deal-card:hover{box-shadow:0 4px 12px rgba(0,0,0,.08);border-color:#e5e7eb}

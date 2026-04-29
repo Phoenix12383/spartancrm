@@ -412,6 +412,22 @@ function markFinalDesignSigned(jobId) {
   setState({jobs: getState().jobs.map(function(j){return j.id===jobId?Object.assign({},j,{finalSignedAt:now}):j;})});
   dbUpdate('jobs', jobId, {final_signed_at:now});
   logJobAudit(jobId, 'Final Design Signed', 'Client signature received. Advancing to installation scheduling.');
+  // Brief 4 Phase 3: realise commission for deals whose configured gate
+  // is 'final_signed'. Cross-module wiring: Jobs CRM directly calls into
+  // commission. Realisation is idempotent (no-op if already realised), so
+  // re-firing this hook can't double-realise. Defensive guards for
+  // load-order safety.
+  if (job.dealId && typeof realiseCommission === 'function' && typeof getEffectiveRuleForRep === 'function') {
+    try {
+      var _deal = (getState().deals || []).find(function (d) { return d.id === job.dealId; });
+      if (_deal) {
+        var _rule = getEffectiveRuleForRep(_deal.rep, _deal.branch);
+        if (_rule && _rule.realisationGate === 'final_signed') {
+          realiseCommission(job.dealId, 'final_signed');
+        }
+      }
+    } catch (e) { /* defensive — never block the sign-off flow */ }
+  }
   // Advance status to scheduling
   transitionJobStatus(jobId, 'c2_order_schedule_standard', 'Final design signed — sent to Factory CRM for production');
   addToast('\u2705 Final design signed! Job ready for install scheduling.', 'success');

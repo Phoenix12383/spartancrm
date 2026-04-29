@@ -526,7 +526,7 @@ function renderNewContactModal() {
         <h3 style="margin:0;font-size:16px;font-weight:700">New Contact</h3>
         <button onclick="setState({modal:null})" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({ n: 'x', size: 16 })}</button>
       </div>
-      <div style="padding:24px">
+      <div class="modal-body" style="padding:24px">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
           <div><label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">First Name *</label>
             <input class="inp" id="nc_fn" placeholder="Jane"></div>
@@ -710,6 +710,18 @@ function saveContactEdit() {
   });
   try { dbInsert('activities', actToDb(actObj, 'contact', id)); } catch (e) { }
 
+  // Audit (Brief 2 Phase 2). Group all field changes into a single entry.
+  if (typeof appendAuditEntry === 'function') {
+    var beforeObj = {}; var afterObj = {};
+    changes.forEach(function (ch) { beforeObj[ch.field] = ch.from; afterObj[ch.field] = ch.to; });
+    appendAuditEntry({
+      entityType: 'contact', entityId: id, action: 'contact.field_edited',
+      summary: 'Edited ' + (c.fn||'') + ' ' + (c.ln||'') + ' — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : ''),
+      before: beforeObj, after: afterObj,
+      branch: updated.branch || null,
+    });
+  }
+
   addToast('Saved — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : '') + ' updated', 'success');
 }
 
@@ -838,6 +850,25 @@ function saveDealEdit() {
   });
   try { dbInsert('activities', actToDb(actObj, 'deal', id)); } catch (e) { }
 
+  // Audit (Brief 2 Phase 2 followup, exposed by the saveDealEdit dedupe).
+  // The audit hook used to live on the kanban-quick-edit version of
+  // saveDealEdit, which was running for both call sites because of the
+  // duplicate-declaration bug. After the dedupe (`saveDealKanbanQuickEdit`
+  // is its own function now), the drawer save needs its own hook so
+  // edits made through the deal-detail Edit drawer are audited too.
+  // metadata.source distinguishes drawer edits from kanban-quick-edits.
+  if (typeof appendAuditEntry === 'function') {
+    var beforeObj = {}; var afterObj = {};
+    changes.forEach(function (ch) { beforeObj[ch.field] = ch.from; afterObj[ch.field] = ch.to; });
+    appendAuditEntry({
+      entityType: 'deal', entityId: id, action: 'deal.field_edited',
+      summary: 'Edited "' + title + '" — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : ''),
+      before: beforeObj, after: afterObj,
+      metadata: { source: 'edit-drawer' },
+      branch: updated.branch || null,
+    });
+  }
+
   addToast('Saved — ' + changes.length + ' field' + (changes.length !== 1 ? 's' : '') + ' updated', 'success');
 }
 
@@ -932,9 +963,14 @@ function moveStage(stageId, dir) {
   pl.stages = [...mid.map((s, i) => ({ ...s, ord: i + 1 })), ...pl.stages.filter(s => s.isWon), ...pl.stages.filter(s => s.isLost)];
   renderPage();
 }
-function saveDealEdit() {
-  // NOTE: this is the kanban quick-edit variant. A second saveDealEdit for the
-  // full Edit Deal drawer lives ~line 771 — keep the two in sync or consolidate.
+// Kanban quick-edit save. Distinct from the full Edit Deal drawer's
+// saveDealEdit() (~line 785), which uses getState().editingDealId and a
+// different DOM (de_closeDate vs de_close, no de_stage). Renamed in the
+// dedupe pass — both functions previously shared the saveDealEdit name,
+// and "last function declaration wins" in browsers meant the kanban
+// version was running for BOTH callers, breaking the drawer save flow
+// (kanbanEditModal would be null when arriving from deal detail).
+function saveDealKanbanQuickEdit() {
   const d = kanbanEditModal.data;
   const title = document.getElementById('de_title')?.value.trim();
   const valEl = document.getElementById('de_val');
@@ -951,6 +987,8 @@ function saveDealEdit() {
   const postcode = document.getElementById('de_postcode')?.value.trim() || '';
   const closeDate = document.getElementById('de_close')?.value;
   if (!title) { addToast('Title required', 'error'); return; }
+  // Snapshot before-state for audit. Capture only the fields the form can edit.
+  var beforeState = { title:d.title, val:d.val, sid:d.sid, rep:d.rep, street:d.street, suburb:d.suburb, state:d.state, postcode:d.postcode, closeDate:d.closeDate };
   setState({
     deals: getState().deals.map(deal =>
       deal.id === d.id ? {
@@ -960,6 +998,22 @@ function saveDealEdit() {
     )
   });
   dbUpdate('deals', d.id, { title: title, val: val, sid: sid || d.sid, rep: rep || d.rep, street: street, suburb: suburb || d.suburb, postcode: postcode, close_date: closeDate || d.closeDate || null });
+  // Audit the edit. Stage changes flow through moveDealToStage, so the sid
+  // delta here is rare (the dropdown does include stage, so it's possible)
+  // but it'll show up in the before/after.
+  if (typeof appendAuditEntry === 'function') {
+    var afterState = { title:title, val:val, sid:sid||d.sid, rep:rep||d.rep, street:street, suburb:suburb||d.suburb, state:state||d.state, postcode:postcode, closeDate:closeDate||d.closeDate };
+    var changedFields = Object.keys(afterState).filter(function(k){ return String(beforeState[k]||'') !== String(afterState[k]||''); });
+    if (changedFields.length > 0) {
+      appendAuditEntry({
+        entityType:'deal', entityId:d.id, action:'deal.field_edited',
+        summary:'Edited "' + title + '" — ' + changedFields.length + ' field' + (changedFields.length!==1?'s':''),
+        before:beforeState, after:afterState,
+        metadata:{ source:'kanban-quick-edit' },
+        branch:d.branch||null,
+      });
+    }
+  }
   kanbanEditModal = null;
   addToast('Deal updated', 'success');
   renderPage();
@@ -1033,7 +1087,7 @@ function renderKanbanModal() {
             <button onclick="closeKanbanModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px">×</button>
           </div>
         </div>
-        <div style="padding:20px;display:flex;flex-direction:column;gap:14px">
+        <div class="modal-body" style="display:flex;flex-direction:column;gap:14px">
           <div>
             <label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:5px">Title *</label>
             <input id="de_title" class="inp" value="${data.title}" style="font-size:14px;font-weight:500">
@@ -1095,7 +1149,7 @@ function renderKanbanModal() {
           <button onclick="if(confirm('Delete this deal?')){dbDelete('deals','${data.id}');setState({deals:getState().deals.filter(d=>d.id!=='${data.id}')});closeKanbanModal();addToast('Deal deleted','warning')}" style="font-size:12px;color:#b91c1c;background:none;border:none;cursor:pointer;font-family:inherit;font-weight:500">Delete</button>
           <div style="display:flex;gap:8px">
             <button onclick="closeKanbanModal()" class="btn-w">Cancel</button>
-            <button onclick="saveDealEdit()" class="btn-r">Save</button>
+            <button onclick="saveDealKanbanQuickEdit()" class="btn-r">Save</button>
           </div>
         </div>
       </div>
@@ -1250,7 +1304,7 @@ function renderDeals() {
               ondragstart="dragDeal='${d.id}';event.dataTransfer.effectAllowed='move';event.currentTarget.style.opacity='0.45';event.currentTarget.style.cursor='grabbing'"
               ondragend="event.currentTarget.style.opacity='1';if(!dragDeal){return;}dragDeal=null;dragOverStage=null;unhighlightAllCols();renderPage()"
               onclick="setState({dealDetailId:'${d.id}'})"
-              style="background:#fff;border-radius:10px;padding:12px;border:1px solid #e5e7eb;cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,.06);transition:box-shadow .15s,transform .1s;opacity:${activeFilters > 0 && !passes ? .3 : (isNP ? .7 : 1)};position:relative;user-select:none"
+              style="background:#fff;border-radius:10px;padding:12px;border:1px solid #e5e7eb;border-left:3px solid ${_dealTypeStripeColor(d)};cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,.06);transition:box-shadow .15s,transform .1s;opacity:${activeFilters > 0 && !passes ? .3 : (isNP ? .7 : 1)};position:relative;user-select:none"
               onmouseover="if(!dragDeal){this.style.boxShadow='0 4px 14px rgba(0,0,0,.12)';this.style.transform='translateY(-1px)';}"
               onmouseout="this.style.boxShadow='0 1px 3px rgba(0,0,0,.06)';this.style.transform=''">
 
@@ -1316,14 +1370,16 @@ function dropDeal(stageId) {
     _requestWonTransition(_draggedId, stageId, { source: 'kanban-drag' });
     return;
   }
-  // Not Proceeding is a dead-end — require confirmation so an accidental drag
-  // doesn't silently kill a live deal. The existing undrag/renderPage cleanup
-  // on cancel mirrors the won-cancel path.
+  // Brief 1: Lost transition must capture a reason. Gate through the modal
+  // BEFORE moving the deal — cancelling leaves the deal in its current stage.
+  // Cleanup of drag globals + col highlighting must happen before the modal
+  // opens, otherwise the kanban col stays highlighted and the next drag
+  // misbehaves.
   if (st && st.isLost) {
-    if (!confirm('Mark this deal as Not Proceeding? It will drop out of the active pipeline.')) {
-      dragDeal = null; dragOverStage = null; unhighlightAllCols(); renderPage();
-      return;
-    }
+    var _draggedId = dragDeal;
+    dragDeal = null; dragOverStage = null; unhighlightAllCols();
+    _requestLostTransition(_draggedId, stageId, { source: 'kanban-drag' });
+    return;
   }
   const act = {
     id: 'a' + Date.now(), type: 'stage', text: 'Moved to: ' + (st ? st.name : stageId),
@@ -1343,9 +1399,19 @@ function dropDeal(stageId) {
   });
   dbUpdate('deals', _did, { sid: stageId, won: !!(st && st.isWon), lost: !!(st && st.isLost), won_date: (st && st.isWon) ? new Date().toISOString().slice(0, 10) : null });
   dbInsert('activities', actToDb(act, 'deal', _did));
+  // Audit ordinary mid-pipeline drags. Won / Lost drag paths return early
+  // above and gate through their own audit-emitting flows.
+  if (typeof appendAuditEntry === 'function' && !(st && st.isWon) && !(st && st.isLost)) {
+    appendAuditEntry({
+      entityType:'deal', entityId:_did, action:'deal.stage_changed',
+      summary:'Stage changed to ' + (st ? st.name : stageId),
+      before:{ sid: deal.sid }, after:{ sid: stageId },
+      metadata:{ source:'kanban-drag' },
+      branch: deal.branch || null,
+    });
+  }
   dragDeal = null; dragOverStage = null; unhighlightAllCols();
   if (st && st.isWon) addToast('🎉 Deal Won!', 'success');
-  else if (st && st.isLost) { addToast('Deal marked as Not Proceeding', 'warning'); askLostReason(_did); }
   else addToast('Moved to ' + (st ? st.name : stageId), 'info');
   renderPage();
 }
@@ -1972,6 +2038,7 @@ function renderEntityDetail({
     { id: 'activity', label: 'Activity', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>' },
     { id: 'notes', label: 'Notes', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' },
     { id: 'call', label: 'Call', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8a19.79 19.79 0 01-3.07-8.67A2 2 0 012 .84h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 8.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg>' },
+    { id: 'sms', label: 'SMS', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' },
     { id: 'email', label: 'Email', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>' },
     { id: 'files', label: 'Files', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>' },
   ];
@@ -2015,8 +2082,15 @@ function renderEntityDetail({
                 </div>
               </div>
 
-              <!-- Body -->
-              ${act.text && act.type !== 'stage' ? `<div style="font-size:13px;color:#374151;line-height:1.6;white-space:pre-wrap;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'}">${act.text}</div>` : ''}
+              <!-- Body. Brief 6 Phase 1: email activities sanitise + render
+                   their HTML body via _sanitizeEmailBody (handles plain-text
+                   vs HTML internally, including pre-wrap for plain text).
+                   Other activity types stay on the existing pre-wrap raw
+                   render — their text is plain and includes intentional
+                   newlines from edit/note/call activities. -->
+              ${act.text && act.type !== 'stage' ? (act.type === 'email' && typeof _sanitizeEmailBody === 'function'
+                ? `<div style="font-size:13px;color:#374151;line-height:1.6;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'};overflow:hidden">${_sanitizeEmailBody(act.text)}</div>`
+                : `<div style="font-size:13px;color:#374151;line-height:1.6;white-space:pre-wrap;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'}">${act.text}</div>`) : ''}
               ${act.type === 'stage' ? `<div style="font-size:13px;color:#6b7280">${act.text}</div>` : ''}
 
               <!-- Email tracking row (emails only) -->
@@ -2279,7 +2353,7 @@ function renderTabForm(entityId, entityType, tab, contact) {
           <div style="font-size:12px;color:#6b7280;margin-top:1px">${phone || 'No phone on file'}</div>
         </div>
         <div style="display:flex;gap:6px">
-          ${phone ? `<a href="tel:${phone}" style="background:#22c55e;color:#fff;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;text-decoration:none;display:flex;align-items:center;gap:5px">📞 Call</a>` : ''}
+          ${phone ? `<a href="javascript:void(0)" onclick="twilioCall('${phone}','${entityId}','${entityType}')" style="background:#22c55e;color:#fff;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;text-decoration:none;display:flex;align-items:center;gap:5px;cursor:pointer">📞 Call</a>` : ''}
           ${phone ? `<a href="https://wa.me/${phone.replace(/\s/g, '')}" target="_blank" style="background:#25d366;color:#fff;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;text-decoration:none;display:flex;align-items:center;gap:5px">💬 WhatsApp</a>` : ''}
         </div>
       </div>
@@ -2306,6 +2380,63 @@ function renderTabForm(entityId, entityType, tab, contact) {
         <button onclick="openScheduleWithMap('${entityId}','${entityType}')" class="btn-w" style="font-size:12px;gap:5px">📅 Schedule follow-up</button>
         <button onclick="saveCallLog('${entityId}','${entityType}')" class="btn-r" style="font-size:12px;padding:5px 18px">Log call</button>
       </div>
+    </div>`;
+  }
+
+  // ── SMS tab (stage 4) ─────────────────────────────────────────────────────
+  if (tab === 'sms') {
+    const smsAllowed = (typeof hasPermission === 'function') ? hasPermission('phone.sms') : true;
+    const allSms = getState().smsLogs || [];
+    const thread = allSms
+      .filter(m => m.entity_id === entityId && m.entity_type === entityType)
+      .sort((a, b) => (a.sent_at || '').localeCompare(b.sent_at || ''));
+    const tpls = (getState().smsTemplates || []).slice(0, 5);
+    const draft = (typeof _getInlineSmsDraft === 'function') ? _getInlineSmsDraft(entityId) : { body: '' };
+    const charCount = (draft.body || '').length;
+    const charColor = charCount > 160 ? '#dc2626' : charCount > 140 ? '#f59e0b' : '#6b7280';
+    return `<div style="padding:12px 16px;border-bottom:1px solid #f0f0f0">
+      ${!smsAllowed ? `<div style="padding:14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;text-align:center;color:#6b7280;font-size:13px;margin-bottom:10px">You don't have permission to send SMS.</div>` : ''}
+
+      <!-- Phone bar -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#f9fafb;border-radius:10px;border:1px solid #e5e7eb;margin-bottom:12px">
+        <div>
+          <div style="font-size:13px;font-weight:600">${name || 'Contact'}</div>
+          <div style="font-size:12px;color:#6b7280;margin-top:1px">${phone || 'No phone on file'}</div>
+        </div>
+      </div>
+
+      <!-- Thread (max-height with scroll) -->
+      ${thread.length > 0 ? `<div style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto;padding:8px 4px;margin-bottom:10px;background:#f9fafb;border-radius:10px">
+        ${thread.map(m => {
+          const out = m.direction === 'outbound';
+          const bubble = out
+            ? 'background:#c41230;color:#fff;align-self:flex-end;border-radius:14px 14px 4px 14px'
+            : 'background:#fff;color:#1a1a1a;align-self:flex-start;border-radius:14px 14px 14px 4px;border:1px solid #e5e7eb';
+          const time = (m.sent_at || '').slice(11, 16);
+          const statusBadge = out
+            ? `<span style="font-size:10px;opacity:.75;margin-left:6px">${escapeHtml(m.status || '')}</span>`
+            : '';
+          return `<div style="max-width:80%;padding:8px 12px;font-size:13px;line-height:1.4;${bubble}">
+            <div>${_escText(m.body || '')}</div>
+            <div style="font-size:10px;opacity:.7;margin-top:3px">${time}${statusBadge}</div>
+          </div>`;
+        }).join('')}
+      </div>` : `<div style="padding:18px;text-align:center;color:#9ca3af;font-size:12px;background:#f9fafb;border-radius:10px;margin-bottom:10px">No messages yet</div>`}
+
+      <!-- Templates -->
+      ${(smsAllowed && tpls.length > 0) ? `<div style="padding:8px 10px;background:#fef9c3;border:1px solid #fde68a;border-radius:10px;margin-bottom:10px">
+        <div style="font-size:10px;font-weight:700;color:#92400e;margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">📋 Templates</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${tpls.map(t => `<button onclick="applySmsTemplateInline('${t.id}','${entityId}','${entityType}')" style="font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid #fde68a;background:#fff;cursor:pointer;font-family:inherit;color:#92400e;font-weight:600">${_escText(t.name)}</button>`).join('')}
+        </div>
+      </div>` : ''}
+
+      <!-- Composer -->
+      ${smsAllowed ? `<textarea id="smsBody_${entityId}" class="inp" rows="3" placeholder="Type your SMS…" oninput="setInlineSmsDraft('${entityId}',this.value); document.getElementById('smsCharCount_${entityId}').textContent=this.value.length+'/160'; document.getElementById('smsCharCount_${entityId}').style.color=this.value.length>160?'#dc2626':this.value.length>140?'#f59e0b':'#6b7280'" style="font-size:13px;resize:none;border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;margin-bottom:8px">${_escText(draft.body || '')}</textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span id="smsCharCount_${entityId}" style="font-size:11px;color:${charColor}">${charCount}/160</span>
+        <button onclick="sendSmsFromTab('${entityId}','${entityType}')" class="btn-r" style="font-size:12px;padding:5px 18px"${(!phone || !smsAllowed) ? ' disabled style="font-size:12px;padding:5px 18px;opacity:.5;cursor:not-allowed"' : ''}>${!phone ? 'No phone' : 'Send SMS'}</button>
+      </div>` : ''}
     </div>`;
   }
 
@@ -2512,6 +2643,64 @@ function setInlineEmailDraftField(entityId, field, value) {
 }
 function clearInlineEmailDraft(entityId) { delete _inlineEmailDrafts[entityId]; }
 
+// ── Inline SMS draft (stage 4) ────────────────────────────────────────────
+// Same pattern as email — survive renderPage() rebuilds without losing typed
+// text. Cleared once the SMS is successfully sent.
+var _inlineSmsDrafts = {}; // { [entityId]: { body } }
+function _getInlineSmsDraft(entityId) {
+  return _inlineSmsDrafts[entityId] || { body: '' };
+}
+function setInlineSmsDraft(entityId, body) {
+  _inlineSmsDrafts[entityId] = { body: body || '' };
+}
+function clearInlineSmsDraft(entityId) { delete _inlineSmsDrafts[entityId]; }
+
+// Apply an SMS template to the inline composer for an entity. Resolves merge
+// fields ({{firstName}}, {{repName}}, etc.) against the live record and
+// pre-fills the textarea via the draft so a renderPage() doesn't wipe it.
+function applySmsTemplateInline(templateId, entityId, entityType) {
+  var s = getState();
+  var tpl = (s.smsTemplates || []).find(function(t){ return t.id === templateId; });
+  if (!tpl) { addToast('Template not found', 'error'); return; }
+  var entity = null;
+  if (entityType === 'contact') entity = (s.contacts || []).find(function(c){ return c.id === entityId; });
+  else if (entityType === 'lead') entity = (s.leads || []).find(function(l){ return l.id === entityId; });
+  else if (entityType === 'deal') entity = (s.deals || []).find(function(d){ return d.id === entityId; });
+  var ctx = (typeof smsBuildMergeContext === 'function') ? smsBuildMergeContext(entity, entityType) : {};
+  var resolved = (typeof smsApplyMergeFields === 'function') ? smsApplyMergeFields(tpl.body, ctx) : tpl.body;
+  setInlineSmsDraft(entityId, resolved);
+  renderPage();
+}
+
+// Read the body from the textarea (or draft) and dispatch to twilioSendSms.
+// Resolves the destination phone from the entity record.
+async function sendSmsFromTab(entityId, entityType) {
+  var ta = document.getElementById('smsBody_' + entityId);
+  var body = ta ? ta.value : (_getInlineSmsDraft(entityId).body || '');
+  if (!body || !body.trim()) { addToast('Type a message first', 'warning'); return; }
+
+  var s = getState();
+  var phone = '';
+  if (entityType === 'contact') {
+    var c = (s.contacts || []).find(function(x){ return x.id === entityId; });
+    phone = c ? c.phone : '';
+  } else if (entityType === 'lead') {
+    var l = (s.leads || []).find(function(x){ return x.id === entityId; });
+    phone = l ? l.phone : '';
+  } else if (entityType === 'deal') {
+    var d = (s.deals || []).find(function(x){ return x.id === entityId; });
+    var contact = d ? (s.contacts || []).find(function(x){ return x.id === d.cid; }) : null;
+    phone = contact ? contact.phone : '';
+  }
+  if (!phone) { addToast('No phone number on file', 'warning'); return; }
+
+  var result = await twilioSendSms(phone, body, entityId, entityType);
+  if (result && result.sid) {
+    clearInlineSmsDraft(entityId);
+    renderPage();
+  }
+}
+
 // HTML-escape for use inside attribute values (subject input's `value=`).
 function _escAttr(s) {
   if (s == null) return '';
@@ -2573,12 +2762,12 @@ function openTemplatePickerInline(entityId, entityType) {
   const byCat = {};
   all.forEach(function (t) { var c = t.category || 'Other'; (byCat[c] = byCat[c] || []).push(t); });
   const html = '<div class="modal-bg" onclick="if(event.target===this)this.remove()">' +
-    '<div class="modal" style="max-height:80vh">' +
-    '<div style="padding:16px 20px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">' +
+    '<div class="modal">' +
+    '<div class="modal-header">' +
     '<h3 style="margin:0;font-size:15px;font-weight:700">Pick a template</h3>' +
     '<button onclick="this.closest(\'.modal-bg\').remove()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:18px">×</button>' +
     '</div>' +
-    '<div style="overflow-y:auto;max-height:calc(80vh - 60px);padding:8px">' +
+    '<div class="modal-body" style="padding:8px">' +
     Object.keys(byCat).sort().map(function (cat) {
       return '<div style="padding:8px 12px 4px;font-size:11px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">' + cat + '</div>' +
         byCat[cat].map(function (t) {
@@ -2776,6 +2965,13 @@ function moveDealToStage(dealId, stageId, opts) {
     _requestWonTransition(dealId, stageId, { source: opts.source || 'stage-change' });
     return;
   }
+  // Brief 1: programmatic stage change to a Lost stage must route through the
+  // reason-capture modal. Skip if the deal is already lost (re-entry on drag-
+  // and-drop within the Lost lane shouldn't re-prompt).
+  if (stage && stage.isLost && !opts.skipLostGate && !deal.lost) {
+    _requestLostTransition(dealId, stageId, { source: opts.source || 'stage-change' });
+    return;
+  }
   const act = {
     id: 'a' + Date.now(), type: 'stage',
     text: 'Stage changed to: ' + (stage ? stage.name : stageId),
@@ -2784,6 +2980,15 @@ function moveDealToStage(dealId, stageId, opts) {
     by: (getCurrentUser() || { name: 'Admin' }).name, done: false, dueDate: '',
   };
   var _wd = (stage && stage.isWon) ? new Date().toISOString().slice(0, 10) : (deal.wonDate || null);
+  // Brief 4 Phase 2: track stage entry timestamps so the commission engine's
+  // age-penalty calculation can derive daysToWin from the relevant
+  // "active sales engagement" stage entry (Quote Sent / Proposal Sent in
+  // the seed pipelines). Most-recent entry wins on re-entry — matches the
+  // intended semantics where a deal that bounces back into Quote Sent
+  // restarts its age clock for penalty purposes. Pre-Phase-2 deals
+  // without history fall back to deal.created in the calc engine.
+  var _stageHistory = Object.assign({}, deal.stageHistory || {});
+  _stageHistory[stageId] = new Date().toISOString();
   setState({
     deals: deals.map(d => d.id === dealId
       ? {
@@ -2791,14 +2996,26 @@ function moveDealToStage(dealId, stageId, opts) {
         won: !!(stage && stage.isWon),
         lost: !!(stage && stage.isLost),
         wonDate: _wd,
+        stageHistory: _stageHistory,
         activities: [act, ...(d.activities || [])]
       }
       : d)
   });
-  dbUpdate('deals', dealId, { sid: stageId, won: !!(stage && stage.isWon), lost: !!(stage && stage.isLost), won_date: _wd });
+  dbUpdate('deals', dealId, { sid: stageId, won: !!(stage && stage.isWon), lost: !!(stage && stage.isLost), won_date: _wd, stage_history: _stageHistory });
   dbInsert('activities', actToDb(act, 'deal', dealId));
   if (stage && stage.isWon) { addToast('🎉 Deal Won!', 'success'); }
-  if (stage && stage.isLost) { addToast('Deal marked as Not Proceeding', 'warning'); askLostReason(dealId); }
+  // Audit (Brief 2 Phase 2). The Won + Lost transitions write their own
+  // audit entries via _commitWon / confirmLostTransition, so this only fires
+  // for ordinary mid-pipeline stage moves.
+  if (typeof appendAuditEntry === 'function' && !(stage && stage.isWon) && !(stage && stage.isLost)) {
+    appendAuditEntry({
+      entityType:'deal', entityId:dealId, action:'deal.stage_changed',
+      summary:'Stage changed to ' + (stage ? stage.name : stageId),
+      before:{ sid:deal.sid }, after:{ sid:stageId },
+      metadata:{ source: opts.source || 'stage-change' },
+      branch: deal.branch || null,
+    });
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2816,6 +3033,157 @@ function moveDealToStage(dealId, stageId, opts) {
 var _pendingWonDealId = null;                  // payment-method phase (existing)
 var _pendingWonQuoteSelection = null;          // {dealId, targetStageId, selectedQuoteId}
 var _pendingUnwindDealId = null;               // unwind admin modal
+// Brief 1 — Lost transition modal. Set when a deal is being marked Lost and
+// the user hasn't confirmed a reason yet. Shape:
+//   {dealId, targetStageId, source, selectedReasonId, competitorName, details}
+// The deal stays in its current stage until confirmLostTransition runs.
+// Cancelling closes the modal without changing the deal at all.
+var _pendingLostTransition = null;
+
+// ── Brief 5 Phase 4: deal-type inline picker ────────────────────────────────
+// When set to a deal id, the picker modal renders with two cards. Clicking a
+// card calls setDealType which applies the change, writes an 'edit' activity,
+// audits via appendAuditEntry, and clears the picker. Cancelling closes
+// without writing anything. Mirrors the _pendingLostTransition pattern.
+var _pendingDealTypePicker = null;
+
+// Shared helpers for rendering the type as a badge across surfaces
+// (Deal Detail summary, kanban card stripe, contact panel deal list,
+// Won table, etc.). Brief 5 standardises blue=residential, purple=
+// commercial — the same vocabulary contacts already use, so the
+// experience is consistent across the app.
+function _dealTypeBadge(d) {
+  if (!d) return '';
+  var t = d.dealType;
+  if (t !== 'residential' && t !== 'commercial') return Badge('Untyped', 'gray');
+  var label = t === 'commercial' ? 'Commercial' : 'Residential';
+  return Badge(label, t === 'commercial' ? 'purple' : 'blue');
+}
+
+// Brief 5 Phase 4: kanban card left-stripe colour. Saturated enough to read
+// against the white card; intentionally darker than the badge palette since
+// a 3px stripe needs more visual weight to register as type-coding rather
+// than as decoration.
+function _dealTypeStripeColor(d) {
+  if (!d) return 'transparent';
+  if (d.dealType === 'commercial') return '#6d28d9';
+  if (d.dealType === 'residential') return '#1d4ed8';
+  return 'transparent'; // legacy (pre-backfill) deals get no stripe
+}
+
+function openDealTypePicker(dealId) {
+  var d = (getState().deals || []).find(function (x) { return x.id === dealId; });
+  if (!d) return;
+  if (typeof canEditDeal === 'function' && !canEditDeal(d)) {
+    addToast('Only the deal owner or an admin can change the deal type', 'error');
+    return;
+  }
+  _pendingDealTypePicker = dealId;
+  renderPage();
+}
+
+function closeDealTypePicker() {
+  _pendingDealTypePicker = null;
+  renderPage();
+}
+
+// Apply a deal-type change. Same audit + activity pattern as saveDealEdit
+// (Brief 2 Phase 2 / Brief 5 Phase 1) so timeline and Audit page reflect
+// the change consistently. No-op if the new type matches the current one
+// (avoids polluting the activity timeline + audit log with empty edits).
+function setDealType(dealId, newType) {
+  if (newType !== 'residential' && newType !== 'commercial') return;
+  var d = (getState().deals || []).find(function (x) { return x.id === dealId; });
+  if (!d) { _pendingDealTypePicker = null; renderPage(); return; }
+  if (typeof canEditDeal === 'function' && !canEditDeal(d)) {
+    addToast('Only the deal owner or an admin can change the deal type', 'error');
+    _pendingDealTypePicker = null;
+    renderPage();
+    return;
+  }
+  if (d.dealType === newType) { _pendingDealTypePicker = null; renderPage(); return; }
+
+  var oldType = d.dealType || null;
+  var oldLabel = oldType === 'commercial' ? 'Commercial' : (oldType === 'residential' ? 'Residential' : 'Untyped');
+  var newLabel = newType === 'commercial' ? 'Commercial' : 'Residential';
+
+  var user = (typeof getCurrentUser === 'function' ? getCurrentUser() : null) || { name: 'Unknown' };
+  var now = new Date();
+  var actObj = {
+    id: 'a' + Date.now(),
+    type: 'edit',
+    subject: user.name + ' changed deal type',
+    text: 'Type: "' + oldLabel + '" → "' + newLabel + '"',
+    by: user.name,
+    date: now.toISOString().slice(0, 10),
+    time: now.toTimeString().slice(0, 5),
+    done: false,
+    changes: [{ field: 'dealType', label: 'Type', from: oldLabel, to: newLabel }],
+  };
+
+  var updated = Object.assign({}, d, { dealType: newType });
+  updated.activities = [actObj].concat(d.activities || []);
+  setState({
+    deals: getState().deals.map(function (x) { return x.id === dealId ? updated : x; }),
+  });
+
+  // Persist. dbUpdate sends just the deal_type column (snake_case) — the
+  // rest of the row is unchanged; this avoids round-tripping through
+  // dealToDb which would re-send everything.
+  try { dbUpdate('deals', dealId, { deal_type: newType }); } catch (e) {}
+  try { dbInsert('activities', actToDb(actObj, 'deal', dealId)); } catch (e) {}
+
+  // Audit (Brief 2 Phase 2 pattern). Distinct metadata.source so the
+  // Audit page filter can isolate type-picker edits from drawer edits.
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType: 'deal', entityId: dealId, action: 'deal.field_edited',
+      summary: 'Changed type on "' + (updated.title || dealId) + '" — ' + oldLabel + ' → ' + newLabel,
+      before: { dealType: oldType },
+      after:  { dealType: newType },
+      metadata: { source: 'dealtype-picker' },
+      branch: updated.branch || null,
+    });
+  }
+
+  _pendingDealTypePicker = null;
+  addToast('Deal type set to ' + newLabel, 'success');
+  renderPage();
+}
+
+function renderDealTypePickerModal() {
+  if (!_pendingDealTypePicker) return '';
+  var d = (getState().deals || []).find(function (x) { return x.id === _pendingDealTypePicker; });
+  if (!d) return '';
+  var cur = d.dealType;
+  var resOn = cur === 'residential';
+  var comOn = cur === 'commercial';
+  return '' +
+    '<div class="modal-bg" onclick="if(event.target===this)closeDealTypePicker()">' +
+      '<div class="modal" style="max-width:480px">' +
+        '<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">' +
+          '<h3 style="margin:0;font-size:16px;font-weight:700">Change deal type</h3>' +
+          '<button onclick="closeDealTypePicker()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">×</button>' +
+        '</div>' +
+        '<div style="padding:22px;display:flex;flex-direction:column;gap:12px">' +
+          '<div style="font-size:12px;color:#6b7280;line-height:1.4">Current: ' + _dealTypeBadge(d) + '. Pick a new type to apply immediately — the change is recorded in the deal\'s activity timeline and the audit log.</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">' +
+            '<button onclick="setDealType(\'' + d.id + '\',\'residential\')" style="cursor:pointer;border:2px solid ' + (resOn ? '#1d4ed8' : '#e5e7eb') + ';border-radius:10px;padding:14px;background:' + (resOn ? '#eff6ff' : '#fff') + ';transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px;text-align:left;font-family:inherit">' +
+              '<span style="font-size:13px;font-weight:700;color:#1a1a1a">Residential' + (resOn ? ' <span style="font-weight:500;color:#1d4ed8">· current</span>' : '') + '</span>' +
+              '<span style="font-size:11px;color:#6b7280;line-height:1.35">Single home, owner-occupied</span>' +
+            '</button>' +
+            '<button onclick="setDealType(\'' + d.id + '\',\'commercial\')" style="cursor:pointer;border:2px solid ' + (comOn ? '#6d28d9' : '#e5e7eb') + ';border-radius:10px;padding:14px;background:' + (comOn ? '#f5f3ff' : '#fff') + ';transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px;text-align:left;font-family:inherit">' +
+              '<span style="font-size:13px;font-weight:700;color:#1a1a1a">Commercial' + (comOn ? ' <span style="font-weight:500;color:#6d28d9">· current</span>' : '') + '</span>' +
+              '<span style="font-size:11px;color:#6b7280;line-height:1.35">Builder, body corp, rental, retail</span>' +
+            '</button>' +
+          '</div>' +
+        '</div>' +
+        '<div style="padding:14px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;border-radius:0 0 16px 16px;display:flex;justify-content:flex-end">' +
+          '<button class="btn-w" onclick="closeDealTypePicker()">Cancel</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+}
 
 function _findWonStageId(deal) {
   var pl = PIPELINES.find(function (p) { return p.id === deal.pid; });
@@ -2953,6 +3321,36 @@ function _commitWon(dealId, targetStageId, selectedQuoteId) {
   });
   dbInsert('activities', actToDb(act, 'deal', dealId));
 
+  // Audit (Brief 2 Phase 2).
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'deal', entityId:dealId, action:'deal.won_marked',
+      summary:'Deal won: ' + (deal.title||'') + ' \u2014 $' + Math.round(wonPrice).toLocaleString(),
+      before:{ sid: deal.sid, won: false },
+      after:{ sid: targetStageId, won: true, wonDate: todayStr, wonQuoteId: selectedQuoteId, val: wonPrice },
+      metadata:{ quoteLabel: selectedQuote.label || null, quoteNumber: selectedQuote.quoteNumber || null },
+      branch: deal.branch || null,
+    });
+  }
+
+  // Brief 4 Phase 3: accrue commission on Won. accrueCommission is
+  // idempotent \u2014 re-running on an already-accrued deal is a no-op so a
+  // setState replay or Won-button double-click can't promote state
+  // inadvertently. If the rep's effective realisation gate is 'won'
+  // (default), accrueCommission also auto-realises so the deal is
+  // immediately payable via toggleCommissionPaid. The post-update deal
+  // record (with won/wonDate/val/wonQuoteId set) is passed so the rule
+  // lookup uses the correct rep+branch context.
+  if (typeof accrueCommission === 'function') {
+    var _accrueDeal = Object.assign({}, deal, {
+      won: true,
+      wonDate: todayStr,
+      wonQuoteId: selectedQuoteId,
+      val: wonPrice,
+    });
+    try { accrueCommission(_accrueDeal); } catch (e) { /* defensive \u2014 never block the won flow */ }
+  }
+
   addToast('\ud83c\udf89 Deal Won!', 'success');
 
   // Chain into the existing payment-method modal. confirmDealWon() now only
@@ -3028,12 +3426,12 @@ function renderWonQuoteSelectionModal() {
 
   var canContinue = !!pend.selectedQuoteId;
   return '<div id="wonQuoteModal" class="modal-bg" style="display:flex" onclick="if(event.target===this)cancelWonQuoteSelection()">'
-    + '<div class="modal" style="max-width:520px;padding:0;overflow:hidden">'
+    + '<div class="modal" style="max-width:520px">'
     + '<div style="padding:20px 24px;border-bottom:1px solid #f0f0f0">'
     + '<h3 style="font-family:Syne,sans-serif;font-weight:800;font-size:17px;margin:0">Which quote did the customer accept?</h3>'
     + '<p style="color:#6b7280;font-size:12px;margin:6px 0 0">Once confirmed, this choice is locked and drives job creation.</p>'
     + '</div>'
-    + '<div style="padding:18px 24px;max-height:60vh;overflow-y:auto">' + rowsHtml + '</div>'
+    + '<div class="modal-body" style="padding:18px 24px">' + rowsHtml + '</div>'
     + '<div style="padding:14px 24px;border-top:1px solid #f0f0f0;display:flex;justify-content:flex-end;gap:8px;background:#f9fafb">'
     + '<button onclick="cancelWonQuoteSelection()" class="btn-g" style="font-size:12px">Cancel</button>'
     + '<button onclick="confirmWonQuoteSelection()" ' + (canContinue ? '' : 'disabled')
@@ -3072,15 +3470,34 @@ function confirmUnwindDealWon() {
   var typed = el ? (el.value || '') : '';
   if (typed !== 'UNWIND') { addToast('Type UNWIND exactly to confirm', 'error'); return; }
 
+  // Brief 4 Phase 4: cancellation reason is required so the clawback
+  // audit entry has context. Free text — typically "Customer cancelled",
+  // "Pricing dispute", "Wrong product", etc.
+  var reasonEl = document.getElementById('unwindReasonInput');
+  var reason = reasonEl ? String(reasonEl.value || '').trim() : '';
+  if (!reason) { addToast('Cancellation reason is required', 'error'); return; }
+
   var deal = (getState().deals || []).find(function (d) { return d.id === dealId; });
   if (!deal) { _pendingUnwindDealId = null; renderPage(); return; }
   var restoreStageId = deal.preWonStageId || _findFallbackStageId(deal);
   var cu = getCurrentUser() || { name: 'Admin' };
 
+  // Snapshot pre-unwind values for the clawback (before-state) and audit.
+  // Brief 4 Phase 4: also snapshot the commission BEFORE unwinding, since
+  // the unwind clears wonQuoteId and calcDealCommission would then fall
+  // back to activeQuoteId — possibly producing a different multiplier.
+  var prevWonDate = deal.wonDate;
+  var prevWonQuoteId = deal.wonQuoteId;
+  var prevVal = deal.val;
+  var prevCommission = 0;
+  if (typeof calcDealCommission === 'function') {
+    try { prevCommission = calcDealCommission(deal).commission || 0; } catch (e) {}
+  }
+
   var act = {
     id: 'a' + Date.now(),
     type: 'stage',
-    text: 'Deal unwound from Won by ' + cu.name,
+    text: 'Deal unwound from Won by ' + cu.name + ' — ' + reason,
     date: new Date().toISOString().slice(0, 10),
     time: new Date().toTimeString().slice(0, 5),
     by: cu.name, done: false, dueDate: '',
@@ -3111,8 +3528,55 @@ function confirmUnwindDealWon() {
   });
   dbInsert('activities', actToDb(act, 'deal', dealId));
 
+  // Brief 4 Phase 4: clawback the commission. We pass the snapshotted
+  // wonDate + commission so the helper doesn't need to read from state
+  // (which has already been mutated to the unwound shape). This avoids
+  // a setState dance and keeps the render count to one.
+  var clawback = null;
+  if (typeof clawbackCommission === 'function') {
+    try {
+      clawback = clawbackCommission(dealId, reason, {
+        wonDate: prevWonDate,
+        commissionOverride: prevCommission,
+      });
+    } catch (e) {}
+  }
+
+  // Brief 2 Phase 2 + Brief 4 Phase 4: cancellation audit entry. The
+  // clawback function writes its own commission.clawed_back entry for
+  // the money math; this one captures the deal-level cancellation event.
+  if (typeof appendAuditEntry === 'function') {
+    try {
+      appendAuditEntry({
+        entityType: 'deal', entityId: dealId,
+        action: 'deal.won_unwound',
+        summary: 'Won deal cancelled: ' + (deal.title || dealId) + ' — ' + reason,
+        before: { won: true, wonDate: prevWonDate, wonQuoteId: prevWonQuoteId, sid: deal.sid, val: prevVal },
+        after:  { won: false, wonDate: null, wonQuoteId: null, sid: restoreStageId, val: prevVal },
+        metadata: {
+          reason: reason,
+          clawbackTier: clawback ? clawback.tier : null,
+          clawedBackAmount: clawback ? clawback.clawedBackAmount : null,
+          alreadyClawed: clawback ? clawback.alreadyClawed : false,
+        },
+        branch: deal.branch || null,
+      });
+    } catch (e) {}
+  }
+
   _pendingUnwindDealId = null;
-  addToast('Deal unwound from Won', 'warning');
+  // Toast surfaces the clawback outcome so admin sees the math
+  // immediately. For 'skipped' tier the message is just "unwound";
+  // for 'partial' / 'full' it shows the dollar amount clawed back.
+  var toastMsg = 'Deal unwound from Won';
+  if (clawback && clawback.tier === 'full') {
+    toastMsg += ' — full clawback ($' + clawback.clawedBackAmount.toFixed(2) + ')';
+  } else if (clawback && clawback.tier === 'partial') {
+    toastMsg += ' — partial clawback (kept ' + clawback.keepPct + '%, clawed $' + clawback.clawedBackAmount.toFixed(2) + ')';
+  } else if (clawback && clawback.tier === 'skipped') {
+    toastMsg += ' — clawback skipped (' + clawback.daysSinceWon + ' days since won)';
+  }
+  addToast(toastMsg, 'warning');
   renderPage();
 }
 
@@ -3139,14 +3603,44 @@ function renderUnwindDealModal() {
     + '</div>'
     : '';
 
+  // Brief 4 Phase 4: clawback preview. Show the user what's about to
+  // happen to commission BEFORE they confirm. previewClawbackForDeal is
+  // a pure-read helper that returns {tier, keepPct, daysSinceWon,
+  // originalCommission, clawedBackAmount, remainingCommission} without
+  // mutating state.
+  var clawbackBlock = '';
+  if (typeof previewClawbackForDeal === 'function') {
+    var preview = previewClawbackForDeal(deal);
+    if (preview && preview.originalCommission > 0) {
+      var tierColor = preview.tier === 'full' ? '#b91c1c' : preview.tier === 'partial' ? '#92400e' : '#15803d';
+      var tierBg    = preview.tier === 'full' ? '#fee2e2' : preview.tier === 'partial' ? '#fef9c3' : '#f0fdf4';
+      var tierLabel = preview.tier === 'full' ? 'Full clawback' : preview.tier === 'partial' ? 'Partial clawback (' + preview.keepPct + '% kept)' : 'No clawback (over threshold)';
+      var fmt = function (n) { return '$' + n.toFixed(2); };
+      clawbackBlock = '<div style="margin-top:14px;padding:12px 14px;background:' + tierBg + ';border:1px solid ' + tierColor + '40;border-radius:8px">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+        +   '<div style="font-size:12px;font-weight:700;color:' + tierColor + '">\ud83d\udcb0 ' + tierLabel + '</div>'
+        +   '<div style="font-size:11px;color:#6b7280">' + preview.daysSinceWon + ' days since won</div>'
+        + '</div>'
+        + '<div style="font-size:11px;color:#374151;line-height:1.5">'
+        +   'Original commission: <b>' + fmt(preview.originalCommission) + '</b><br>'
+        +   (preview.tier === 'skipped'
+              ? 'Commission preserved in full \u2014 deal won more than ' + (preview.policy.partialClawbackUnderDays || 90) + ' days ago.'
+              : 'Clawing back: <b>' + fmt(preview.clawedBackAmount) + '</b> \u00b7 Remaining: <b>' + fmt(preview.remainingCommission) + '</b>')
+        + '</div></div>';
+    }
+  }
+
   return '<div id="unwindDealModal" class="modal-bg" style="display:flex" onclick="if(event.target===this)cancelUnwindDealWon()">'
-    + '<div class="modal" style="max-width:480px;padding:0;overflow:hidden">'
+    + '<div class="modal" style="max-width:520px;padding:0;overflow:hidden">'
     + '<div style="padding:20px 24px;border-bottom:1px solid #f0f0f0">'
     + '<h3 style="font-family:Syne,sans-serif;font-weight:800;font-size:17px;margin:0;color:#b91c1c">\u26a0 Unwind won state</h3>'
     + '</div>'
     + '<div style="padding:20px 24px">'
     + '<div style="font-size:13px;color:#374151;line-height:1.5">This will clear the won quote and move the deal back to <b>' + restoreStageName + '</b>.</div>'
     + jobWarning
+    + clawbackBlock
+    + '<div style="margin-top:16px;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">Cancellation reason <span style="color:#dc2626">*</span></div>'
+    + '<input id="unwindReasonInput" type="text" autocomplete="off" placeholder="e.g. Customer cancelled, Pricing dispute" style="width:100%;padding:9px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:13px">'
     + '<div style="margin-top:16px;font-size:12px;color:#6b7280">Type <code style="background:#f3f4f6;padding:1px 5px;border-radius:3px;font-weight:700;color:#b91c1c">UNWIND</code> to confirm:</div>'
     + '<input id="unwindConfirmInput" type="text" autocomplete="off" style="margin-top:6px;width:100%;padding:9px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:monospace;font-size:13px" placeholder="UNWIND">'
     + '</div>'
@@ -3179,50 +3673,252 @@ function renderPaymentMethodModal() {
     + '</div></div>';
 }
 
-function markDealLost(dealId) {
-  const { deals } = getState();
-  const deal = deals.find(d => d.id === dealId);
-  if (!deal) return;
-  const pl = PIPELINES.find(p => p.id === deal.pid);
-  const lostStage = pl ? pl.stages.find(s => s.isLost) : null;
-  if (lostStage) {
-    // moveDealToStage already surfaces the toast + prompt; don't duplicate.
-    moveDealToStage(dealId, lostStage.id);
-    return;
-  }
-  setState({ deals: deals.map(d => d.id === dealId ? { ...d, won: false, lost: true, wonDate: null } : d) });
-  dbUpdate('deals', dealId, { won: false, lost: true, won_date: null });
-  addToast('Deal marked as Not Proceeding', 'warning');
-  askLostReason(dealId);
+// ══════════════════════════════════════════════════════════════════════════════
+// Brief 1: LOST FLOW — gated transition with mandatory reason capture
+// ══════════════════════════════════════════════════════════════════════════════
+// All four Lost entry points (drag-to-Lost, kanban Lost button, deal-detail
+// Lost button, programmatic moveDealToStage to a Lost stage) converge on
+// _requestLostTransition. The deal stays in its current stage until the user
+// picks a reason and clicks Save in the modal. Cancelling leaves the deal
+// untouched.
+//
+// Replaces the old askLostReason() prompt-based flow which had a fall-through
+// bug (markDealLost returned early before askLostReason fired) and used
+// window.prompt() — incompatible with the rest of the modal-based UI.
+
+// localStorage-backed config so the reasons list is admin-editable (Settings
+// tab below). Each reason is {id, label, active} so deactivating preserves
+// historical references on existing deals.
+var DEFAULT_LOST_REASONS = [
+  { id: 'price',        label: 'Price',         active: true },
+  { id: 'competitor',   label: 'Competitor',    active: true },
+  { id: 'timing',       label: 'Timing',        active: true },
+  { id: 'ghosted',      label: 'Ghosted',       active: true },
+  { id: 'scope_changed', label: 'Scope changed', active: true },
+  { id: 'other',        label: 'Other',         active: true },
+];
+
+function getLostReasons() {
+  try {
+    var raw = localStorage.getItem('spartan_lost_reasons');
+    if (!raw) return DEFAULT_LOST_REASONS.slice();
+    var parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length ? parsed : DEFAULT_LOST_REASONS.slice();
+  } catch (e) { return DEFAULT_LOST_REASONS.slice(); }
 }
 
-// ── Lost-reason capture ──────────────────────────────────────────────────────
-// Kept deliberately lightweight: a browser prompt with a numbered menu. It
-// runs after a deal lands in the Lost stage (drag, button, or stage-change).
-// The reason is written to deal.lostReason in local state only — DB schema
-// change (adding `lost_reason` column) can follow later; this is safe to ship
-// without it because the Lost Deal Reasons report just bucket-sorts whatever
-// is present and groups unset deals under "Not specified".
-const LOST_REASONS = ['Price', 'Competitor', 'Timing', 'Ghosted', 'Scope changed', 'Other'];
-function askLostReason(dealId) {
-  // Defer so the toast + re-render from the stage move flushes first.
-  setTimeout(function () {
-    try {
-      const prompt_ = (typeof window !== 'undefined' && window.prompt) ? window.prompt : null;
-      if (!prompt_) return;
-      const menu = 'Why was this deal lost?\n\n' +
-        LOST_REASONS.map((r, i) => (i + 1) + '. ' + r).join('\n') +
-        '\n\nEnter 1-' + LOST_REASONS.length + ' (Cancel to skip):';
-      const ans = prompt_(menu, '1');
-      if (!ans) return;
-      const idx = parseInt(ans, 10) - 1;
-      const reason = LOST_REASONS[idx];
-      if (!reason) { addToast('Invalid choice — reason not recorded', 'error'); return; }
-      const { deals } = getState();
-      setState({ deals: deals.map(d => d.id === dealId ? { ...d, lostReason: reason } : d) });
-      addToast('Lost reason: ' + reason, 'info');
-    } catch (err) { /* swallow — don't block the stage transition if prompt fails */ }
-  }, 50);
+function saveLostReasons(arr) {
+  try { localStorage.setItem('spartan_lost_reasons', JSON.stringify(arr || [])); } catch (e) {}
+}
+
+// Public — used by the Lost Reasons report (09-reports.js) to render the
+// human label for a stored lostReasonId, with a fallback for legacy deals
+// that have only the legacy lostReason string.
+function lostReasonLabelFor(deal) {
+  if (!deal) return 'Not specified';
+  if (deal.lostReasonId) {
+    var match = getLostReasons().find(function (r) { return r.id === deal.lostReasonId; });
+    if (match) return match.label;
+  }
+  return deal.lostReason || 'Not specified';
+}
+
+// Entry point — every Lost path calls this. The deal hasn't moved yet; the
+// modal's Save handler does the actual mutation.
+function _requestLostTransition(dealId, targetStageId, opts) {
+  opts = opts || {};
+  var deal = (getState().deals || []).find(function (d) { return d.id === dealId; });
+  if (!deal) return;
+
+  // If already lost, no-op (don't re-prompt for reason on a deal that's
+  // already in a Lost stage with a recorded reason).
+  if (deal.lost) {
+    addToast('Deal is already marked as Not Proceeding', 'info');
+    return;
+  }
+
+  // If targetStageId not provided, find the pipeline's Lost stage.
+  if (!targetStageId) {
+    var pl = PIPELINES.find(function (p) { return p.id === deal.pid; });
+    var lostStage = pl ? pl.stages.find(function (s) { return s.isLost; }) : null;
+    if (!lostStage) {
+      addToast('No Lost stage configured on this pipeline', 'error');
+      return;
+    }
+    targetStageId = lostStage.id;
+  }
+
+  _pendingLostTransition = {
+    dealId: dealId,
+    targetStageId: targetStageId,
+    source: opts.source || 'unknown',
+    selectedReasonId: '',
+    competitorName: '',
+    details: '',
+  };
+  renderPage();
+}
+
+function cancelLostTransition() {
+  _pendingLostTransition = null;
+  renderPage();
+}
+
+// Internal — radio onchange in the modal updates the draft; we re-render so
+// the conditional Competitor input shows/hides without a stale-state glitch.
+function setLostReasonDraft(reasonId) {
+  if (!_pendingLostTransition) return;
+  _pendingLostTransition.selectedReasonId = reasonId;
+  renderPage();
+}
+function setLostCompetitorDraft(value) {
+  if (_pendingLostTransition) _pendingLostTransition.competitorName = value;
+}
+function setLostDetailsDraft(value) {
+  if (_pendingLostTransition) _pendingLostTransition.details = value;
+}
+
+function confirmLostTransition() {
+  var p = _pendingLostTransition;
+  if (!p) return;
+  if (!p.selectedReasonId) {
+    addToast('Pick a reason first', 'error');
+    return;
+  }
+
+  var s = getState();
+  var deal = (s.deals || []).find(function (d) { return d.id === p.dealId; });
+  if (!deal) { _pendingLostTransition = null; return; }
+
+  var reasons = getLostReasons();
+  var reason = reasons.find(function (r) { return r.id === p.selectedReasonId; }) || { id: p.selectedReasonId, label: p.selectedReasonId };
+  var competitor = p.competitorName.trim();
+  var details = p.details.trim();
+  var oldSid = deal.sid;
+  var nowDate = new Date().toISOString().slice(0, 10);
+  var nowTime = new Date().toTimeString().slice(0, 5);
+  var byUser = (getCurrentUser() || { name: 'Admin' }).name;
+
+  // Activity-timeline entry. Mirrors the dropDeal pattern.
+  var summaryParts = ['Deal lost — ' + reason.label];
+  if (competitor) summaryParts.push('(' + competitor + ')');
+  if (details) summaryParts.push(': ' + details);
+  var act = {
+    id: 'a' + Date.now(),
+    type: 'stage',
+    text: summaryParts.join(' '),
+    date: nowDate,
+    time: nowTime,
+    by: byUser,
+    done: false,
+    dueDate: '',
+  };
+
+  setState({
+    deals: s.deals.map(function (d) {
+      if (d.id !== p.dealId) return d;
+      return Object.assign({}, d, {
+        sid: p.targetStageId,
+        won: false,
+        lost: true,
+        wonDate: null,
+        lostReasonId: reason.id,
+        lostReason: reason.label, // legacy field — kept for backwards compat with old reports
+        lostCompetitor: competitor || null,
+        lostDetails: details || null,
+        activities: [act].concat(d.activities || []),
+      });
+    }),
+  });
+
+  // Persist to Supabase. Columns may not exist yet — Supabase will error on
+  // the missing columns and the rest of the local state still saves. Schema
+  // migration is a separate task per the brief.
+  dbUpdate('deals', p.dealId, {
+    sid: p.targetStageId,
+    won: false,
+    lost: true,
+    won_date: null,
+    lost_reason: reason.label,
+    lost_reason_id: reason.id,
+    lost_competitor: competitor || null,
+    lost_details: details || null,
+  });
+  dbInsert('activities', actToDb(act, 'deal', p.dealId));
+
+  // Audit (Brief 2 Phase 1 primitive)
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType: 'deal',
+      entityId: p.dealId,
+      action: 'deal.lost_marked',
+      summary: 'Deal lost: ' + reason.label + (competitor ? ' — ' + competitor : ''),
+      before: { sid: oldSid, lost: false },
+      after: {
+        sid: p.targetStageId,
+        lost: true,
+        lostReasonId: reason.id,
+        lostCompetitor: competitor || null,
+        lostDetails: details || null,
+      },
+      metadata: { source: p.source },
+      branch: deal.branch || null,
+    });
+  }
+
+  _pendingLostTransition = null;
+  addToast('Deal marked as Not Proceeding — ' + reason.label, 'warning');
+  renderPage();
+}
+
+// Modal renderer — mounted in 99-init.js:renderPage when _pendingLostTransition is set.
+function renderLostReasonModal() {
+  if (!_pendingLostTransition) return '';
+  var p = _pendingLostTransition;
+  var reasons = getLostReasons().filter(function (r) { return r.active; });
+  var showCompetitor = p.selectedReasonId === 'competitor';
+
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)cancelLostTransition()">'
+    +   '<div class="modal" style="max-width:480px">'
+    +     '<div class="modal-header">'
+    +       '<h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">Why was this deal lost?</h3>'
+    +       '<button onclick="cancelLostTransition()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">×</button>'
+    +     '</div>'
+    +     '<div class="modal-body" style="display:flex;flex-direction:column;gap:14px">'
+    +       '<div style="display:flex;flex-direction:column;gap:6px">'
+    +         reasons.map(function (r) {
+                var checked = p.selectedReasonId === r.id;
+                return '<label for="lr_reason_' + r.id + '" style="display:flex;align-items:center;gap:10px;padding:10px 14px;border:1.5px solid ' + (checked ? '#c41230' : '#e5e7eb') + ';background:' + (checked ? '#fff5f6' : '#fff') + ';border-radius:10px;cursor:pointer;font-size:13px;font-weight:' + (checked ? '600' : '400') + '">'
+                  + '<input type="radio" id="lr_reason_' + r.id + '" name="lr_reason" value="' + r.id + '" ' + (checked ? 'checked' : '') + ' onchange="setLostReasonDraft(\'' + r.id + '\')" style="accent-color:#c41230">'
+                  + '<span>' + (r.label || r.id) + '</span>'
+                  + '</label>';
+              }).join('')
+    +       '</div>'
+    +       (showCompetitor ? (''
+              + '<div>'
+              +   '<label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Competitor name</label>'
+              +   '<input id="lr_competitor" class="inp" value="' + (p.competitorName || '').replace(/"/g, '&quot;') + '" placeholder="e.g. ABC Windows" oninput="setLostCompetitorDraft(this.value)" style="font-size:13px">'
+              + '</div>'
+            ) : '')
+    +       '<div>'
+    +         '<label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Optional details</label>'
+    +         '<textarea id="lr_details" class="inp" rows="3" placeholder="Anything else worth noting…" oninput="setLostDetailsDraft(this.value)" style="font-size:13px;resize:vertical;border-radius:8px;padding:8px 10px">' + (p.details || '').replace(/</g, '&lt;') + '</textarea>'
+    +       '</div>'
+    +     '</div>'
+    +     '<div class="modal-footer">'
+    +       '<button onclick="cancelLostTransition()" class="btn-w" style="font-size:13px">Cancel</button>'
+    +       '<button onclick="confirmLostTransition()" class="btn-r" style="font-size:13px;background:#dc2626;border-color:#dc2626">Mark as Not Proceeding</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+}
+
+// markDealLost — entry point for the Deal Detail action bar's Lost button
+// and the kanban quick-edit modal's Lost button. Always gates through
+// _requestLostTransition so the modal opens.
+function markDealLost(dealId) {
+  _requestLostTransition(dealId, null, { source: 'mark-button' });
 }
 
 // ── Create Job from Won Deal (replaces old convertDealToJob stub) ────────────
@@ -3450,6 +4146,15 @@ function renderDealDetail() {
         <div style="font-size:11px;color:#9ca3af;margin-top:2px">Weighted: ${fmt$(Math.round(getDealDisplayValue(d) * (pct / 100)))} · ${pct}%</div>
       </div>
 
+      <!-- Type — Brief 5 Phase 4. Click the badge to open the picker. -->
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid #f9fafb">
+        <span style="font-size:12px;color:#9ca3af">Type</span>
+        <span onclick="openDealTypePicker('${d.id}')" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px" title="Click to change">
+          ${_dealTypeBadge(d)}
+          <span style="font-size:10px;color:#9ca3af">▾</span>
+        </span>
+      </div>
+
       <!-- Key fields -->
       ${[
       ['Pipeline → Stage', curStage ? curStage.name : '—', curStage ? curStage.col : ''],
@@ -3481,7 +4186,7 @@ function renderDealDetail() {
       <div style="display:flex;flex-direction:column;gap:7px">
         <a href="mailto:${contact.email}" style="font-size:12px;color:#3b82f6;text-decoration:none;display:flex;align-items:center;gap:7px">${Icon({ n: 'mail2', size: 13 })} ${contact.email || '—'}</a>
         ${contact.email ? `<button onclick="detailTab='email';renderPage()" class="btn-r" style="font-size:11px;padding:4px 10px;margin-top:4px;width:100%;justify-content:center;gap:5px">${Icon({ n: 'send', size: 12 })} Send Email</button>` : ''}
-        <a href="tel:${contact.phone}" style="font-size:12px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:7px">${Icon({ n: 'phone2', size: 13 })} ${contact.phone || '—'}</a>
+        ${contact.phone ? `<a href="javascript:void(0)" onclick="twilioCall('${contact.phone}','${contact.id}','contact')" style="font-size:12px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:7px;cursor:pointer">${Icon({ n: 'phone2', size: 13 })} ${contact.phone}</a>` : `<div style="font-size:12px;color:#9ca3af;display:flex;align-items:center;gap:7px">${Icon({ n: 'phone2', size: 13 })} —</div>`}
         <div style="font-size:12px;color:#6b7280;display:flex;align-items:center;gap:7px">${Icon({ n: 'pin', size: 13 })} ${[contact.street, contact.suburb, contact.state, contact.postcode].filter(Boolean).join(', ') || 'No address'}</div>
       </div>`: `<div style="font-size:13px;color:#9ca3af">No contact linked</div>`}
     </div>
@@ -3619,7 +4324,7 @@ function renderLeadDetail() {
       </div>
       <div style="display:flex;flex-direction:column;gap:7px">
         ${lead.email ? `<a href="mailto:${lead.email}" style="font-size:12px;color:#3b82f6;text-decoration:none;display:flex;align-items:center;gap:7px">${Icon({ n: 'mail2', size: 13 })} ${lead.email}</a>` : ''}
-        ${lead.phone ? `<a href="tel:${lead.phone}" style="font-size:12px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:7px">${Icon({ n: 'phone2', size: 13 })} ${lead.phone}</a>` : ''}
+        ${lead.phone ? `<a href="javascript:void(0)" onclick="twilioCall('${lead.phone}','${lead.id}','lead')" style="font-size:12px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:7px;cursor:pointer">${Icon({ n: 'phone2', size: 13 })} ${lead.phone}</a>` : ''}
       ${lead.email ? `<a href="mailto:${lead.email}" style="font-size:12px;color:#3b82f6;text-decoration:none;display:flex;align-items:center;gap:8px">${Icon({ n: 'mail2', size: 13 })} ${lead.email}</a>` : ''}
       <button onclick="detailTab='email';renderPage()" class="btn-r" style="font-size:12px;padding:5px 10px;margin-top:6px;width:100%;justify-content:center;gap:5px">${Icon({ n: 'send', size: 12 })} Send Email</button>
         ${lead.suburb ? `<div style="font-size:12px;color:#6b7280;display:flex;align-items:center;gap:7px">${Icon({ n: 'pin', size: 13 })} ${[lead.street, lead.suburb, lead.state, lead.postcode].filter(Boolean).join(', ')}</div>` : ''}
@@ -3663,7 +4368,7 @@ function renderLeadDetail() {
     entityType: 'lead', entityId: lead.id,
     title: lead.fn + ' ' + lead.ln, owner: lead.owner,
     stageBarHtml: null,
-    wonLostHtml: (canEditLead(lead) ? `<button onclick="openLeadEditDrawer('${lead.id}')" class="btn-w" style="font-size:12px;padding:6px 14px;margin-right:6px">${Icon({ n: 'edit', size: 12 })} Edit</button>` : '') + (!lead.converted ? `<button onclick="directConvertLead('${lead.id}')" class="btn-r" style="font-size:12px;padding:6px 14px">Convert to Deal →</button>` : Badge('Converted', 'teal')),
+    wonLostHtml: (canEditLead(lead) ? `<button onclick="openLeadEditDrawer('${lead.id}')" class="btn-w" style="font-size:12px;padding:6px 14px;margin-right:6px">${Icon({ n: 'edit', size: 12 })} Edit</button>` : '') + (!lead.converted ? `<button onclick="openConvertLeadModal('${lead.id}')" class="btn-r" style="font-size:12px;padding:6px 14px">Convert to Deal →</button>` : Badge('Converted', 'teal')),
     leftSidebarHtml: leftSidebar,
     backOnclick: "setState({leadDetailId:null})",
     backLabel: "Leads",
@@ -3696,7 +4401,7 @@ function renderContactDetail() {
       </div>
       <div style="display:flex;flex-direction:column;gap:8px">
         <a href="mailto:${c.email}" style="font-size:13px;color:#3b82f6;text-decoration:none;display:flex;align-items:center;gap:8px">${Icon({ n: 'mail2', size: 14 })} <span>${c.email || '—'}</span></a>
-        <a href="tel:${c.phone}" style="font-size:13px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:8px">${Icon({ n: 'phone2', size: 14 })} <span>${c.phone || '—'}</span></a>
+        ${c.phone ? `<a href="javascript:void(0)" onclick="twilioCall('${c.phone}','${c.id}','contact')" style="font-size:13px;color:#374151;text-decoration:none;display:flex;align-items:center;gap:8px;cursor:pointer">${Icon({ n: 'phone2', size: 14 })} <span>${c.phone}</span></a>` : `<div style="font-size:13px;color:#9ca3af;display:flex;align-items:center;gap:8px">${Icon({ n: 'phone2', size: 14 })} <span>—</span></div>`}
         <div style="font-size:13px;color:#6b7280;display:flex;align-items:center;gap:8px">${Icon({ n: 'pin', size: 14 })} ${[c.street, c.suburb, c.state, c.postcode].filter(Boolean).join(', ') || 'No address'}</div>
       </div>
     </div>
@@ -3737,7 +4442,10 @@ function renderContactDetail() {
       </div>
       ${cDeals.length === 0 ? `<div style="font-size:12px;color:#9ca3af">No deals yet</div>` : ''}
       ${cDeals.map(d => `<div style="padding:8px;background:#f9fafb;border-radius:8px;margin-bottom:6px;cursor:pointer" onclick="setState({dealDetailId:'${d.id}',contactDetailId:null})">
-        <div style="font-size:13px;font-weight:600;color:#1a1a1a">${d.title}</div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
+          <div style="font-size:13px;font-weight:600;color:#1a1a1a;flex:1;min-width:0">${d.title}</div>
+          ${_dealTypeBadge(d)}
+        </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px">
           <span style="font-size:12px;color:#9ca3af">${d.suburb || d.branch}</span>
           <span style="font-size:13px;font-weight:700">${fmt$(d.val)}</span>
@@ -3780,6 +4488,26 @@ function renderNewDealModal() {
       <div style="padding:24px;display:flex;flex-direction:column;gap:14px">
         <div><label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">Deal Title *</label>
           <input class="inp" id="nd_title" placeholder="e.g. Double glazing - Full home"></div>
+        <div>
+          <label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:6px">Deal Type *</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <label class="nd-dealtype-card" data-value="residential" onclick="_ndDealTypeSelect('residential')" style="cursor:pointer;border:2px solid #e5e7eb;border-radius:10px;padding:12px 14px;background:#fff;transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px">
+              <span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#1a1a1a">
+                <input type="radio" name="nd_dealType" value="residential" style="margin:0">
+                Residential
+              </span>
+              <span style="font-size:11px;color:#6b7280;line-height:1.35">Single home, owner-occupied</span>
+            </label>
+            <label class="nd-dealtype-card" data-value="commercial" onclick="_ndDealTypeSelect('commercial')" style="cursor:pointer;border:2px solid #e5e7eb;border-radius:10px;padding:12px 14px;background:#fff;transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px">
+              <span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#1a1a1a">
+                <input type="radio" name="nd_dealType" value="commercial" style="margin:0">
+                Commercial
+              </span>
+              <span style="font-size:11px;color:#6b7280;line-height:1.35">Builder, body corp, rental, retail</span>
+            </label>
+          </div>
+          <div style="font-size:11px;color:#9ca3af;margin-top:6px">Affects commission rules, reports, and routing. You can change it later from Deal Detail.</div>
+        </div>
         <div><label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">Contact *</label>
           <select class="sel" id="nd_cid"><option value="">Select contact…</option>${contacts.map(c => `<option value="${c.id}">${c.fn} ${c.ln}</option>`).join('')}</select></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -3808,17 +4536,39 @@ function renderNewDealModal() {
   </div>`;
 }
 
+// Brief 5: deal-type radio-card UI helper. Highlights the chosen card and
+// checks the underlying radio without re-rendering the whole modal (which
+// would blow away other field values the user has typed).
+function _ndDealTypeSelect(value) {
+  document.querySelectorAll('.nd-dealtype-card').forEach(function (card) {
+    var on = card.getAttribute('data-value') === value;
+    card.style.borderColor = on ? '#c41230' : '#e5e7eb';
+    card.style.background  = on ? '#fff5f6' : '#fff';
+    var radio = card.querySelector('input[type="radio"]');
+    if (radio) radio.checked = on;
+  });
+}
+
 function saveNewDeal() {
   const title = document.getElementById('nd_title').value.trim();
   const cid = document.getElementById('nd_cid').value;
   if (!title || !cid) { addToast('Title and contact are required', 'error'); return; }
+  // Brief 5: deal type must be explicitly chosen at creation — no silent default.
+  // Read from the checked radio inside the card group; null if nothing picked.
+  const dealTypeEl = document.querySelector('input[name="nd_dealType"]:checked');
+  const dealType = dealTypeEl ? dealTypeEl.value : null;
+  if (dealType !== 'residential' && dealType !== 'commercial') {
+    addToast('Confirm whether this is a Residential or Commercial deal', 'error');
+    return;
+  }
   const valEl = document.getElementById('nd_val');
   const valErr = document.getElementById('nd_val_err');
   const valV = validateDealValue(valEl.value);
   if (valErr) { valErr.style.display = valV.ok ? 'none' : 'block'; valErr.textContent = valV.error; }
   if (!valV.ok) { addToast(valV.error, 'error'); return; }
   const pl = PIPELINES.find(p => p.id === dPipeline);
-  const nd = { id: 'd' + Date.now(), title, cid, pid: dPipeline, sid: pl.stages[0].id, val: valV.normalized, rep: (getCurrentUser() || { name: 'Admin' }).name, branch: document.getElementById('nd_branch').value, street: document.getElementById('nd_street')?.value.trim() || '', suburb: document.getElementById('nd_suburb')?.value.trim() || '', state: document.getElementById('nd_state')?.value || 'VIC', postcode: document.getElementById('nd_postcode')?.value.trim() || '', age: 0, won: false, lost: false, wonDate: null, created: new Date().toISOString().slice(0, 10), tags: [], quotes: [], activeQuoteId: null, wonQuoteId: null, activities: [{ id: 'a' + Date.now(), type: 'created', text: 'Deal created.', date: new Date().toISOString().slice(0, 10), by: (getCurrentUser() || { name: 'Admin' }).name, done: false, dueDate: '' }] };
+  const creationActivityText = 'Deal created (' + (dealType === 'commercial' ? 'Commercial' : 'Residential') + ').';
+  const nd = { id: 'd' + Date.now(), title, cid, pid: dPipeline, sid: pl.stages[0].id, val: valV.normalized, rep: (getCurrentUser() || { name: 'Admin' }).name, branch: document.getElementById('nd_branch').value, street: document.getElementById('nd_street')?.value.trim() || '', suburb: document.getElementById('nd_suburb')?.value.trim() || '', state: document.getElementById('nd_state')?.value || 'VIC', postcode: document.getElementById('nd_postcode')?.value.trim() || '', age: 0, won: false, lost: false, wonDate: null, created: new Date().toISOString().slice(0, 10), dealType: dealType, tags: [], quotes: [], activeQuoteId: null, wonQuoteId: null, activities: [{ id: 'a' + Date.now(), type: 'created', text: creationActivityText, date: new Date().toISOString().slice(0, 10), by: (getCurrentUser() || { name: 'Admin' }).name, done: false, dueDate: '' }] };
   setState({ deals: [nd, ...getState().deals], modal: null, page: 'deals', dealDetailId: null });
   dbInsert('deals', dealToDb(nd));
   if (nd.activities && nd.activities[0]) dbInsert('activities', actToDb(nd.activities[0], 'deal', nd.id));
@@ -4132,7 +4882,7 @@ function renderSchModal() {
         <h3 style="margin:0;font-size:16px;font-weight:700">Schedule Job</h3>
         <button onclick="schModalOpen=false;renderPage()" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({ n: 'x', size: 16 })}</button>
       </div>
-      <div style="padding:20px;display:flex;flex-direction:column;gap:13px;max-height:70vh;overflow-y:auto">
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:13px">
 
         <div><label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">Job</label>
           <select class="sel" style="font-size:13px" onchange="schModalData.jid=this.value;renderPage()">

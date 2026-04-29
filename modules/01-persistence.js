@@ -100,6 +100,14 @@ function dealToDb(d) {
     quotes:d.quotes||[], active_quote_id:d.activeQuoteId||null, won_quote_id:d.wonQuoteId||null,
     // Step 4 §5: previous stage id captured before won-transition, so unwind can restore it.
     pre_won_stage_id:d.preWonStageId||null,
+    // Brief 5: deal-level type, independent of contact.type. Null is permitted on legacy rows;
+    // backfill (Brief 5 Phase 3) will fill them. New deals must carry one of 'residential' | 'commercial'.
+    deal_type:d.dealType||null,
+    // Brief 4 Phase 2: per-stage entry timestamps {[stageId]: isoTimestamp}
+    // populated by moveDealToStage. Used by the commission engine's age-
+    // penalty calculation. Empty/null on pre-Phase-2 rows; the calc
+    // engine falls back to created date when this is missing.
+    stage_history:d.stageHistory||null,
     tags:d.tags||[], activities:d.activities||[]};
 }
 function dbToDeal(r) {
@@ -112,6 +120,11 @@ function dbToDeal(r) {
     // Multi-quote fields (spec §3.1) — default to empty/null so legacy rows behave as if they have no quotes yet
     quotes:Array.isArray(r.quotes)?r.quotes:[], activeQuoteId:r.active_quote_id||null, wonQuoteId:r.won_quote_id||null,
     preWonStageId:r.pre_won_stage_id||null,
+    // Brief 5: deal-level type. Read as null when missing — backfill on boot will fill from contact.type
+    // (Phase 3). Don't default to 'residential' here; that would short-circuit the backfill detection.
+    dealType:r.deal_type||null,
+    // Brief 4 Phase 2: stage-entry timestamp map. Empty object on legacy rows.
+    stageHistory:r.stage_history||{},
     tags:r.tags||[], activities:r.activities||[]};
 }
 function leadToDb(l) {
@@ -339,6 +352,99 @@ function runWonQuoteMigrationIfNeeded(deals) {
   return { ran: true, dealCount: touched.length };
 }
 
+// ── Brief 5 Phase 3: dealType backfill for legacy deals ────────────────────
+// Existing deals (those created before Brief 5 Phase 1 landed) carry
+// dealType=null because the field didn't exist when they were written.
+// Phase 1's dbToDeal explicitly preserves the null on read so this
+// migration can detect them. Backfill rule: read the linked contact's
+// type field — fall back to 'residential' for orphan deals (no contact
+// found) since residential is the safer default in this business.
+//
+// Idempotent: once dealType is set on a deal, subsequent runs see no
+// nulls and touch nothing. The flag prevents the per-deal scan on
+// every reload after the first run completes.
+//
+// Caveat documented in the brief: a residential contact's commercial
+// deal (or vice versa) gets misclassified. The audit entry + admin
+// toast surface the migration so it can be reviewed. Phase 4 lands an
+// inline-editable badge on Deal Detail for fixing individual cases.
+var DEALTYPE_MIGRATION_FLAG = 'spartan_dealtype_migration_v1';
+
+function _migrateDealTypeInPlace(deals, contacts) {
+  var contactsById = {};
+  (contacts || []).forEach(function (c) { if (c && c.id) contactsById[c.id] = c; });
+  var touched = [];
+  (deals || []).forEach(function (d) {
+    // Already typed (either set by Phase 1 saveNewDeal, Phase 2 lead
+    // conversion, or a previous run of this migration in another browser
+    // session that wrote to Supabase). Skip — no work to do.
+    if (d.dealType === 'residential' || d.dealType === 'commercial') return;
+    var contact = d.cid ? contactsById[d.cid] : null;
+    var inferred = (contact && contact.type === 'commercial') ? 'commercial' : 'residential';
+    d.dealType = inferred;
+    touched.push(d);
+  });
+  return touched;
+}
+
+function runDealTypeMigrationIfNeeded(deals, contacts) {
+  try {
+    if (localStorage.getItem(DEALTYPE_MIGRATION_FLAG) === '1') {
+      return { ran: false, dealCount: 0, residentialCount: 0, commercialCount: 0 };
+    }
+  } catch(e) { /* localStorage unavailable — run anyway, safer than skipping */ }
+
+  var touched = _migrateDealTypeInPlace(deals, contacts);
+  var residentialCount = 0, commercialCount = 0;
+  touched.forEach(function (d) {
+    if (d.dealType === 'commercial') commercialCount++; else residentialCount++;
+  });
+
+  // Persist touched rows. Same fire-and-forget pattern as the other migrations.
+  // If Supabase is offline the in-memory migration still applies for this
+  // session; another browser will rerun and write on its own first boot.
+  touched.forEach(function (d) { try { dbUpsert('deals', dealToDb(d)); } catch(e) {} });
+
+  // Audit (Brief 2 Phase 2). One entry summarising the backfill — not one
+  // per deal, which would flood the log. Skip if appendAuditEntry isn't
+  // loaded yet (boot order is module-by-module; the audit primitive lands
+  // before this in 05-state-auth-rbac.js so it should always be present,
+  // but the typeof guard keeps us robust to future load-order changes).
+  if (typeof appendAuditEntry === 'function' && touched.length > 0) {
+    try {
+      appendAuditEntry({
+        entityType: 'system', entityId: null,
+        action: 'system.dealtype_backfilled',
+        summary: 'Backfilled dealType on ' + touched.length + ' deal' + (touched.length !== 1 ? 's' : '') + ' from linked contact (' + residentialCount + ' residential, ' + commercialCount + ' commercial)',
+        metadata: { count: touched.length, residentialCount: residentialCount, commercialCount: commercialCount },
+      });
+    } catch(e) { /* audit is best-effort */ }
+  }
+
+  // Set flag BEFORE the toast — if the toast somehow throws, the flag
+  // still gets set so we don't re-run the migration on next reload.
+  try { localStorage.setItem(DEALTYPE_MIGRATION_FLAG, '1'); } catch(e) {}
+
+  // Admin-only one-time toast surfacing the auto-classification so the
+  // first admin who happens to load the app post-deploy can review.
+  // Uses a long-lived toast (10s) since the user may be looking elsewhere
+  // when boot completes. Deferred via setTimeout(0) so it doesn't get
+  // wiped by the next renderPage that follows state-merge.
+  if (touched.length > 0 && typeof addToast === 'function') {
+    var cu = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+    if (cu && cu.role === 'admin') {
+      setTimeout(function () {
+        try {
+          addToast(touched.length + ' deals were auto-classified by type (' + residentialCount + ' residential, ' + commercialCount + ' commercial). Review and adjust on Deal Detail if needed.', 'info');
+        } catch(e) {}
+      }, 0);
+    }
+  }
+
+  console.log('[Spartan] dealType migration complete — backfilled', touched.length, 'deals (' + residentialCount + ' residential, ' + commercialCount + ' commercial)');
+  return { ran: true, dealCount: touched.length, residentialCount: residentialCount, commercialCount: commercialCount };
+}
+
 // Structural equality check for arrays of CRM records. Realtime echoes and
 // periodic refetches produce fresh-reference arrays whose contents are
 // identical to current state; without this, every refetch triggers a full
@@ -385,7 +491,11 @@ async function dbLoadAll() {
       _sb.from('users').select('*'),
       _sb.from('activities').select('*'),
       _sb.from('job_files').select('*'),
-      _sb.from('installers').select('*'),
+      _sb.from('call_logs').select('*').order('started_at', { ascending: false }).limit(500),              // index 14
+      _sb.from('sms_logs').select('*').order('sent_at', { ascending: false }).limit(1000),                 // index 15
+      _sb.from('sms_templates').select('*').order('name', { ascending: true }),                            // index 16
+      _sb.from('phone_settings').select('*').eq('id', 'singleton').maybeSingle(),                          // index 17
+      _sb.from('installers').select('*'),                                                                  // index 18
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -470,6 +580,12 @@ async function dbLoadAll() {
     // Step 4 §6: backfill wonQuoteId for legacy won deals. MUST run after Step 1
     // migration so every deal has a quotes[] array before this one reads it.
     runWonQuoteMigrationIfNeeded(deals);
+    // Brief 5 Phase 3: backfill dealType for legacy deals from the linked
+    // contact's type field. MUST run after contacts are loaded (above) — we
+    // need the contact lookup to infer the type. New deals (Brief 5 Phase
+    // 1+2) already carry a non-null dealType so the migration only touches
+    // pre-Brief-5 records.
+    runDealTypeMigrationIfNeeded(deals, contacts);
     var invoices = results[4].data||[];
     var factoryOrders = results[5].data||[];
     var factoryItems = results[6].data||[];
@@ -548,7 +664,7 @@ async function dbLoadAll() {
         localStorage.setItem('spartan_files_' + jobId, JSON.stringify(byJob[jobId]));
       });
     }
-    var installers = (results[14].data||[]).map(dbToInstaller);
+    var installers = (results[18].data||[]).map(dbToInstaller);
     if (installers.length > 0) {
       localStorage.setItem('spartan_installers', JSON.stringify(installers));
       setState({installers: installers}, {skipSync: true});
@@ -574,8 +690,44 @@ async function dbLoadAll() {
       localStorage.setItem('spartan_users', JSON.stringify(dbUsers));
     }
 
+    // ── Call logs (Twilio Voice, stage 2) ────────────────────────────────────
+    // Most recent 500 outbound + inbound calls. Browser-side renderers
+    // (call history list, deal-detail timeline filters) read from state.callLogs.
+    var callLogs = (results[14] && results[14].data) || [];
+    if (callLogs.length > 0 || (getState().callLogs || []).length > 0) {
+      // Only patch state when the slice actually changed — avoids the cascading
+      // re-render that the comment around line 440 warns about.
+      if (!_recordsEqual(callLogs, getState().callLogs || [])) {
+        setState({ callLogs: callLogs }, { skipSync: true });
+      }
+    }
+
+    // ── SMS logs + templates (Twilio SMS, stage 4) ──────────────────────────
+    var smsLogs = (results[15] && results[15].data) || [];
+    if (smsLogs.length > 0 || (getState().smsLogs || []).length > 0) {
+      if (!_recordsEqual(smsLogs, getState().smsLogs || [])) {
+        setState({ smsLogs: smsLogs }, { skipSync: true });
+      }
+    }
+    var smsTemplates = (results[16] && results[16].data) || [];
+    if (smsTemplates.length > 0 || (getState().smsTemplates || []).length > 0) {
+      if (!_recordsEqual(smsTemplates, getState().smsTemplates || [])) {
+        setState({ smsTemplates: smsTemplates }, { skipSync: true });
+      }
+    }
+
+    // ── Phone & IVR settings (stage 6) ──────────────────────────────────────
+    var phoneSettings = (results[17] && results[17].data) || null;
+    if (phoneSettings) {
+      try {
+        if (JSON.stringify(phoneSettings) !== JSON.stringify(getState().phoneSettings || null)) {
+          setState({ phoneSettings: phoneSettings }, { skipSync: true });
+        }
+      } catch(e) { setState({ phoneSettings: phoneSettings }, { skipSync: true }); }
+    }
+
     _dbReady = true;
-    console.log('[Spartan] Loaded from Supabase:', contacts.length, 'contacts,', leads.length, 'leads,', deals.length, 'deals,', jobs.length, 'jobs');
+    console.log('[Spartan] Loaded from Supabase:', contacts.length, 'contacts,', leads.length, 'leads,', deals.length, 'deals,', jobs.length, 'jobs,', callLogs.length, 'call logs,', smsLogs.length, 'SMS,', smsTemplates.length, 'SMS templates');
     return true;
   } catch(e) {
     console.error('[Spartan] DB load failed, using localStorage cache:', e);
@@ -667,6 +819,10 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'invoices'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'factory_orders'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'users'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'call_logs'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'sms_logs'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'sms_templates'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'phone_settings'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'installers'}, function(){ dbLoadAll(); })
     .subscribe(function(status){ console.log('[Spartan] Realtime:', status); });
 }

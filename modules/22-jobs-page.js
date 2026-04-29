@@ -937,7 +937,7 @@ function renderJobDetail() {
         +'<div style="font-size:11px;color:#6b7280">$'+Math.round(cl.amountExGst).toLocaleString()+' ex GST</div></div>'
         +'<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;min-width:110px">'
         +'<span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:10px;background:'+stCol+'18;color:'+stCol+';text-align:center">'+stLabel+'</span>'
-        +(cl.status==='invoiced'&&!isZipClaim?'<button onclick="var cls=getJobClaims(\''+job.id+'\');cls=cls.map(function(c){return c.id===\''+cl.id+'\'?Object.assign({},c,{status:\'paid\',paidDate:new Date().toISOString().slice(0,10)}):c;});saveJobClaims(\''+job.id+'\',cls);logJobAudit(\''+job.id+'\',\'Payment Received\',\''+cl.stage+' $'+Math.round(cl.amountIncGst)+'\');renderPage()" class="btn-r" style="font-size:10px;padding:4px 10px">\ud83d\udcb3 Mark Paid</button>':'')
+        +(cl.status==='invoiced'&&!isZipClaim?'<button onclick="markJobClaimPaid(\''+job.id+'\',\''+cl.id+'\')" class="btn-r" style="font-size:10px;padding:4px 10px">\ud83d\udcb3 Mark Paid</button>':'')
         +(cl.status==='zip_pending'?'<button onclick="var cls=getJobClaims(\''+job.id+'\');cls=cls.map(function(c){return c.id===\''+cl.id+'\'?Object.assign({},c,{status:\'zip_received\',paidDate:new Date().toISOString().slice(0,10)}):c;});saveJobClaims(\''+job.id+'\',cls);logJobAudit(\''+job.id+'\',\'Zip Payment Received\',\''+cl.stage+' $'+Math.round(cl.amountIncGst)+'\');renderPage()" class="btn-w" style="font-size:10px;padding:4px 10px;color:#7c3aed;border-color:#c4b5fd">\ud83d\udcb3 Mark Zip Received</button>':'')
         +'</div></div>';
     });

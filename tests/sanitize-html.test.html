@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Spartan CRM — _sanitizeHtml test harness (Brief 6 Phase 1)</title>
+<style>
+  body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 16px; color: #1a1a1a; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 14px; color: #6b7280; text-transform: uppercase; letter-spacing: .08em; margin-top: 32px; }
+  .row { padding: 10px 14px; border-bottom: 1px solid #f0f0f0; display: grid; grid-template-columns: 1.5fr 2fr 80px; gap: 12px; align-items: start; }
+  .row.head { font-weight: 700; color: #6b7280; font-size: 11px; text-transform: uppercase; }
+  .row code { font-family: ui-monospace, monospace; font-size: 11px; background: #f9fafb; padding: 2px 6px; border-radius: 4px; word-break: break-all; }
+  .pass { color: #15803d; font-weight: 700; }
+  .fail { color: #dc2626; font-weight: 700; }
+  .summary { padding: 16px; border-radius: 10px; font-weight: 700; margin-top: 24px; }
+  .summary.ok { background: #f0fdf4; color: #166534; }
+  .summary.bad { background: #fef2f2; color: #991b1b; }
+</style>
+</head>
+<body>
+<h1>_sanitizeHtml test harness</h1>
+<p style="color: #6b7280; font-size: 13px; line-height: 1.5">
+  Loads <code>modules/11-email-page.js</code> in a browser context and
+  exercises the sanitiser against XSS attack vectors and rendering edge
+  cases. Open this file directly in a browser (no server needed). Each
+  row shows: input → sanitised output → expected pattern check (PASS/FAIL).
+  All assertions must PASS before merging Brief 6 Phase 1.
+</p>
+
+<div id="results"></div>
+<div id="summary" class="summary"></div>
+
+<!-- Stub minimum globals the sanitiser code path uses. _escHtml is
+     defined in the same module just before _sanitizeHtml. -->
+<script>
+  // The DOMParser-using code is at the bottom of 11-email-page.js so we
+  // need the file's other definitions to load without throwing. Stub the
+  // few globals the file references at top level.
+  function getState() { return {}; }
+  function getCurrentUser() { return null; }
+  function setState() {}
+  function renderPage() {}
+  function addToast() {}
+  function dbInsert() {}
+  function dbUpdate() {}
+  function dbDelete() {}
+  function dbUpsert() {}
+  var _state = {};
+</script>
+<script src="../modules/11-email-page.js" onerror="document.getElementById('results').innerHTML='<p style=color:#dc2626>Failed to load 11-email-page.js — open this file from a path that can reach ../modules/11-email-page.js</p>'"></script>
+
+<script>
+  // Each test: { name, input, mustContain?, mustNotContain?, mustEqual? }
+  // mustNotContain is the most common — XSS attempts must never appear in
+  // output. mustContain checks whitelisted markup survives. mustEqual is
+  // for exact-output checks (rare).
+  const tests = [
+    // ── 1. Script-injection vectors (must all be neutralised) ──────────
+    { name: '<script> stripped',
+      input: 'Hello<script>alert(1)</script>World',
+      mustNotContain: ['<script', 'alert(1)'] },
+    { name: '<style> stripped',
+      input: 'Hi<style>body{color:red}</style>there',
+      mustNotContain: ['<style', 'color:red'] },
+    { name: '<iframe> stripped',
+      input: '<iframe src="https://evil.example.com"></iframe>',
+      mustNotContain: ['<iframe', 'evil.example'] },
+    { name: '<iframe srcdoc> stripped',
+      input: '<iframe srcdoc="<script>alert(1)</script>"></iframe>',
+      mustNotContain: ['<iframe', 'srcdoc', 'alert(1)'] },
+    { name: '<object> stripped',
+      input: '<object data="evil.swf"></object>',
+      mustNotContain: ['<object'] },
+    { name: '<embed> stripped',
+      input: '<embed src="evil.swf">',
+      mustNotContain: ['<embed'] },
+    { name: '<svg> stripped (script vector)',
+      input: '<svg onload="alert(1)"><script>alert(2)</script></svg>',
+      mustNotContain: ['<svg', '<script', 'alert'] },
+    { name: '<form> + <input> stripped',
+      input: '<form><input name=x><button>x</button></form>',
+      mustNotContain: ['<form', '<input', '<button'] },
+    { name: '<meta> + <link> stripped',
+      input: '<meta http-equiv=refresh content=0;url=evil><link rel=stylesheet href=evil.css>',
+      mustNotContain: ['<meta', '<link', 'evil'] },
+
+    // ── 2. Event-handler attribute strips ──────────────────────────────
+    { name: 'onerror stripped',
+      input: '<img src="https://example.com/a.png" onerror="alert(1)">',
+      mustNotContain: ['onerror', 'alert'] },
+    { name: 'onclick stripped',
+      input: '<a href="https://example.com" onclick="alert(1)">x</a>',
+      mustNotContain: ['onclick', 'alert'] },
+    { name: 'onload stripped',
+      input: '<body onload="alert(1)"><div>hi</div></body>',
+      mustNotContain: ['onload', 'alert'] },
+    { name: 'onmouseover stripped',
+      input: '<div onmouseover="alert(1)">hover</div>',
+      mustNotContain: ['onmouseover', 'alert'] },
+
+    // ── 3. javascript: / data: / vbscript: URIs ─────────────────────────
+    { name: 'javascript: href stripped',
+      input: '<a href="javascript:alert(1)">click</a>',
+      mustNotContain: ['javascript:', 'alert'] },
+    { name: 'JaVaScRiPt: case-insensitive',
+      input: '<a href="JaVaScRiPt:alert(1)">click</a>',
+      mustNotContain: ['avascript:', 'JaVaScRi'] },
+    { name: 'whitespace-prefixed javascript: stripped',
+      input: '<a href="  java\nscript:alert(1)">x</a>',
+      mustNotContain: ['javascript:', 'alert'] },
+    { name: 'vbscript: href stripped',
+      input: '<a href="vbscript:msgbox(1)">x</a>',
+      mustNotContain: ['vbscript:'] },
+    { name: 'data:text/html href stripped',
+      input: '<a href="data:text/html,<script>alert(1)</script>">x</a>',
+      mustNotContain: ['data:text', '<script'] },
+    { name: 'data:image/svg+xml in img src stripped (SVG carries scripts)',
+      input: '<img src="data:image/svg+xml;base64,PHN2Z...">',
+      mustNotContain: ['data:image/svg', 'PHN2Z'] },
+    { name: 'data:image/png allowed in img src',
+      input: '<img src="data:image/png;base64,iVBORw0KGgo=" alt="dot">',
+      mustContain: ['data:image/png', 'iVBORw0'] },
+    { name: 'data:image/jpeg allowed in img src',
+      input: '<img src="data:image/jpeg;base64,/9j/=" alt="x">',
+      mustContain: ['data:image/jpeg'] },
+
+    // ── 4. Style attribute filtering ────────────────────────────────────
+    { name: 'expression() in style stripped',
+      input: '<div style="width:expression(alert(1))">x</div>',
+      mustNotContain: ['expression', 'alert'] },
+    { name: 'url(javascript:) in style stripped',
+      input: '<div style="background:url(javascript:alert(1))">x</div>',
+      mustNotContain: ['javascript:', 'url('] },
+    { name: '@import in style stripped',
+      input: '<div style="@import url(evil.css)">x</div>',
+      mustNotContain: ['@import', 'evil.css'] },
+    { name: 'position:absolute stripped (overlay vector)',
+      input: '<div style="position:absolute;top:0;left:0;width:100%;height:100%">x</div>',
+      mustNotContain: ['position:absolute', 'position: absolute'] },
+    { name: 'safe color: + font-size: kept',
+      input: '<span style="color:#c41230;font-size:14px">red</span>',
+      mustContain: ['color:#c41230', 'font-size:14px'] },
+    { name: 'safe margin/padding kept',
+      input: '<div style="margin:8px;padding:12px;border-radius:4px">x</div>',
+      mustContain: ['margin:8px', 'padding:12px', 'border-radius:4px'] },
+
+    // ── 5. Whitelisted markup survives ──────────────────────────────────
+    { name: '<p>, <br>, <strong>, <em>, <u> survive',
+      input: '<p>Hello <strong>world</strong>, <em>this</em> <u>is</u><br>email.</p>',
+      mustContain: ['<p>', '<strong>', '<em>', '<u>', '<br>'] },
+    { name: '<a> with safe href survives + gets target/rel',
+      input: '<a href="https://example.com">link</a>',
+      mustContain: ['<a', 'href="https://example.com"', 'target="_blank"', 'rel="noopener noreferrer"'] },
+    { name: 'mailto: href survives',
+      input: '<a href="mailto:user@example.com">email</a>',
+      mustContain: ['mailto:user@example.com'] },
+    { name: 'tel: href survives',
+      input: '<a href="tel:+61412345678">call</a>',
+      mustContain: ['tel:+61412345678'] },
+    { name: '<img> with https src survives',
+      input: '<img src="https://example.com/logo.png" alt="logo" width="120">',
+      mustContain: ['<img', 'src="https://example.com/logo.png"', 'alt="logo"', 'width="120"'] },
+    { name: '<table> with row + cell + colspan survives',
+      input: '<table><tbody><tr><td colspan="2">cell</td></tr></tbody></table>',
+      mustContain: ['<table>', '<tr>', '<td colspan="2">', 'cell'] },
+    { name: '<ul>/<li> survives',
+      input: '<ul><li>one</li><li>two</li></ul>',
+      mustContain: ['<ul>', '<li>one</li>', '<li>two</li>'] },
+    { name: '<blockquote> survives (forwarded chain)',
+      input: '<blockquote><p>quoted</p><blockquote><p>nested</p></blockquote></blockquote>',
+      mustContain: ['<blockquote>', '<p>quoted</p>', '<p>nested</p>'] },
+    { name: '<font color> (legacy email) survives',
+      input: '<font color="#c41230" size="3">red text</font>',
+      mustContain: ['<font', 'color="#c41230"', 'size="3"'] },
+
+    // ── 6. Edge cases ───────────────────────────────────────────────────
+    { name: 'null input → empty string',
+      input: null, mustEqual: '' },
+    { name: 'undefined input → empty string',
+      input: undefined, mustEqual: '' },
+    { name: 'empty string → empty string',
+      input: '', mustEqual: '' },
+    { name: 'plain text passes through',
+      input: 'Hello world!',
+      mustContain: ['Hello world!'] },
+    { name: 'unknown tag is unwrapped (not stripped)',
+      input: '<unknown>preserved text</unknown>',
+      mustContain: ['preserved text'],
+      mustNotContain: ['<unknown>'] },
+    { name: 'HTML comment stripped',
+      input: 'before<!-- comment -->after',
+      mustNotContain: ['<!--', 'comment'] },
+    { name: 'malformed HTML still safe',
+      input: '<div><script>alert(1)</script><div>survives',
+      mustNotContain: ['<script', 'alert'] }
+  ];
+
+  function runTests() {
+    if (typeof _sanitizeHtml !== 'function') {
+      document.getElementById('results').innerHTML = '<p style="color:#dc2626;font-weight:700">_sanitizeHtml is not defined — module failed to load</p>';
+      return;
+    }
+    let pass = 0, fail = 0;
+    const out = document.getElementById('results');
+    out.innerHTML = '<div class="row head"><div>Test</div><div>Output</div><div>Result</div></div>';
+    tests.forEach(t => {
+      let ok = true, why = '';
+      let actual;
+      try {
+        actual = _sanitizeHtml(t.input);
+      } catch (e) {
+        ok = false; why = 'threw: ' + e.message; actual = '(threw)';
+      }
+      if (ok && t.mustEqual !== undefined && actual !== t.mustEqual) {
+        ok = false; why = 'expected exactly ' + JSON.stringify(t.mustEqual);
+      }
+      if (ok && t.mustContain) {
+        for (const s of t.mustContain) {
+          if (actual.indexOf(s) < 0) { ok = false; why = 'missing: ' + s; break; }
+        }
+      }
+      if (ok && t.mustNotContain) {
+        for (const s of t.mustNotContain) {
+          if (actual.toLowerCase().indexOf(s.toLowerCase()) >= 0) { ok = false; why = 'contains forbidden: ' + s; break; }
+        }
+      }
+      if (ok) pass++; else fail++;
+      const inputDisplay = t.input == null ? String(t.input) : String(t.input);
+      out.innerHTML += '<div class="row"><div><strong>' + t.name + '</strong><br><code>' + escapeForDisplay(inputDisplay) + '</code></div><div><code>' + escapeForDisplay(actual) + '</code>' + (why ? '<div style="color:#dc2626;font-size:11px;margin-top:4px">' + why + '</div>' : '') + '</div><div class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? '✓ PASS' : '✗ FAIL') + '</div></div>';
+    });
+    const summary = document.getElementById('summary');
+    if (fail === 0) {
+      summary.className = 'summary ok';
+      summary.textContent = '✓ All ' + pass + ' tests passed.';
+    } else {
+      summary.className = 'summary bad';
+      summary.textContent = '✗ ' + fail + ' of ' + (pass + fail) + ' tests FAILED. Do NOT merge.';
+    }
+  }
+  function escapeForDisplay(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  // Wait for the module script to finish loading.
+  window.addEventListener('load', runTests);
+</script>
+</body>
+</html>

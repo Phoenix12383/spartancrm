@@ -1,0 +1,24 @@
+{
+  "name": "spartancrm",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Spartan CRM — static frontend + Vercel serverless backend for Twilio Voice/SMS integration.",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "test:audit-retention": "node tests/audit-retention.test.cjs",
+    "test:commission-config": "node tests/commission-config.test.cjs",
+    "test:commission-calc": "node tests/commission-calc.test.cjs",
+    "test:commission-state": "node tests/commission-state.test.cjs",
+    "test:commission-settings": "node tests/commission-settings.test.cjs",
+    "test:commission-payruns": "node tests/commission-payruns.test.cjs",
+    "test:commission-dashboard": "node tests/commission-dashboard.test.cjs",
+    "test:commission-clawback": "node tests/commission-clawback.test.cjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "twilio": "^5.3.0"
+  }
+}

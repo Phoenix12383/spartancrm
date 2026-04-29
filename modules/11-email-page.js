@@ -689,23 +689,155 @@ function emailFillTemplate(template, context) {
   return { body: body, subject: subject };
 }
 
-// ── EMAIL SIGNATURES ──────────────────────────────────────────────────────────
-function getSignature() {
-  var cu = getCurrentUser();
-  if (!cu) return '';
-  var custom = localStorage.getItem('spartan_signature_' + cu.id);
-  if (custom !== null) return custom;
-  var s = getState();
-  var name = s.gmailUser ? s.gmailUser.name : cu.name;
-  var email = s.gmailUser ? s.gmailUser.email : cu.email || '';
-  return '--\n' + name + '\nSpartan Double Glazing · 1300 912 161\n' + email;
+// ════════════════════════════════════════════════════════════════════════════
+// EMAIL SIGNATURES (Brief 6 Phase 3)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Per-user, per-state HTML signatures. Storage layout (one entry per scope):
+//   spartan_signature_${cu.id}_default   — fallback when no state matches
+//   spartan_signature_${cu.id}_VIC       — VIC-specific
+//   spartan_signature_${cu.id}_NSW       — NSW-specific (etc.)
+//
+// Lookup order in `getSignature(state)`:
+//   1. State-specific (if state is provided and a value exists)
+//   2. Default (`spartan_signature_${cu.id}_default`)
+//   3. Hardcoded HTML fallback (built from cu.name + cu.email + Spartan
+//      boilerplate)
+//
+// Migration: pre-Phase-3 the signature lived at `spartan_signature_${cu.id}`
+// as plain text. On the first call to getSignature() after this PR ships,
+// if the legacy key exists and the new default key doesn't, we convert
+// (escape + \n→<br>, wrap in <div>) and write to the default key, then
+// delete the legacy key. Idempotent — runs at most once per browser per
+// user, and a no-op if the user never had a custom signature.
+
+function _signatureKey(userId, state) {
+  return 'spartan_signature_' + userId + '_' + (state || 'default');
 }
-function saveSignature(text) {
-  var cu = getCurrentUser();
+function _legacySignatureKey(userId) { return 'spartan_signature_' + userId; }
+
+// Migration helper. Returns true if a migration was performed (legacy key
+// was non-null and got converted), false otherwise. Safe to call repeatedly
+// — short-circuits once the legacy key is gone.
+function _migrateLegacySignature(cu) {
+  if (!cu) return false;
+  try {
+    var legacy = localStorage.getItem(_legacySignatureKey(cu.id));
+    if (legacy === null) return false;
+    var defaultKey = _signatureKey(cu.id, 'default');
+    if (localStorage.getItem(defaultKey) !== null) {
+      // New default key already populated (user already saved a Phase-3
+      // signature), but the legacy key is still hanging around. Clean
+      // it up without overwriting the new value.
+      try { localStorage.removeItem(_legacySignatureKey(cu.id)); } catch (e) {}
+      return false;
+    }
+    var html = '<div>' + _escHtml(legacy).replace(/\r?\n/g, '<br>') + '</div>';
+    localStorage.setItem(defaultKey, html);
+    try { localStorage.removeItem(_legacySignatureKey(cu.id)); } catch (e) {}
+    if (typeof appendAuditEntry === 'function') {
+      try {
+        appendAuditEntry({
+          entityType: 'settings', entityId: null,
+          action: 'settings.signature_edited',
+          summary: 'Migrated legacy plain-text signature to HTML for ' + (cu.name || cu.id),
+          metadata: { migration: true, userId: cu.id },
+        });
+      } catch (e) {}
+    }
+    return true;
+  } catch (e) { return false; }
+}
+
+// Hardcoded fallback when nothing is configured. HTML version of the old
+// plain-text default. Uses the connected Gmail account's name/email when
+// present, falling back to the CRM user record.
+function _defaultSignatureHtml(cu) {
+  var s = (typeof getState === 'function') ? getState() : {};
+  var name  = (s.gmailUser && s.gmailUser.name)  ? s.gmailUser.name  : ((cu && cu.name)  || '');
+  var email = (s.gmailUser && s.gmailUser.email) ? s.gmailUser.email : ((cu && cu.email) || '');
+  return '<div>--<br>' + _escHtml(name) + '<br>Spartan Double Glazing &middot; 1300 912 161<br>' + _escHtml(email) + '</div>';
+}
+
+// Public API: state-aware signature lookup with fallback chain. Brief 6
+// Phase 3. Pre-Phase-3 callers passed no argument and got a single
+// per-user signature; that still works (state defaults to undefined →
+// skips step 1, lands on step 2 or 3).
+function getSignature(state) {
+  var cu = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+  if (!cu) return '';
+  _migrateLegacySignature(cu);
+  if (state) {
+    try {
+      var perState = localStorage.getItem(_signatureKey(cu.id, state));
+      if (perState !== null && perState !== '') return perState;
+    } catch (e) {}
+  }
+  try {
+    var def = localStorage.getItem(_signatureKey(cu.id, 'default'));
+    if (def !== null && def !== '') return def;
+  } catch (e) {}
+  return _defaultSignatureHtml(cu);
+}
+
+// No-fallback raw read — used by the Profile editors so each shows what's
+// actually stored for THAT scope (vs the chained value getSignature returns).
+// Returns '' when nothing is stored for the scope.
+function getRawSignature(state) {
+  var cu = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+  if (!cu) return '';
+  _migrateLegacySignature(cu);
+  try {
+    var v = localStorage.getItem(_signatureKey(cu.id, state || 'default'));
+    return v === null ? '' : v;
+  } catch (e) { return ''; }
+}
+
+// Save a signature. Brief 6 Phase 3 signature is `(state, html)` where
+// state is '' / undefined / 'default' for the default scope, or a state
+// code ('VIC', 'NSW', …) for a per-state scope. Pre-Phase-3 single-arg
+// `saveSignature(text)` calls are still accepted — the single arg is
+// treated as the default-scope content.
+function saveSignature(stateOrText, html) {
+  var cu = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
   if (!cu) return;
-  localStorage.setItem('spartan_signature_' + cu.id, text);
-  addToast('Signature saved', 'success');
+  var state, content;
+  if (arguments.length === 1) {
+    // Backward-compat: legacy callers passed a single plain-text string.
+    state = 'default';
+    content = stateOrText;
+  } else {
+    state = stateOrText || 'default';
+    content = html;
+  }
+  // Sanitise on save — defence in depth alongside render-time sanitisation.
+  // The user could paste arbitrary HTML from any source into the editor;
+  // we'd rather store a clean version than rely solely on render-time
+  // protection.
+  var safe = (typeof _sanitizeHtml === 'function') ? _sanitizeHtml(content || '') : (content || '');
+  var key = _signatureKey(cu.id, state);
+  try { localStorage.setItem(key, safe); } catch (e) {}
+  if (typeof appendAuditEntry === 'function') {
+    try {
+      appendAuditEntry({
+        entityType: 'settings', entityId: null,
+        action: 'settings.signature_edited',
+        summary: 'Updated email signature' + (state === 'default' ? ' (default)' : ' for ' + state),
+        metadata: { state: state, userId: cu.id },
+      });
+    } catch (e) {}
+  }
+  addToast('Signature saved' + (state === 'default' ? '' : ' for ' + state), 'success');
   renderPage();
+}
+
+// Profile signature save — reads the live HTML out of the contenteditable
+// at sig_<state>, runs it through saveSignature.
+function profileSaveSignature(state) {
+  var key = state || 'default';
+  var el = document.getElementById('sig_' + key);
+  if (!el) { addToast('Editor not found', 'error'); return; }
+  saveSignature(key, el.innerHTML);
 }
 
 // ── CUSTOM TEMPLATES (user-created, stored in localStorage) ───────────────────
@@ -749,18 +881,216 @@ function deleteCustomTemplate(id) {
   renderPage();
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// RICH-TEXT EDITOR HELPERS (Brief 6 Phase 2 + Phase 3)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Generic helpers for any contenteditable element with a formatting toolbar.
+// Used by the email composer body (`#ec_body`) and the per-state signature
+// editors in Profile (`#sig_default`, `#sig_VIC`, `#sig_NSW`, …). Each helper
+// takes an editorId so a single toolbar pattern works across N editors on
+// the same page.
+//
+// State binding: each editor wires its own `oninput=` handler to whatever
+// it needs to track (composer pushes innerHTML to state.emailComposeData.body;
+// signature editors save on button click, no per-keystroke binding). The
+// helpers dispatch a synthetic `input` event after every execCommand so
+// the editor's oninput fires reliably even on browsers where execCommand
+// silently doesn't (Safari + insertImage).
+//
+// document.execCommand is technically deprecated but every browser still
+// supports it and the spec replacement (Selection / Range API) is roughly
+// 20× the code for the same outcome. When the alternative ships and is
+// well-supported, swap. TODO: track replacement progress.
+
+// Composer-specific input sync. Wired to the composer's `oninput=` so
+// keystrokes flush to state.emailComposeData.body. Signature editors don't
+// use this — they save explicitly via their save button.
+function _ecOnInput() {
+  var el = document.getElementById('ec_body');
+  if (!el) return;
+  var st = getState();
+  if (!st.emailComposeData) return;
+  st.emailComposeData.body = el.innerHTML;
+}
+
+// Generic toolbar action. Restores focus, runs execCommand, dispatches a
+// synthetic `input` event so the editor's oninput handler fires.
+function _rteExec(editorId, cmd, value) {
+  var el = document.getElementById(editorId);
+  if (!el) return;
+  if (document.activeElement !== el) el.focus();
+  try { document.execCommand(cmd, false, value == null ? null : value); } catch (e) {}
+  try { el.dispatchEvent(new InputEvent('input', { bubbles: true })); }
+  catch (e) { try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e2) {} }
+}
+
+// Direct execCommand mappings — first arg is the editor id.
+function rteBold(id)       { _rteExec(id, 'bold'); }
+function rteItalic(id)     { _rteExec(id, 'italic'); }
+function rteUnderline(id)  { _rteExec(id, 'underline'); }
+function rteBulletList(id) { _rteExec(id, 'insertUnorderedList'); }
+function rteNumberList(id) { _rteExec(id, 'insertOrderedList'); }
+function rteRemoveFormat(id) { _rteExec(id, 'removeFormat'); }
+
+// Toggles between <h3> and <p> so a second click on a heading line clears it.
+// h3 fits inline-email size constraints better than h1/h2.
+function rteHeading(id) {
+  var el = document.getElementById(id); if (!el) return;
+  el.focus();
+  var sel = window.getSelection();
+  var inHeading = false;
+  if (sel && sel.rangeCount > 0) {
+    var node = sel.getRangeAt(0).startContainer;
+    while (node && node !== el) {
+      if (node.nodeType === 1 && /^H[1-6]$/.test(node.tagName)) { inHeading = true; break; }
+      node = node.parentNode;
+    }
+  }
+  _rteExec(id, 'formatBlock', inHeading ? '<p>' : '<h3>');
+}
+
+// Link insertion. Requires a non-empty selection so there's something to
+// attach the link to. Auto-prepends https:// for bare domains and mailto:
+// for email-shaped strings so the Phase 1 sanitiser allow-list accepts the
+// result.
+function rteCreateLink(id) {
+  var el = document.getElementById(id); if (!el) return;
+  el.focus();
+  var sel = window.getSelection();
+  if (!sel || sel.toString().length === 0) {
+    addToast('Select some text first, then click Link', 'info');
+    return;
+  }
+  var url = window.prompt('Link URL:', 'https://');
+  if (url == null) return;
+  url = String(url).trim();
+  if (url === '' || url === 'https://' || url === 'http://') return;
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) {
+    if (url.indexOf('@') >= 0 && url.indexOf(' ') < 0) url = 'mailto:' + url;
+    else url = 'https://' + url;
+  }
+  _rteExec(id, 'createLink', url);
+}
+
+// Inline image insertion. File picker → FileReader → data: URI → execCommand.
+// 1MB raw cap (becomes ~1.3MB base64 in MIME — close to Gmail's per-message
+// limit on long forwarded chains). Saves+restores the cursor position
+// across the file-picker blur.
+var RTE_IMAGE_MAX_BYTES = 1024 * 1024; // 1 MiB
+function rteInsertImage(id) {
+  var el = document.getElementById(id); if (!el) return;
+  el.focus();
+  var sel = window.getSelection();
+  var savedRange = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0).cloneRange() : null;
+
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/png,image/jpeg,image/gif,image/webp';
+  input.style.display = 'none';
+  input.onchange = function () {
+    var f = input.files && input.files[0];
+    document.body.removeChild(input);
+    if (!f) return;
+    if (f.size > RTE_IMAGE_MAX_BYTES) {
+      addToast('Image too large — max ' + Math.round(RTE_IMAGE_MAX_BYTES / 1024) + 'KB. Resize or host the image and link to it instead.', 'error');
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function (ev) {
+      var dataUri = ev.target.result;
+      el.focus();
+      if (savedRange) {
+        var sel2 = window.getSelection();
+        sel2.removeAllRanges();
+        sel2.addRange(savedRange);
+      }
+      _rteExec(id, 'insertImage', dataUri);
+    };
+    reader.onerror = function () { addToast('Could not read the image file', 'error'); };
+    reader.readAsDataURL(f);
+  };
+  document.body.appendChild(input);
+  input.click();
+}
+
+// Renders the formatting toolbar HTML for a given editor id. Centralised so
+// the composer and per-state signature editors share the same buttons +
+// behaviour. Each button uses onmousedown=preventDefault so the editor
+// doesn't blur and lose its selection on click.
+function RteToolbar(editorId) {
+  var safeId = String(editorId).replace(/'/g, "\\'");
+  return ''
+    +'<div style="padding:6px 14px;border-bottom:1px solid #f9fafb;display:flex;align-items:center;gap:4px;flex-wrap:wrap;background:#fafafa">'
+    +  '<button title="Bold (Ctrl+B)"        onmousedown="event.preventDefault()" onclick="rteBold(\''+safeId+'\')"         style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-weight:700;font-size:13px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">B</button>'
+    +  '<button title="Italic (Ctrl+I)"      onmousedown="event.preventDefault()" onclick="rteItalic(\''+safeId+'\')"       style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-style:italic;font-size:13px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">I</button>'
+    +  '<button title="Underline (Ctrl+U)"   onmousedown="event.preventDefault()" onclick="rteUnderline(\''+safeId+'\')"    style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;text-decoration:underline;font-size:13px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">U</button>'
+    +  '<span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>'
+    +  '<button title="Heading"              onmousedown="event.preventDefault()" onclick="rteHeading(\''+safeId+'\')"      style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-weight:700;font-size:11px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">H</button>'
+    +  '<button title="Bullet list"          onmousedown="event.preventDefault()" onclick="rteBulletList(\''+safeId+'\')"   style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:13px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">•</button>'
+    +  '<button title="Numbered list"        onmousedown="event.preventDefault()" onclick="rteNumberList(\''+safeId+'\')"   style="width:28px;height:28px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">1.</button>'
+    +  '<span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>'
+    +  '<button title="Insert link"          onmousedown="event.preventDefault()" onclick="rteCreateLink(\''+safeId+'\')"   style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">🔗 Link</button>'
+    +  '<button title="Insert image (max 1MB)" onmousedown="event.preventDefault()" onclick="rteInsertImage(\''+safeId+'\')" style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">🖼 Image</button>'
+    +  '<span style="width:1px;height:18px;background:#e5e7eb;margin:0 4px"></span>'
+    +  '<button title="Clear formatting"     onmousedown="event.preventDefault()" onclick="rteRemoveFormat(\''+safeId+'\')" style="height:28px;padding:0 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:11px;color:#374151" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#fff\'">Tx</button>'
+    +'</div>';
+}
+
+// Initial-load body normaliser. Drafts saved before Phase 2 are plain text
+// (newlines as \n). Drafts saved after Phase 2 are HTML. Convert the
+// first into safe HTML so it renders correctly on reopen; sanitise the
+// second through the Phase 1 allow-list either way for security.
+function _composerInitialBody(body) {
+  if (body == null) return '';
+  body = String(body);
+  if (body === '') return '';
+  if (body.indexOf('<') === -1) {
+    return _escHtml(body).replace(/\r?\n/g, '<br>');
+  }
+  return _sanitizeHtml(body);
+}
+
 // ── INSERT MERGE FIELD ────────────────────────────────────────────────────────
 var mergePickerOpen = false;
 function toggleMergePicker() { mergePickerOpen = !mergePickerOpen; renderPage(); }
+// Brief 6 Phase 2: insert a merge-field token at the caret in the
+// contenteditable composer. Falls back to legacy textarea behaviour if
+// `ec_body` happens to be a textarea (defensive — should never happen
+// after Phase 2 ships).
 function insertMergeField(key) {
   var el = document.getElementById('ec_body');
   if (!el) return;
-  var start = el.selectionStart || el.value.length;
   var tag = '{{' + key + '}}';
-  el.value = el.value.slice(0, start) + tag + el.value.slice(start);
-  getState().emailComposeData.body = el.value;
-  el.focus();
-  el.selectionStart = el.selectionEnd = start + tag.length;
+  if (el.tagName === 'TEXTAREA') {
+    var start = el.selectionStart || el.value.length;
+    el.value = el.value.slice(0, start) + tag + el.value.slice(start);
+    getState().emailComposeData.body = el.value;
+    el.focus();
+    el.selectionStart = el.selectionEnd = start + tag.length;
+  } else {
+    // Contenteditable path. document.execCommand('insertText') inserts at
+    // the caret + advances the cursor — which is exactly what we want for
+    // a merge-field token. Refocus first so the insert lands in the editor
+    // rather than in the merge picker button.
+    el.focus();
+    try { document.execCommand('insertText', false, tag); } catch (e) {
+      // Older browser without insertText support — fall back to manual
+      // range insertion.
+      var sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        var range = sel.getRangeAt(0);
+        range.deleteContents();
+        range.insertNode(document.createTextNode(tag));
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } else {
+        el.innerHTML += tag;
+      }
+    }
+    _ecOnInput();
+  }
   mergePickerOpen = false;
   renderPage();
 }
@@ -805,10 +1135,23 @@ function emailSendOrLog(skipGmail) {
   if (!d.to) { addToast('Enter a recipient','error'); return; }
   if (!d.subject && !d.body) { addToast('Add a subject or body','error'); return; }
 
+  // Brief 6 Phase 4: append the per-state signature to the body that's
+  // actually sent + logged. The composer's signature preview was visual-
+  // only pre-Phase-4 — without this append, recipients never saw the
+  // signature even though Phase 3 let users configure it. Resolve the
+  // state from the linked deal so users get their per-state signature
+  // (e.g. a Sydney rep emailing a NSW deal gets the NSW signature).
+  const _dealForSig = d.dealId ? (s.deals || []).find(function(x){ return x.id === d.dealId; }) : null;
+  const _sigState = _dealForSig ? (_dealForSig.state || '') : '';
+  const _signatureHtml = (typeof getSignature === 'function') ? getSignature(_sigState) : '';
+  // Wrap signature in a separator div so it's visually distinct from the
+  // body. Two <br>s match the typical "blank line + signature" rhythm.
+  const fullBody = (d.body || '') + (_signatureHtml ? '<br><br>' + _signatureHtml : '');
+
   const newMsg = {
     id: 'es'+Date.now(),
     to: d.to, toName: d.toName || d.to,
-    subject: d.subject, body: d.body,
+    subject: d.subject, body: fullBody,
     date: new Date().toISOString().slice(0,10),
     time: new Date().toTimeString().slice(0,5),
     opened: false, openedAt: null, clicked: false, opens: 0,
@@ -824,14 +1167,16 @@ function emailSendOrLog(skipGmail) {
     emailSelectedId: newMsg.id,
   });
 
-  // Also log to entity activity
+  // Also log to entity activity. Stores fullBody (body + signature) so
+  // the activity timeline reflects what was actually sent, not just what
+  // the user typed in the composer.
   if (d.dealId || d.contactId || d.leadId) {
     const entityId   = d.dealId || d.contactId || d.leadId;
     const entityType = d.dealId ? 'deal' : d.contactId ? 'contact' : 'lead';
     saveActivityToEntity(entityId, entityType, {
       id: 'a'+Date.now(), type:'email',
-      subject: d.subject, text: d.body,
-      preview: d.body.slice(0,100),
+      subject: d.subject, text: fullBody,
+      preview: fullBody.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100),
       opens: 0, opened: false, openedAt: null,
       date: newMsg.date, time: newMsg.time,
       by: s.gmailUser ? s.gmailUser.name : (getCurrentUser()||{name:'Admin'}).name,
@@ -841,7 +1186,7 @@ function emailSendOrLog(skipGmail) {
 
   // Try Gmail send if connected
   if (!skipGmail && s.gmailConnected && s.gmailToken) {
-    gmailSend(d.to, d.subject, d.body, d.cc, d.dealId||d.contactId||d.leadId||'', d.dealId?'deal':d.contactId?'contact':'lead');
+    gmailSend(d.to, d.subject, fullBody, d.cc, d.dealId||d.contactId||d.leadId||'', d.dealId?'deal':d.contactId?'contact':'lead');
     return;
   }
   addToast('Email logged ✓', 'success');
@@ -1011,6 +1356,274 @@ function _escHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// HTML SANITISER (Brief 6 Phase 1)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// _sanitizeHtml(html) — returns a safe HTML string suitable for innerHTML.
+// Used to render inbound email bodies (and outbound activity-timeline echoes
+// of those bodies) without escaping every tag to text. The reading pane
+// previously called _escHtml on the entire body, which made every received
+// HTML email look like raw markup. After this lands the pane shows formatted
+// content while still defending against script injection.
+//
+// Threats explicitly mitigated:
+//   - <script>, <style>, <iframe>, <object>, <embed>, <link>, <meta>, <base>,
+//     <svg> (SVG can carry inline scripts) — removed entirely
+//   - on* attributes (onclick, onerror, onload, …) — stripped
+//   - javascript: / vbscript: URIs in href / src — rejected
+//   - data:text/html, data:application/* in href — rejected
+//   - data:image/svg+xml in img src (SVG carries scripts) — rejected
+//   - url(javascript:…), expression(…), @import in style — rejected
+//   - position:absolute/fixed in style — would let an attacker overlay UI
+//
+// What's preserved (allow-listed):
+//   Block tags:    p, div, blockquote, h1-h6, hr, pre, table family
+//   Inline tags:   span, b/strong, i/em, u, a, img, sub, sup, code, s/strike,
+//                  br, font (legacy email)
+//   List tags:     ul, ol, li
+//   Attributes:    href/src (with scheme allow-list), alt/title/width/height,
+//                  table sizing/alignment, font color/face/size, style
+//                  (with property + value allow-list). All anchors get
+//                  rel="noopener noreferrer" target="_blank" added so the
+//                  parent window can't be hijacked via window.opener.
+//
+// Implementation: parse via the browser's native DOMParser (no library),
+// walk the resulting tree, and either keep / unwrap / remove each node.
+// The detached document means side-effecting tags like <iframe src> never
+// fetch anything during sanitisation.
+//
+// Falls back to _escHtml on any parser error (better to show garbled text
+// than expose unsanitised input).
+
+var _SANITIZE_ALLOWED_TAGS = {
+  P:1, BR:1, HR:1, B:1, STRONG:1, I:1, EM:1, U:1, S:1, STRIKE:1,
+  A:1, IMG:1, SPAN:1, DIV:1,
+  UL:1, OL:1, LI:1,
+  H1:1, H2:1, H3:1, H4:1, H5:1, H6:1,
+  BLOCKQUOTE:1, PRE:1, CODE:1, SUB:1, SUP:1,
+  TABLE:1, TR:1, TD:1, TH:1, TBODY:1, THEAD:1, TFOOT:1, CAPTION:1, COLGROUP:1, COL:1,
+  CENTER:1, FONT:1, SMALL:1
+};
+
+// Per-tag attribute allow-list. Tags not listed fall back to _SANITIZE_DEFAULT_ATTRS.
+var _SANITIZE_ALLOWED_ATTRS = {
+  A:    { href:1, title:1, name:1, style:1 },
+  IMG:  { src:1, alt:1, title:1, width:1, height:1, style:1 },
+  TABLE:{ width:1, height:1, cellpadding:1, cellspacing:1, border:1, align:1, bgcolor:1, style:1 },
+  TD:   { width:1, height:1, align:1, valign:1, colspan:1, rowspan:1, bgcolor:1, style:1 },
+  TH:   { width:1, height:1, align:1, valign:1, colspan:1, rowspan:1, bgcolor:1, style:1 },
+  TR:   { align:1, valign:1, bgcolor:1, style:1 },
+  COL:  { width:1, span:1, style:1 },
+  COLGROUP: { width:1, span:1, style:1 },
+  FONT: { color:1, face:1, size:1, style:1 },
+  HR:   { style:1, align:1, size:1, width:1 },
+  OL:   { type:1, start:1, style:1 },
+  UL:   { type:1, style:1 }
+};
+var _SANITIZE_DEFAULT_ATTRS = { style:1, title:1 };
+
+// Allow-listed CSS properties for inbound email styles. Conservative — when
+// in doubt, leave the property out. Email clients do most of their styling
+// via these so the visual fidelity stays high.
+var _SANITIZE_ALLOWED_CSS_PROPS = {
+  'color':1, 'background-color':1, 'background':1,
+  'font':1, 'font-family':1, 'font-size':1, 'font-weight':1, 'font-style':1, 'font-variant':1,
+  'line-height':1, 'letter-spacing':1, 'word-spacing':1,
+  'text-align':1, 'text-decoration':1, 'text-transform':1, 'text-indent':1,
+  'width':1, 'height':1, 'max-width':1, 'max-height':1, 'min-width':1, 'min-height':1,
+  'margin':1, 'margin-top':1, 'margin-right':1, 'margin-bottom':1, 'margin-left':1,
+  'padding':1, 'padding-top':1, 'padding-right':1, 'padding-bottom':1, 'padding-left':1,
+  'border':1, 'border-top':1, 'border-right':1, 'border-bottom':1, 'border-left':1,
+  'border-color':1, 'border-style':1, 'border-width':1, 'border-radius':1,
+  'border-collapse':1, 'border-spacing':1,
+  'display':1, 'vertical-align':1, 'white-space':1,
+  'list-style':1, 'list-style-type':1, 'list-style-position':1
+};
+
+function _sanitizeHtml(html) {
+  if (html == null) return '';
+  if (typeof html !== 'string') html = String(html);
+  if (html.length === 0) return '';
+  try {
+    // Parse in a sandboxed document. Note: <body> contents are a fragment;
+    // we wrap in <!DOCTYPE><html><body> to get the full HTML5 parser
+    // (entity decoding, auto-closing, etc.) without inheriting the live
+    // document's CSP / base href.
+    var doc = new DOMParser().parseFromString(
+      '<!DOCTYPE html><html><body>' + html + '</body></html>',
+      'text/html'
+    );
+    var body = doc && doc.body;
+    if (!body) return '';
+    _sanitizeWalk(body);
+    return body.innerHTML;
+  } catch (e) {
+    // Parser failure (or DOMParser unavailable) — fall back to the safer
+    // option of escape-everything rather than exposing the input unchanged.
+    return _escHtml(html);
+  }
+}
+
+// Walk children depth-first, mutating in place. Iteration is reverse-index
+// so removals and unwraps don't shift the parts we haven't visited yet.
+function _sanitizeWalk(node) {
+  var children = node.childNodes;
+  for (var i = children.length - 1; i >= 0; i--) {
+    var child = children[i];
+    var nt = child.nodeType;
+    if (nt === 1) {
+      // Element node
+      var tag = child.tagName;
+      if (!_SANITIZE_ALLOWED_TAGS[tag]) {
+        // Disallowed: hard-remove for the dangerous set, unwrap (keep
+        // children) for everything else so legitimate text inside an
+        // unknown wrapper isn't silently lost.
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'IFRAME' ||
+            tag === 'OBJECT' || tag === 'EMBED' || tag === 'LINK' ||
+            tag === 'META' || tag === 'BASE' || tag === 'SVG' ||
+            tag === 'FORM' || tag === 'INPUT' || tag === 'BUTTON' ||
+            tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'OPTION') {
+          child.parentNode.removeChild(child);
+        } else {
+          // Unwrap: move children up, then remove the wrapper.
+          while (child.firstChild) child.parentNode.insertBefore(child.firstChild, child);
+          child.parentNode.removeChild(child);
+        }
+      } else {
+        _sanitizeAttrs(child);
+        _sanitizeWalk(child);
+      }
+    } else if (nt === 8) {
+      // Comment node — drop. No legitimate use in email body and they can
+      // hide conditional-comment IE-targeted tricks.
+      child.parentNode.removeChild(child);
+    }
+    // nt === 3 (text) — keep as-is. Text content is HTML-escaped on
+    // serialise (innerHTML) so this is safe.
+  }
+}
+
+function _sanitizeAttrs(el) {
+  var tag = el.tagName;
+  var allowed = _SANITIZE_ALLOWED_ATTRS[tag] || _SANITIZE_DEFAULT_ATTRS;
+  var attrs = el.attributes;
+  // Reverse-index so removals don't shift remaining attrs.
+  for (var i = attrs.length - 1; i >= 0; i--) {
+    var attr = attrs[i];
+    var name = attr.name.toLowerCase();
+    // Strip every event handler. The `on` prefix catches onclick, onerror,
+    // onload, onmouseover, onmouseenter, onfocus, onblur, etc.
+    if (name.indexOf('on') === 0) { el.removeAttribute(attr.name); continue; }
+    // Strip any XML namespace attribute (xmlns, xml:base, …) — can be used
+    // to inject SVG/MathML script semantics into otherwise-plain elements.
+    if (name === 'xmlns' || name.indexOf('xml:') === 0 || name.indexOf('xmlns:') === 0) {
+      el.removeAttribute(attr.name); continue;
+    }
+    // Drop anything not in the allow-list.
+    if (!allowed[name]) { el.removeAttribute(attr.name); continue; }
+    // Sanitise the values that need it.
+    if (name === 'href') {
+      var safeHref = _sanitizeUrl(attr.value, false);
+      if (safeHref == null) { el.removeAttribute(attr.name); continue; }
+      el.setAttribute(attr.name, safeHref);
+    } else if (name === 'src') {
+      var safeSrc = _sanitizeUrl(attr.value, tag === 'IMG');
+      if (safeSrc == null) { el.removeAttribute(attr.name); continue; }
+      el.setAttribute(attr.name, safeSrc);
+    } else if (name === 'style') {
+      var safeStyle = _sanitizeStyle(attr.value);
+      if (safeStyle === '') { el.removeAttribute(attr.name); continue; }
+      el.setAttribute('style', safeStyle);
+    }
+  }
+  // Outbound link hardening: every <a> with an href gets rel="noopener
+  // noreferrer" + target="_blank". This stops window.opener hijacking and
+  // refers leaks, and ensures clicks open in a new tab rather than
+  // navigating away from the CRM.
+  if (tag === 'A' && el.getAttribute('href')) {
+    el.setAttribute('rel', 'noopener noreferrer');
+    el.setAttribute('target', '_blank');
+  }
+}
+
+function _sanitizeUrl(value, isImg) {
+  if (value == null) return null;
+  var raw = String(value).trim();
+  if (raw === '') return null;
+  // Fragment / root-relative / path-relative URLs are always safe.
+  var first = raw.charAt(0);
+  if (first === '#' || first === '/' || first === '?' || first === '.') return raw;
+  // Strip control chars + whitespace from the start of the value to defeat
+  // bypasses like "java\nscript:..." or "  javascript:..."
+  var cleaned = raw.replace(/[\x00-\x20]/g, '');
+  if (cleaned === '') return null;
+  var colon = cleaned.indexOf(':');
+  if (colon < 0) return raw; // No scheme — relative URL, allow.
+  // No '/' before the first ':' guarantees we have a scheme prefix.
+  var slash = cleaned.indexOf('/');
+  if (slash >= 0 && slash < colon) return raw; // path with colon — not a scheme
+  var scheme = cleaned.slice(0, colon).toLowerCase();
+  if (isImg) {
+    // <img src> allows http(s) and a strict subset of data:image/*.
+    if (scheme === 'http' || scheme === 'https') return raw;
+    if (scheme === 'data') {
+      // Allow only common raster image types. Reject SVG explicitly — it
+      // can carry inline <script> elements that fire on render.
+      if (/^data:image\/(png|jpe?g|gif|webp|bmp);/i.test(cleaned)) return raw;
+      return null;
+    }
+    return null;
+  }
+  // <a href> allows http, https, mailto, tel — that covers practically
+  // every legitimate email link without opening data: or javascript:.
+  if (scheme === 'http' || scheme === 'https' || scheme === 'mailto' || scheme === 'tel') return raw;
+  return null;
+}
+
+function _sanitizeStyle(value) {
+  if (value == null) return '';
+  var safe = [];
+  String(value).split(';').forEach(function (decl) {
+    decl = decl.trim();
+    if (!decl) return;
+    var colon = decl.indexOf(':');
+    if (colon < 0) return;
+    var prop = decl.slice(0, colon).trim().toLowerCase();
+    var val  = decl.slice(colon + 1).trim();
+    if (!val) return;
+    if (!_SANITIZE_ALLOWED_CSS_PROPS[prop]) return;
+    var lowerVal = val.toLowerCase();
+    // Reject any value containing dangerous tokens. url() is rejected
+    // entirely — even url(http://…) — since inbound email images can be
+    // tracking pixels and we don't want background-image phoning home.
+    if (lowerVal.indexOf('expression') >= 0) return;
+    if (lowerVal.indexOf('javascript:') >= 0) return;
+    if (lowerVal.indexOf('vbscript:') >= 0) return;
+    if (lowerVal.indexOf('@import') >= 0) return;
+    if (lowerVal.indexOf('url(') >= 0) return;
+    // Reject angle brackets in values — paranoia against parser confusion.
+    if (val.indexOf('<') >= 0 || val.indexOf('>') >= 0) return;
+    safe.push(prop + ':' + val);
+  });
+  return safe.join(';');
+}
+
+// Top-level helper used at the email reading-pane and activity-timeline
+// render sites. Distinguishes plain-text bodies (no tags at all) from
+// HTML bodies, so plain-text emails preserve their newlines via
+// white-space:pre-wrap while HTML emails control their own layout via
+// the explicit tags they ship with. Without this branch, applying
+// pre-wrap to HTML content adds spurious blank lines around block tags.
+function _sanitizeEmailBody(body) {
+  if (body == null) return '';
+  body = String(body);
+  if (body.indexOf('<') === -1) {
+    return '<span style="white-space:pre-wrap">' + _escHtml(body) + '</span>';
+  }
+  return _sanitizeHtml(body);
+}
+
 // ── Email list ────────────────────────────────────────────────────────────────
 function renderEmailList(msgs, folder, selectedId) {
   if (msgs.length===0) return `<div style="padding:40px;text-align:center;color:#9ca3af;font-size:13px">No emails here</div>`;
@@ -1097,7 +1710,7 @@ function renderEmailDetail(msg) {
 
     <!-- Email body — escaped to prevent HTML injection (broken tags in inbound
          HTML emails would otherwise collapse the surrounding layout). -->
-    <div style="background:#f9fafb;border-radius:12px;padding:20px 24px;font-size:14px;line-height:1.8;color:#374151;white-space:pre-wrap;font-family:'DM Sans',sans-serif;border:1px solid #f0f0f0">${_escHtml(msg.body||'')}</div>
+    <div style="background:#f9fafb;border-radius:12px;padding:20px 24px;font-size:14px;line-height:1.8;color:#374151;font-family:'DM Sans',sans-serif;border:1px solid #f0f0f0;overflow:hidden">${_sanitizeEmailBody(msg.body||'')}</div>
 
     <!-- Attachments -->
     ${(msg.attachments && msg.attachments.length > 0) ? `
@@ -1332,7 +1945,7 @@ function renderEmailTrackingDetail(msg) {
     </div>`:''}
 
     <!-- Email body (escaped for same reasons as renderEmailDetail) -->
-    <div style="background:#f9fafb;border-radius:12px;padding:20px 24px;font-size:13px;line-height:1.8;color:#374151;white-space:pre-wrap;border:1px solid #f0f0f0">${_escHtml(msg.body||'')}</div>
+    <div style="background:#f9fafb;border-radius:12px;padding:20px 24px;font-size:13px;line-height:1.8;color:#374151;border:1px solid #f0f0f0;overflow:hidden">${_sanitizeEmailBody(msg.body||'')}</div>
   </div>`;
 }
 
@@ -1341,6 +1954,13 @@ function renderEmailComposer() {
   const s = getState();
   const d = s.emailComposeData;
   const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(d.to)}`;
+
+  // Brief 6 Phase 3: derive the AU state from the linked deal (if any) so
+  // getSignature(state) picks the right per-state signature. When the
+  // composer is opened standalone or for a contact/lead without a deal,
+  // sigState is '' and the lookup falls back to default.
+  const _dealForSig = d.dealId ? (s.deals || []).find(function(x){ return x.id === d.dealId; }) : null;
+  const sigState = _dealForSig ? (_dealForSig.state || '') : '';
 
   return `
   <div style="display:flex;flex-direction:column;height:100%">
@@ -1380,19 +2000,37 @@ function renderEmailComposer() {
     <!-- Merge fields picker -->
     ${renderMergeFieldBar()}
 
-    <!-- Body -->
-    <textarea id="ec_body" rows="12" oninput="getState().emailComposeData.body=this.value"
-      placeholder="Write your email here… Use {{firstName}}, {{dealTitle}} etc. to auto-fill"
-      style="flex:1;padding:16px 20px;border:none;outline:none;font-size:14px;font-family:inherit;resize:none;line-height:1.8;color:#1a1a1a;background:#fff">${_escHtml(d.body||'')}</textarea>
+    <!-- Brief 6 Phase 2: composer rich-text toolbar. Shared markup with
+         signature editors (Phase 3) — see RteToolbar() definition. -->
+    ${RteToolbar('ec_body')}
+    <!-- Placeholder CSS for any contenteditable carrying data-placeholder.
+         Class-based so the same rule covers the composer + every signature
+         editor without per-instance scoping. -->
+    <style>.rte-editable:empty:before{content:attr(data-placeholder);color:#9ca3af;pointer-events:none}</style>
 
-    <!-- Signature -->
-    <div style="padding:0 20px 10px;border-top:1px solid #f9fafb">
-      <pre style="font-size:12px;color:#9ca3af;line-height:1.6;padding-top:8px;border-top:1px solid #e5e7eb;margin:4px 0 0;font-family:inherit;white-space:pre-wrap">${_escHtml(getSignature())}</pre>
-      <button onclick="var el=document.getElementById('sig_edit');if(el)el.style.display=el.style.display==='none'?'block':'none'" style="font-size:10px;color:#3b82f6;background:none;border:none;cursor:pointer;font-family:inherit;padding:4px 0">Edit signature</button>
-      <div id="sig_edit" style="display:none;margin-top:6px">
-        <textarea id="sig_text" rows="4" style="width:100%;font-size:12px;font-family:inherit;padding:8px;border:1px solid #e5e7eb;border-radius:6px;resize:vertical;line-height:1.6">${_escHtml(getSignature())}</textarea>
-        <div style="display:flex;gap:6px;margin-top:4px"><button onclick="saveSignature(document.getElementById('sig_text').value)" class="btn-r" style="font-size:11px;padding:3px 10px">Save Signature</button><button onclick="document.getElementById('sig_edit').style.display='none'" class="btn-w" style="font-size:11px;padding:3px 10px">Cancel</button></div>
+    <!-- Body — contenteditable (Brief 6 Phase 2). Initial content is
+         normalised through _composerInitialBody so legacy plain-text
+         drafts get their newlines converted to <br>, and HTML drafts
+         get sanitised through the Phase 1 allow-list. -->
+    <div id="ec_body" class="rte-editable" contenteditable="true"
+      data-placeholder="Write your email here… Use {{firstName}}, {{dealTitle}} etc. to auto-fill"
+      oninput="_ecOnInput()"
+      style="flex:1;padding:16px 20px;border:none;outline:none;font-size:14px;font-family:inherit;line-height:1.8;color:#1a1a1a;background:#fff;min-height:240px;overflow-y:auto;word-break:break-word">${_composerInitialBody(d.body||'')}</div>
+
+    <!-- Signature — Brief 6 Phase 3. Pulls the right signature for the
+         deal's state via state-aware getSignature(state). When the
+         composer is opened standalone (no entity), state is undefined
+         and the fallback chain lands on default. Renders sanitised HTML
+         so logos / formatting / inline images appear correctly. The
+         "Edit signature" button deep-links to Profile rather than
+         offering an inline editor — Profile owns the per-state
+         configuration, and the composer's space is already tight. -->
+    <div style="padding:8px 20px 10px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280;line-height:1.6">
+      <div style="font-size:11px;color:#9ca3af;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center">
+        <span>Signature${sigState ? ' · ' + sigState : ' · default'}</span>
+        <button onclick="setState({page:'profile'})" style="font-size:10px;color:#3b82f6;background:none;border:none;cursor:pointer;font-family:inherit;padding:0">Edit in Profile →</button>
       </div>
+      <div>${_sanitizeHtml(getSignature(sigState))}</div>
     </div>
 
     <!-- Footer actions -->

@@ -68,6 +68,9 @@ function autoRestoreGmail() {
   }).then(function(p){
     setState({ gmailConnected: true, gmailToken: token, gmailUser: p });
     setTimeout(gmailSyncEmails, 1000);
+    // Now that gmailToken is in state, kick off Twilio device registration.
+    // Safe to call even if twilio module isn't loaded — typeof guard.
+    if (typeof twilioInit === 'function') twilioInit();
   }).catch(function(){
     // Token expired — clear stored credentials and prompt silently
     localStorage.removeItem('spartan_gmail_token_'+cu.id);
@@ -154,6 +157,18 @@ function gmailHandleToken(resp) {
     }
     addToast('Gmail connected: ' + profile.email, 'success');
     setTimeout(gmailSyncEmails, 500);
+    // Connect-Gmail also unlocks the phone module — kick off device registration
+    // so the rep doesn't have to refresh after granting OAuth permission.
+    if (typeof twilioInit === 'function') twilioInit();
+    // Audit (Brief 2 Phase 2). Don't include the access token in metadata —
+    // it's a credential. Just record that a connection happened + the email.
+    if (typeof appendAuditEntry === 'function') {
+      appendAuditEntry({
+        entityType:'integration', entityId:'gmail', action:'integration.connected',
+        summary:'Gmail connected: ' + profile.email,
+        after:{ provider:'gmail', email:profile.email, name:profile.name },
+      });
+    }
   }).catch(() => {
     var gmailUser = { email: 'Connected', name: 'Gmail User', picture: '' };
     setState({ gmailConnected: true, gmailToken: resp.access_token, gmailUser: gmailUser });
@@ -165,6 +180,7 @@ function gmailHandleToken(resp) {
     }
     addToast('Gmail connected!', 'success');
     setTimeout(gmailSyncEmails, 500);
+    if (typeof twilioInit === 'function') twilioInit();
   });
 }
 
@@ -222,8 +238,17 @@ function gmailDisconnect() {
   _calEvents = [];
   _calFetched = false;
   _calLoading = false;
+  // Capture before state for audit (the gmailUser email, etc.) before we clear it.
+  var prevUser = getState().gmailUser;
   setState({ gmailConnected: false, gmailToken: null, gmailUser: null });
   addToast('Gmail disconnected', 'warning');
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'integration', entityId:'gmail', action:'integration.disconnected',
+      summary:'Gmail disconnected' + (prevUser && prevUser.email ? ': ' + prevUser.email : ''),
+      before: prevUser ? { provider:'gmail', email:prevUser.email } : null,
+    });
+  }
 }
 
 // ── Gmail Inbox & Sent Sync ──────────────────────────────────────────────────
@@ -430,6 +455,104 @@ function downloadGmailAttachment(messageId, attachmentId, filename) {
   .catch(function(e){ addToast('Failed to load: ' + e.message, 'error'); });
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// INLINE IMAGE EXTRACTION (Brief 6 Phase 4)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Splits inline data:image/* URIs out of an HTML body into separate MIME
+// parts referenced by Content-ID. Avoids the bloat of base64-in-body for
+// every recipient (a 100KB image becomes ~133KB in base64; long forwarded
+// chains can blow past Gmail's per-message limit). Outlook on Windows
+// handles cid: refs fine; Outlook-on-web sometimes strips them, in which
+// case the recipient sees broken images and the user should fall back to
+// URL-hosted images for signatures (the Phase 1 sanitiser already accepts
+// http(s) src on inbound, the composer accepts http(s) on outbound via
+// _sanitizeHtml passthrough).
+//
+// Inputs are trusted at this point — the composer's contenteditable is
+// our own input, and signatures are sanitised on save. We're decoding the
+// base64 to ship as binary, not displaying it, so XSS isn't the threat
+// model here; we just need correct extraction.
+function _extractInlineImagesForMime(htmlBody) {
+  if (!htmlBody || htmlBody.indexOf('data:image/') < 0) {
+    return { html: htmlBody || '', parts: [] };
+  }
+  try {
+    var doc = new DOMParser().parseFromString(
+      '<!DOCTYPE html><html><body>' + htmlBody + '</body></html>',
+      'text/html'
+    );
+    if (!doc || !doc.body) return { html: htmlBody, parts: [] };
+    var imgs = doc.body.querySelectorAll('img[src^="data:image/"]');
+    var parts = [];
+    var counter = 0;
+    var stamp = Date.now();
+    imgs.forEach(function (img) {
+      var src = img.getAttribute('src') || '';
+      // Match data:image/<format>;base64,<payload>. Reject anything else
+      // (e.g. data:image/svg+xml — unusual in our composer flow but extra
+      // belt-and-braces against round-tripping a sanitiser bypass).
+      var m = /^data:image\/([a-z]+);base64,([A-Za-z0-9+/=]+)$/i.exec(src);
+      if (!m) return;
+      var fmt = m[1].toLowerCase();
+      // Allow only common raster formats — same allow-list as Phase 2's
+      // composer image picker accepts.
+      if (fmt !== 'png' && fmt !== 'jpeg' && fmt !== 'jpg' && fmt !== 'gif' && fmt !== 'webp') return;
+      var base64 = m[2];
+      counter++;
+      var contentId = 'cid_' + stamp + '_' + counter + '@spartan';
+      var ext = fmt === 'jpeg' ? 'jpg' : fmt;
+      var filename = 'inline_' + counter + '.' + ext;
+      parts.push({
+        contentId: contentId,
+        mimeType: 'image/' + (fmt === 'jpg' ? 'jpeg' : fmt),
+        base64: base64,
+        filename: filename,
+      });
+      img.setAttribute('src', 'cid:' + contentId);
+    });
+    return { html: doc.body.innerHTML, parts: parts };
+  } catch (e) {
+    // DOMParser failed — return body unchanged. The single-part path
+    // ships the data: URIs inline as fallback. Same end-user result, just
+    // larger payload.
+    return { html: htmlBody, parts: [] };
+  }
+}
+
+// Builds a multipart/related raw MIME message wrapping HTML + N image
+// parts. Boundary is unique per send (timestamp + random suffix) so it
+// can never collide with content. Base64 is wrapped at 76 chars per line
+// per RFC 2045 — Gmail's parser tolerates long lines too but some
+// downstream MTAs are stricter.
+function _buildMultipartRelatedMime(headerLines, htmlBody, parts) {
+  var boundary = 'boundary_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+  var lines = headerLines.slice(); // To/From/Cc/Subject/MIME-Version
+  lines.push('Content-Type: multipart/related; boundary="' + boundary + '"; type="text/html"');
+  lines.push('');
+  // Part 1: the HTML body with cid: references
+  lines.push('--' + boundary);
+  lines.push('Content-Type: text/html; charset=utf-8');
+  lines.push('Content-Transfer-Encoding: 7bit');
+  lines.push('');
+  lines.push(htmlBody);
+  // Subsequent parts: each image
+  parts.forEach(function (p) {
+    lines.push('--' + boundary);
+    lines.push('Content-Type: ' + p.mimeType + '; name="' + p.filename + '"');
+    lines.push('Content-Disposition: inline; filename="' + p.filename + '"');
+    lines.push('Content-Transfer-Encoding: base64');
+    lines.push('Content-ID: <' + p.contentId + '>');
+    lines.push('');
+    var b64 = p.base64;
+    for (var i = 0; i < b64.length; i += 76) {
+      lines.push(b64.slice(i, i + 76));
+    }
+  });
+  lines.push('--' + boundary + '--');
+  return lines.join('\r\n');
+}
+
 // ── Send email via Gmail API ──────────────────────────────────────────────────
 function gmailSend(to, subject, body, cc, entityId, entityType) {
   const { gmailToken, gmailUser } = getState();
@@ -449,19 +572,37 @@ function gmailSend(to, subject, body, cc, entityId, entityType) {
                       '" width="1" height="1" alt="" style="display:none !important;opacity:0" />';
   var htmlBody = (body || '').replace(/\r?\n/g, '<br>') + trackingPixel;
 
+  // Brief 6 Phase 4: split inline data:image/* URIs out into separate
+  // multipart/related parts. If the body has no inline images, parts is
+  // empty and we ship the simple single-part text/html message (no
+  // overhead for the common case).
+  var extracted = _extractInlineImagesForMime(htmlBody);
+  htmlBody = extracted.html;
+  var inlineParts = extracted.parts;
+
   const from = gmailUser ? gmailUser.email : '';
-  const mimeLines = [
+  // Headers shared between single-part and multipart paths.
+  const baseHeaders = [
     'To: ' + to,
     cc ? 'Cc: ' + cc : '',
     'From: ' + from,
     'Subject: ' + subject,
     'MIME-Version: 1.0',
-    'Content-Type: text/html; charset=utf-8',
-    '',
-    htmlBody,
   ].filter(Boolean);
 
-  const raw = mimeLines.join('\r\n');
+  var raw;
+  if (inlineParts.length > 0) {
+    // Multipart/related path — body + N image parts under a single boundary.
+    raw = _buildMultipartRelatedMime(baseHeaders, htmlBody, inlineParts);
+  } else {
+    // Single-part path — same shape as pre-Phase-4 emails, no overhead.
+    var mimeLines = baseHeaders.slice();
+    mimeLines.push('Content-Type: text/html; charset=utf-8');
+    mimeLines.push('');
+    mimeLines.push(htmlBody);
+    raw = mimeLines.join('\r\n');
+  }
+
   const encoded = btoa(unescape(encodeURIComponent(raw)))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
@@ -712,7 +853,7 @@ function renderCalendarCreateModal() {
     +'<h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">Schedule Meeting</h3>'
     +'<button onclick="_calCreateOpen=false;renderPage()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button>'
     +'</div>'
-    +'<div style="padding:20px;display:flex;flex-direction:column;gap:14px">'
+    +'<div class="modal-body" style="display:flex;flex-direction:column;gap:14px">'
     +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Title *</label>'
     +'<input class="inp" id="cal_title" value="'+d.title+'" placeholder="e.g. Measure appointment — Richmond"></div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">'

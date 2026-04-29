@@ -347,6 +347,25 @@ function logJobAudit(jobId, action, detail, oldVal, newVal) {
   log.unshift(entry);
   saveJobAuditLog(jobId, log);
   if(_sb) dbInsert('job_audit', {job_id:jobId, action:action, detail:detail||'', by_user:user.name});
+  // Brief 2 Phase 2: also write to the unified audit log so the Jobs CRM
+  // audit tab keeps working AND the global audit page sees these entries.
+  // Don't replace getJobAuditLog — the Jobs CRM tab still reads it directly.
+  if (typeof appendAuditEntry === 'function') {
+    // Map common job-audit action verbs to the canonical AUDIT_ACTIONS keys.
+    // Unmapped actions fall through to the generic job.field_edited bucket.
+    var mappedAction = 'job.field_edited';
+    if (/status/i.test(action)) mappedAction = 'job.status_changed';
+    else if (/cad/i.test(action)) mappedAction = 'job.cad_saved';
+    else if (/final\s*sign/i.test(action)) mappedAction = 'job.final_signed';
+    else if (/cm|check\s*measure/i.test(action)) mappedAction = 'job.cm_completed';
+    appendAuditEntry({
+      entityType:'job', entityId:jobId, action:mappedAction,
+      summary:action + (detail ? ' — ' + detail : ''),
+      before:(oldVal != null && oldVal !== '') ? oldVal : null,
+      after: (newVal != null && newVal !== '') ? newVal : null,
+      metadata:{ rawAction:action },
+    });
+  }
 }
 
 // ── Job Files (localStorage-backed + Supabase) ─────────────────────────────
@@ -381,6 +400,51 @@ function removeJobFile(jobId, fileId) {
 // ── Progress Claims ─────────────────────────────────────────────────────────
 function getJobClaims(jobId) { try{return JSON.parse(localStorage.getItem('spartan_claims_'+jobId)||'[]');}catch(e){return [];} }
 function saveJobClaims(jobId, claims) { localStorage.setItem('spartan_claims_'+jobId, JSON.stringify(claims)); }
+
+// Brief 4 Phase 3: mark a single progress claim as paid. Extracted from
+// the previously-inline onclick handler in 22-jobs-page.js so the
+// commission realisation hook for the 'final_payment' gate can fire when
+// the LAST outstanding claim flips to paid. The hook is gated by the
+// linked deal's configured realisationGate so other gate configurations
+// don't fire prematurely. Idempotent (calling on an already-paid claim
+// is a no-op for state changes; never blocks on commission errors).
+function markJobClaimPaid(jobId, claimId) {
+  var claims = getJobClaims(jobId);
+  var clIdx = claims.findIndex(function (c) { return c.id === claimId; });
+  if (clIdx < 0) return;
+  var cl = claims[clIdx];
+  if (cl.status === 'paid') return; // already paid — no-op
+  var paidDate = new Date().toISOString().slice(0, 10);
+  claims[clIdx] = Object.assign({}, cl, { status: 'paid', paidDate: paidDate });
+  saveJobClaims(jobId, claims);
+  if (typeof logJobAudit === 'function') {
+    logJobAudit(jobId, 'Payment Received', cl.stage + ' $' + Math.round(cl.amountIncGst));
+  }
+
+  // If this was the LAST unpaid claim AND the deal's gate is
+  // 'final_payment', realise commission now. "Last" = no other claims
+  // remain in 'invoiced' or 'pending' status (zip_pending is a
+  // separate flow). Defensive guards for load-order safety.
+  var anyOutstanding = claims.some(function (c) {
+    return c.id !== claimId && (c.status === 'invoiced' || c.status === 'pending' || c.status === 'zip_pending');
+  });
+  if (!anyOutstanding && typeof realiseCommission === 'function' && typeof getEffectiveRuleForRep === 'function') {
+    try {
+      var jobs = (typeof getState === 'function') ? (getState().jobs || []) : [];
+      var job = jobs.find(function (j) { return j.id === jobId; });
+      if (job && job.dealId) {
+        var deal = (getState().deals || []).find(function (d) { return d.id === job.dealId; });
+        if (deal) {
+          var rule = getEffectiveRuleForRep(deal.rep, deal.branch);
+          if (rule && rule.realisationGate === 'final_payment') {
+            realiseCommission(job.dealId, 'final_payment');
+          }
+        }
+      }
+    } catch (e) { /* defensive — never block payment recording */ }
+  }
+  if (typeof renderPage === 'function') renderPage();
+}
 
 // Auto-generate progress claim invoice linked to job + invoicing system.
 // Keep the record shape in sync with createInvoice() in 25-invoicing.js —

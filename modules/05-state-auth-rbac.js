@@ -4,6 +4,473 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════════
+// UNIFIED AUDIT LOG (Module 01 — primitive only, Brief 2 Phase 1)
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Forensic record of who changed what, when, on any entity. Single localStorage
+// key `spartan_audit_log` holds an array of entries, capped at 5000 entries
+// (oldest pruned on overflow with a `system.audit_pruned` marker entry left
+// behind so the gap is visible).
+//
+// This phase ships only the primitive: append, query, filter. No UI yet (that's
+// Phase 3) and no wiring into existing call sites yet (that's Phase 2). The
+// helper is safe to call from any code path including during boot — guards
+// against missing getCurrentUser() with a 'system' fallback.
+//
+// Entry shape:
+//   id          'aud_' + Date.now() + '_' + 6-char random
+//   timestamp   ISO string (server-trustable enough; clock skew is fine)
+//   userId      from getCurrentUser() or 'system' if no user context
+//   userName    same source
+//   entityType  'deal' | 'contact' | 'lead' | 'job' | 'invoice' |
+//               'user' | 'settings' | 'commission' | 'rbac' |
+//               'integration' | 'system'
+//   entityId    string or null (some actions like settings have no entity)
+//   action      key from AUDIT_ACTIONS
+//   summary     single human-readable line for the UI table
+//   before      object snapshot of changed fields, or null
+//   after       object snapshot of changed fields, or null
+//   metadata    action-specific extras: {source:'drag'}, {competitor:'X'}, etc.
+//   branch      copied from current user or entity for state scoping
+
+// Canonical action vocabulary. Adding a new audit action requires adding its
+// key here first so the UI knows how to render it. Keys are dot-prefixed by
+// entity type for grep-ability.
+var AUDIT_ACTIONS = Object.freeze({
+  // Deal lifecycle
+  'deal.stage_changed':       'Stage changed',
+  'deal.field_edited':        'Deal edited',
+  'deal.won_marked':          'Deal won',
+  'deal.lost_marked':         'Deal lost',
+  'deal.won_unwound':         'Won deal cancelled',
+  'deal.quote_selected':      'Won quote selected',
+  // Contact + lead
+  'contact.field_edited':     'Contact edited',
+  'contact.created':          'Contact created',
+  'lead.field_edited':        'Lead edited',
+  'lead.created':             'Lead created',
+  'lead.converted':           'Lead converted to deal',
+  // Job + invoice
+  'job.field_edited':         'Job edited',
+  'job.status_changed':       'Job status changed',
+  'job.cad_saved':            'CAD design saved',
+  'job.final_signed':         'Final design signed',
+  'job.cm_completed':         'Check measure completed',
+  'invoice.created':          'Invoice created',
+  'invoice.sent':             'Invoice sent',
+  'invoice.paid':             'Invoice paid',
+  // Users + RBAC
+  'user.created':             'User created',
+  'user.role_changed':        'User role changed',
+  'user.activated':           'User activated',
+  'user.deactivated':         'User deactivated',
+  'user.login':               'User logged in',
+  'user.permissions_changed': 'User permissions changed',
+  'rbac.role_changed':        'Role permissions changed',
+  // Settings
+  'settings.template_edited': 'Email/SMS template edited',
+  'settings.signature_edited': 'Email signature edited',
+  'settings.status_edited':   'Custom status edited',
+  'settings.field_edited':    'Custom field edited',
+  'settings.tag_edited':      'Tag edited',
+  'settings.lost_reason_edited': 'Lost reasons edited',
+  'settings.phone_edited':    'Phone & IVR settings edited',
+  // Commission
+  'commission.rules_updated': 'Commission rules updated',
+  'commission.accrued':       'Commission accrued',
+  'commission.realised':      'Commission realised',
+  'commission.paid':          'Commission marked paid',
+  'commission.unpaid':        'Commission marked unpaid',
+  'commission.clawed_back':   'Commission clawed back',
+  'commission.pay_run_finalised':  'Pay run finalised',
+  'commission.pay_run_voided':     'Pay run voided',
+  'commission.pay_run_backfilled': 'Pay run backfilled',
+  // Integrations
+  'integration.connected':      'Integration connected',
+  'integration.disconnected':   'Integration disconnected',
+  'integration.credential_changed': 'Integration credentials changed',
+  // System / housekeeping
+  'system.audit_pruned':           'Audit log pruned',
+  'system.commission_state_migrated': 'Commission state migrated',
+  'system.dealtype_backfilled':    'Deal type backfilled',
+});
+
+var AUDIT_LOG_KEY = 'spartan_audit_log';
+var AUDIT_LOG_CAP = 5000;
+var AUDIT_PRUNE_BATCH = 1000;
+
+// Read the full audit log from localStorage. Always returns an array (never
+// null) so callers can chain .filter without guards.
+function _readAuditLog() {
+  try {
+    var raw = localStorage.getItem(AUDIT_LOG_KEY);
+    if (!raw) return [];
+    var arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) { return []; }
+}
+
+function _writeAuditLog(arr) {
+  try { localStorage.setItem(AUDIT_LOG_KEY, JSON.stringify(arr)); } catch (e) {}
+}
+
+// Public — append a single audit entry. Fills in id/timestamp/userId/userName
+// from current context. Mirrors to Supabase if `_sb` is available; failure to
+// mirror is logged once but never throws. Returns the persisted entry so the
+// caller can reference its id (e.g. for later correlation).
+function appendAuditEntry(entry) {
+  if (!entry || !entry.action) return null;
+
+  var cu = (typeof getCurrentUser === 'function') ? (getCurrentUser() || {}) : {};
+  var nowIso = new Date().toISOString();
+  var rand = Math.random().toString(36).slice(2, 8);
+
+  var fullEntry = {
+    id:         entry.id || ('aud_' + Date.now() + '_' + rand),
+    timestamp:  entry.timestamp || nowIso,
+    userId:     entry.userId || cu.id || 'system',
+    userName:   entry.userName || cu.name || 'System',
+    entityType: entry.entityType || null,
+    entityId:   entry.entityId || null,
+    action:     entry.action,
+    summary:    entry.summary || (AUDIT_ACTIONS[entry.action] || entry.action),
+    before:     (entry.before === undefined) ? null : entry.before,
+    after:      (entry.after === undefined) ? null : entry.after,
+    metadata:   entry.metadata || null,
+    branch:     entry.branch || cu.branch || null,
+  };
+
+  var log = _readAuditLog();
+
+  // Retention: if the log would exceed the cap, drop the oldest batch and
+  // leave a marker entry behind so the gap is visible in the timeline. The
+  // marker is recorded BEFORE the new entry so it sits chronologically with
+  // the deletion event.
+  if (log.length >= AUDIT_LOG_CAP) {
+    var removed = log.splice(0, AUDIT_PRUNE_BATCH);
+    var firstTs = (removed[0] && removed[0].timestamp) || '';
+    var lastTs  = (removed[removed.length - 1] && removed[removed.length - 1].timestamp) || '';
+    var pruneMarker = {
+      id:         'aud_' + Date.now() + '_prune_' + Math.random().toString(36).slice(2, 6),
+      timestamp:  nowIso,
+      userId:     'system',
+      userName:   'System',
+      entityType: 'system',
+      entityId:   null,
+      action:     'system.audit_pruned',
+      summary:    'Pruned ' + removed.length + ' oldest audit entries (' + firstTs.slice(0,10) + ' → ' + lastTs.slice(0,10) + ')',
+      before:     null,
+      after:     { droppedCount: removed.length, fromTimestamp: firstTs, toTimestamp: lastTs },
+      metadata:   null,
+      branch:     null,
+    };
+    log.push(pruneMarker);
+    if (typeof dbInsert === 'function' && typeof _sb !== 'undefined' && _sb) {
+      try { dbInsert('audit_log', _auditEntryToDb(pruneMarker)); } catch (e) {}
+    }
+  }
+
+  log.push(fullEntry);
+  _writeAuditLog(log);
+
+  // Mirror to Supabase. Soft dependency — table may not exist yet (the
+  // SQL migration ships in Phase 2/3), in which case dbInsert errors get
+  // swallowed once via the existing _dbWarnOnce helper in 01-persistence.js.
+  if (typeof dbInsert === 'function' && typeof _sb !== 'undefined' && _sb) {
+    try { dbInsert('audit_log', _auditEntryToDb(fullEntry)); } catch (e) {}
+  }
+
+  return fullEntry;
+}
+
+// snake_case mapping for Supabase. Mirrors the actToDb / dealToDb pattern
+// from 01-persistence.js. Keep in sync with the SQL schema in Phase 2/3.
+function _auditEntryToDb(e) {
+  return {
+    id:          e.id,
+    timestamp:   e.timestamp,
+    user_id:     e.userId,
+    user_name:   e.userName,
+    entity_type: e.entityType,
+    entity_id:   e.entityId,
+    action:      e.action,
+    summary:     e.summary,
+    before:      e.before,
+    after:       e.after,
+    metadata:    e.metadata,
+    branch:      e.branch,
+  };
+}
+
+// Public — query the audit log. Optional filter shape:
+//   {entityType, entityId, userId, action, from, to}
+// `from` / `to` are ISO date strings (inclusive on both ends). Returns
+// entries newest-first. With no filter, returns everything (capped by the
+// log itself, not by the call).
+function getAuditLog(filter) {
+  filter = filter || {};
+  var log = _readAuditLog();
+  var out = log.filter(function(e) {
+    if (filter.entityType && e.entityType !== filter.entityType) return false;
+    if (filter.entityId && e.entityId !== filter.entityId) return false;
+    if (filter.userId && e.userId !== filter.userId) return false;
+    if (filter.action && e.action !== filter.action) return false;
+    if (filter.from && e.timestamp < filter.from) return false;
+    if (filter.to && e.timestamp > filter.to) return false;
+    return true;
+  });
+  // Newest first
+  out.sort(function(a, b) { return (b.timestamp || '').localeCompare(a.timestamp || ''); });
+  return out;
+}
+
+// Public — convenience wrapper for the inline audit timeline on entity
+// detail views. Equivalent to getAuditLog({entityType, entityId}).
+function getAuditForEntity(entityType, entityId) {
+  return getAuditLog({ entityType: entityType, entityId: entityId });
+}
+
+// ── Audit page UI (Brief 2 Phase 3) ─────────────────────────────────────────
+// Module-local filter + pagination state. Lives outside _state because audit
+// browsing is a transient admin activity — survives renderPage rebuilds via
+// the input-id focus-restoration mechanism in 99-init.js.
+var auditPageFilter = { entityType: '', userId: '', action: '', dateFrom: '', dateTo: '', search: '' };
+var auditPageNum = 0;
+var auditPageExpanded = {};
+var _auditSearchTimer = null;
+
+var AUDIT_ENTITY_TYPES = ['deal', 'contact', 'lead', 'job', 'invoice', 'user', 'settings', 'commission', 'integration', 'system'];
+var AUDIT_PAGE_SIZE = 50;
+
+function setAuditFilter(field, value) {
+  auditPageFilter[field] = value;
+  auditPageNum = 0; // any filter change resets pagination
+  if (field === 'search') {
+    // Debounce keystrokes — full-page rerender on every char is wasteful.
+    if (_auditSearchTimer) clearTimeout(_auditSearchTimer);
+    _auditSearchTimer = setTimeout(function () { renderPage(); }, 300);
+  } else {
+    renderPage();
+  }
+}
+function clearAuditFilters() {
+  auditPageFilter = { entityType: '', userId: '', action: '', dateFrom: '', dateTo: '', search: '' };
+  auditPageNum = 0;
+  renderPage();
+}
+function setAuditPage(n) {
+  auditPageNum = Math.max(0, n);
+  renderPage();
+}
+function toggleAuditExpand(entryId) {
+  auditPageExpanded[entryId] = !auditPageExpanded[entryId];
+  renderPage();
+}
+
+// CSV export — matches the columns the table renders. Quotes/escapes per RFC 4180.
+function exportAuditCsv() {
+  var entries = _filteredAuditEntries();
+  var rows = [['Timestamp','User','Entity Type','Entity ID','Action','Summary','Branch','Before','After','Metadata']];
+  entries.forEach(function (e) {
+    rows.push([
+      e.timestamp || '',
+      e.userName || '',
+      e.entityType || '',
+      e.entityId || '',
+      AUDIT_ACTIONS[e.action] || e.action || '',
+      e.summary || '',
+      e.branch || '',
+      e.before == null ? '' : JSON.stringify(e.before),
+      e.after == null ? '' : JSON.stringify(e.after),
+      e.metadata == null ? '' : JSON.stringify(e.metadata),
+    ]);
+  });
+  var csv = rows.map(function (r) {
+    return r.map(function (cell) {
+      var s = String(cell == null ? '' : cell);
+      if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    }).join(',');
+  }).join('\n');
+  var blob = new Blob([csv], { type: 'text/csv' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'spartan-audit-' + new Date().toISOString().slice(0, 10) + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  if (typeof addToast === 'function') addToast('Audit log exported (' + entries.length + ' rows)', 'success');
+}
+
+// Internal — apply current filters to the audit log. Used by both the table
+// and the CSV export so they always agree.
+function _filteredAuditEntries() {
+  var f = auditPageFilter;
+  var q = (f.search || '').toLowerCase().trim();
+  return getAuditLog({
+    entityType: f.entityType || undefined,
+    userId: f.userId || undefined,
+    action: f.action || undefined,
+    from: f.dateFrom || undefined,
+    to: f.dateTo ? (f.dateTo + 'T23:59:59.999Z') : undefined,
+  }).filter(function (e) {
+    if (!q) return true;
+    var hay = ((e.summary || '') + ' ' + (e.entityId || '') + ' ' + (e.userName || '')).toLowerCase();
+    return hay.indexOf(q) >= 0;
+  });
+}
+
+// Resolve an entity reference to a click-through URL. Returns an onclick
+// string or '' if the entity type doesn't have a detail page.
+function _auditEntityNav(entityType, entityId) {
+  if (!entityType || !entityId) return '';
+  if (entityType === 'deal') return "setState({dealDetailId:'" + entityId + "',page:'deals'})";
+  if (entityType === 'lead') return "setState({leadDetailId:'" + entityId + "',page:'leads'})";
+  if (entityType === 'contact') return "setState({contactDetailId:'" + entityId + "',page:'contacts'})";
+  if (entityType === 'job') return "setState({jobDetailId:'" + entityId + "',page:'jobs'})";
+  return '';
+}
+
+function renderAuditPage() {
+  if (!hasPermission('system.audit_log')) {
+    return '<div style="max-width:540px;margin:80px auto;text-align:center"><div style="font-size:42px;margin-bottom:8px">🔒</div><h2 style="font-size:18px;font-weight:700;margin:0 0 8px">No audit access</h2><p style="font-size:13px;color:#6b7280;margin:0">Ask an admin to grant the <code>system.audit_log</code> permission to your role.</p></div>';
+  }
+
+  var allFiltered = _filteredAuditEntries();
+  var totalEntries = allFiltered.length;
+  var totalPages = Math.max(1, Math.ceil(totalEntries / AUDIT_PAGE_SIZE));
+  if (auditPageNum >= totalPages) auditPageNum = totalPages - 1;
+  var pageStart = auditPageNum * AUDIT_PAGE_SIZE;
+  var pageEntries = allFiltered.slice(pageStart, pageStart + AUDIT_PAGE_SIZE);
+
+  // Distinct user list for the filter dropdown — pulled from the log itself
+  // so deactivated/deleted users still show up if they have historical entries.
+  var userOpts = {};
+  getAuditLog().forEach(function (e) {
+    if (e.userId) userOpts[e.userId] = e.userName || e.userId;
+  });
+  var users = Object.keys(userOpts).map(function (id) { return { id: id, name: userOpts[id] }; })
+    .sort(function (a, b) { return (a.name || '').localeCompare(b.name || ''); });
+
+  var hasFilters = !!(auditPageFilter.entityType || auditPageFilter.userId || auditPageFilter.action || auditPageFilter.dateFrom || auditPageFilter.dateTo || auditPageFilter.search);
+
+  var filterBar = ''
+    + '<div class="card" style="padding:14px 16px;margin-bottom:14px">'
+    +   '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:10px">'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Entity type</label>'
+    +       '<select class="sel" id="audit_entity_type" onchange="setAuditFilter(\'entityType\',this.value)">'
+    +         '<option value="">All</option>'
+    +         AUDIT_ENTITY_TYPES.map(function (t) { return '<option value="' + t + '"' + (auditPageFilter.entityType === t ? ' selected' : '') + '>' + t + '</option>'; }).join('')
+    +       '</select></div>'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">User</label>'
+    +       '<select class="sel" id="audit_user" onchange="setAuditFilter(\'userId\',this.value)">'
+    +         '<option value="">All</option>'
+    +         users.map(function (u) { return '<option value="' + u.id + '"' + (auditPageFilter.userId === u.id ? ' selected' : '') + '>' + (u.name || u.id) + '</option>'; }).join('')
+    +       '</select></div>'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Action</label>'
+    +       '<select class="sel" id="audit_action" onchange="setAuditFilter(\'action\',this.value)">'
+    +         '<option value="">All</option>'
+    +         Object.keys(AUDIT_ACTIONS).sort().map(function (k) { return '<option value="' + k + '"' + (auditPageFilter.action === k ? ' selected' : '') + '>' + AUDIT_ACTIONS[k] + ' (' + k + ')</option>'; }).join('')
+    +       '</select></div>'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">From</label>'
+    +       '<input class="inp" id="audit_from" type="date" value="' + (auditPageFilter.dateFrom || '') + '" onchange="setAuditFilter(\'dateFrom\',this.value)"></div>'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">To</label>'
+    +       '<input class="inp" id="audit_to" type="date" value="' + (auditPageFilter.dateTo || '') + '" onchange="setAuditFilter(\'dateTo\',this.value)"></div>'
+    +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Search summary</label>'
+    +       '<input class="inp" id="audit_search" type="search" placeholder="Free text…" value="' + (auditPageFilter.search || '').replace(/"/g, '&quot;') + '" oninput="setAuditFilter(\'search\',this.value)"></div>'
+    +   '</div>'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#6b7280">'
+    +     '<div>' + totalEntries + ' entr' + (totalEntries === 1 ? 'y' : 'ies') + (hasFilters ? ' (filtered)' : '') + '</div>'
+    +     '<div style="display:flex;gap:8px">'
+    +       (hasFilters ? '<button class="btn-w" onclick="clearAuditFilters()" style="font-size:12px">Clear filters</button>' : '')
+    +       '<button class="btn-w" onclick="exportAuditCsv()" style="font-size:12px">⬇ Export CSV</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+
+  // Table
+  var rows = pageEntries.map(function (e) {
+    var nav = _auditEntityNav(e.entityType, e.entityId);
+    var entityCell = e.entityType
+      ? (nav ? '<a href="javascript:void(0)" onclick="' + nav + '" style="color:#c41230;text-decoration:none;font-weight:500">' + e.entityType + (e.entityId ? '/' + e.entityId.slice(0, 12) : '') + '</a>'
+              : '<span style="color:#6b7280">' + e.entityType + (e.entityId ? '/' + e.entityId.slice(0, 12) : '') + '</span>')
+      : '<span style="color:#9ca3af">—</span>';
+    var actionLabel = AUDIT_ACTIONS[e.action] || e.action;
+    var ts = (e.timestamp || '').replace('T', ' ').slice(0, 19);
+    var hasDiff = e.before != null || e.after != null;
+    var expanded = auditPageExpanded[e.id];
+    var diffRow = (hasDiff && expanded) ? ''
+      + '<tr><td colspan="6" style="padding:0;background:#f9fafb;border-bottom:1px solid #e5e7eb">'
+      +   '<div style="padding:14px 18px;display:grid;grid-template-columns:1fr 1fr;gap:14px;font-size:11px">'
+      +     '<div><div style="font-weight:700;color:#b91c1c;margin-bottom:4px">BEFORE</div><pre style="background:#fff;padding:10px;border-radius:6px;border:1px solid #e5e7eb;overflow-x:auto;margin:0;font-family:monospace;font-size:11px;max-height:200px;overflow-y:auto">' + (e.before == null ? '(none)' : _escTextForAudit(JSON.stringify(e.before, null, 2))) + '</pre></div>'
+      +     '<div><div style="font-weight:700;color:#15803d;margin-bottom:4px">AFTER</div><pre style="background:#fff;padding:10px;border-radius:6px;border:1px solid #e5e7eb;overflow-x:auto;margin:0;font-family:monospace;font-size:11px;max-height:200px;overflow-y:auto">' + (e.after == null ? '(none)' : _escTextForAudit(JSON.stringify(e.after, null, 2))) + '</pre></div>'
+      +   '</div>'
+      +   (e.metadata ? '<div style="padding:0 18px 14px;font-size:11px;color:#6b7280">Metadata: <code style="background:#fff;padding:2px 6px;border-radius:4px;border:1px solid #e5e7eb">' + _escTextForAudit(JSON.stringify(e.metadata)) + '</code></div>' : '')
+      + '</td></tr>'
+      : '';
+    return ''
+      + '<tr style="border-bottom:1px solid #f0f0f0">'
+      +   '<td class="td" style="font-family:monospace;font-size:11px;white-space:nowrap;color:#6b7280">' + ts + '</td>'
+      +   '<td class="td" style="font-size:12px">' + (e.userName || '—') + '</td>'
+      +   '<td class="td" style="font-size:12px">' + entityCell + '</td>'
+      +   '<td class="td" style="font-size:12px;font-weight:500">' + actionLabel + '</td>'
+      +   '<td class="td" style="font-size:12px;color:#1a1a1a">' + (e.summary || '').replace(/</g, '&lt;') + '</td>'
+      +   '<td class="td" style="text-align:right">' + (hasDiff
+            ? '<button onclick="toggleAuditExpand(\'' + e.id + '\')" class="btn-g" style="font-size:11px;padding:3px 8px">' + (expanded ? '▾ Hide' : '▸ Show') + '</button>'
+            : '<span style="color:#9ca3af;font-size:11px">—</span>') + '</td>'
+      + '</tr>'
+      + diffRow;
+  }).join('');
+
+  var emptyState = pageEntries.length === 0
+    ? '<tr><td colspan="6" style="padding:60px 20px;text-align:center;color:#9ca3af;font-size:13px">No entries' + (hasFilters ? ' match the current filters' : ' yet') + '.</td></tr>'
+    : '';
+
+  // Pagination
+  var paginator = ''
+    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-top:1px solid #f0f0f0;font-size:12px;color:#6b7280">'
+    +   '<div>Showing ' + (pageEntries.length === 0 ? 0 : (pageStart + 1)) + '–' + (pageStart + pageEntries.length) + ' of ' + totalEntries + '</div>'
+    +   '<div style="display:flex;align-items:center;gap:8px">'
+    +     '<button class="btn-w" onclick="setAuditPage(' + (auditPageNum - 1) + ')" ' + (auditPageNum === 0 ? 'disabled' : '') + ' style="font-size:11px;padding:4px 10px">← Prev</button>'
+    +     '<span>Page ' + (auditPageNum + 1) + ' of ' + totalPages + '</span>'
+    +     '<button class="btn-w" onclick="setAuditPage(' + (auditPageNum + 1) + ')" ' + (auditPageNum >= totalPages - 1 ? 'disabled' : '') + ' style="font-size:11px;padding:4px 10px">Next →</button>'
+    +   '</div>'
+    + '</div>';
+
+  return ''
+    + '<div style="margin-bottom:18px"><h1 style="font-size:24px;font-weight:800;margin:0;font-family:Syne,sans-serif">📋 Audit Log</h1>'
+    +   '<p style="font-size:13px;color:#6b7280;margin:2px 0 0">Forensic record of every state change. Most recent first.</p></div>'
+    + filterBar
+    + '<div class="card" style="overflow:hidden">'
+    +   '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:900px">'
+    +     '<thead><tr>'
+    +       '<th class="th">Timestamp</th>'
+    +       '<th class="th">User</th>'
+    +       '<th class="th">Entity</th>'
+    +       '<th class="th">Action</th>'
+    +       '<th class="th">Summary</th>'
+    +       '<th class="th" style="text-align:right">Diff</th>'
+    +     '</tr></thead>'
+    +     '<tbody>' + (rows || emptyState) + '</tbody>'
+    +   '</table></div>'
+    +   paginator
+    + '</div>';
+}
+
+function _escTextForAudit(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// END Unified Audit Log
+// ══════════════════════════════════════════════════════════════════════════════
+
 // ── STATE ─────────────────────────────────────────────────────────────────────
 // ROLE-BASED ACCESS CONTROL (RBAC)
 var ALL_ROLES = [
@@ -280,6 +747,15 @@ var ALL_PERMISSIONS = [
   {key:'service.list',label:'Service Calls',module:'Service CRM',group:'service'},
   {key:'service.map',label:'Service Scheduler',module:'Service CRM',group:'service'},
   {key:'service.openings',label:'Install Openings',module:'Service CRM',group:'service'},
+  // Phone (Twilio Voice + SMS)
+  {key:'phone.access',label:'Phone & Voice Calls',module:'Phone',group:'phone'},
+  {key:'phone.sms',label:'Send SMS',module:'Phone',group:'phone'},
+  {key:'phone.recordings.own',label:'Listen to own call recordings',module:'Phone',group:'phone'},
+  {key:'phone.recordings.team',label:'Listen to team call recordings',module:'Phone',group:'phone'},
+  {key:'phone.recordings.all',label:'Listen to all call recordings',module:'Phone',group:'phone'},
+  {key:'phone.admin',label:'Manage phone & IVR settings',module:'Phone',group:'phone'},
+  // System
+  {key:'system.audit_log',label:'View global audit log',module:'System',group:'system'},
   // Data visibility
   {key:'data.view_values',label:'See job values & pricing',module:'Data Access',group:'data'},
   {key:'data.view_margins',label:'See profit margins & costs',module:'Data Access',group:'data'},
@@ -295,21 +771,27 @@ var DEFAULT_ROLE_PERMS = {
     'jobs.dashboard','jobs.list','jobs.signoff','jobs.schedule','jobs.planner','jobs.cmmap','jobs.revenue',
     'accounts.dashboard','accounts.outstanding',
     'service.list',
+    'phone.access','phone.sms','phone.recordings.team','phone.recordings.own',
     'data.view_values','data.view_margins','data.edit_jobs','data.cad_edit'],
   sales_rep: ['sales.dashboard','sales.contacts','sales.leads','sales.deals','sales.calendar','sales.commission',
     'jobs.dashboard','jobs.list',
+    'phone.access','phone.sms','phone.recordings.own',
     'data.view_values'],
   accounts: ['accounts.dashboard','accounts.outstanding','accounts.bills','accounts.weekly','accounts.cashflow','accounts.recon','accounts.branch','accounts.xero',
     'sales.invoicing','sales.dashboard',
     'jobs.dashboard','jobs.list','jobs.revenue',
+    'phone.access','phone.sms','phone.recordings.own',
     'data.view_values','data.view_margins'],
   production_manager: ['factory.dashboard','factory.queue','factory.board','factory.bom','factory.capacity','factory.dispatch',
     'jobs.dashboard','jobs.list','jobs.schedule',
+    'phone.access',
     'data.view_values','data.edit_jobs'],
   production_staff: ['factory.dashboard','factory.queue','factory.board','factory.bom','factory.dispatch'],
-  installer: ['jobs.list','jobs.schedule','jobs.cmmap','jobs.checkmeasure'],
+  installer: ['jobs.list','jobs.schedule','jobs.cmmap','jobs.checkmeasure',
+    'phone.access'],
   service_staff: ['service.list','service.map','service.openings',
-    'jobs.dashboard','jobs.list'],
+    'jobs.dashboard','jobs.list',
+    'phone.access','phone.sms','phone.recordings.own'],
   viewer: ['sales.dashboard','jobs.dashboard','factory.dashboard','accounts.dashboard','service.list'],
 };
 
@@ -317,7 +799,7 @@ var DEFAULT_ROLE_PERMS = {
 var PAGE_PERM_MAP = {
   dashboard:'sales.dashboard',contacts:'sales.contacts',leads:'sales.leads',deals:'sales.deals',
   won:'sales.deals',calendar:'sales.calendar',invoicing:'sales.invoicing',commission:'sales.commission',
-  reports:'sales.reports',settings:'sales.settings',email:'sales.deals',phone:'sales.deals',map:'sales.deals',profile:'sales.dashboard',
+  reports:'sales.reports',settings:'sales.settings',email:'sales.deals',phone:'phone.access',map:'sales.deals',profile:'sales.dashboard',
   jobdashboard:'jobs.dashboard',jobs:'jobs.list',finalsignoff:'jobs.signoff',schedule:'jobs.schedule',
   capacity:'jobs.planner',cmmap:'jobs.cmmap',weeklyrev:'jobs.revenue',jobsettings:'sales.settings',
   factorydash:'factory.dashboard',prodqueue:'factory.queue',prodboard:'factory.board',
@@ -326,6 +808,7 @@ var PAGE_PERM_MAP = {
   accweekly:'accounts.weekly',acccashflow:'accounts.cashflow',accrecon:'accounts.recon',
   accbranch:'accounts.branch',accxero:'accounts.xero',
   servicelist:'service.list',servicemap:'service.map',svcschedule:'service.openings',
+  audit:'system.audit_log',
 };
 
 function getUserPerms(user) {
@@ -373,6 +856,19 @@ var e=document.getElementById('loginEmail').value.trim().toLowerCase();
 var p=document.getElementById('loginPw').value;
 var u=getUsers().find(function(x){return x.email.toLowerCase()===e&&x.pw===p&&x.active;});
 if(!u){var el=document.getElementById('loginErr');el.textContent='Invalid email/password or account deactivated.';el.style.display='block';return;}
+// Audit successful login. We don't audit failures by design — that would
+// give an attacker an oracle to enumerate valid usernames.
+if (typeof appendAuditEntry === 'function') {
+  appendAuditEntry({
+    entityType: 'user',
+    entityId: u.id,
+    action: 'user.login',
+    summary: u.name + ' signed in',
+    userId: u.id,
+    userName: u.name,
+    branch: u.branch || null,
+  });
+}
 setCurrentUser(u.id);location.reload();
 }
 var adminEditingUser = null;
@@ -454,19 +950,46 @@ function adminSaveUser(){
     if (serviceStates) newUser.serviceStates = serviceStates;
     users.push(newUser);
     saveUsers(users);addToast(name+' added','success');
+    if (typeof appendAuditEntry === 'function') {
+      appendAuditEntry({
+        entityType:'user', entityId:newUser.id, action:'user.created',
+        summary:'Created user: '+name+' ('+role+')',
+        after:{ name:name, email:email, role:role, branch:branch, active:true, customPerms:customPerms, serviceStates:serviceStates },
+        branch:branch,
+      });
+    }
   } else {
     var u = users.find(function(x){return x.id===adminEditingUser;});
     if(!u)return;
+    // Capture before-state for audit. Snapshot the fields that can change.
+    var beforeSnapshot = { name:u.name, email:u.email, role:u.role, branch:u.branch, customPerms:u.customPerms||null, serviceStates:u.serviceStates||null, active:u.active!==false };
+    var roleChanged = u.role !== role;
     u.name=name;u.email=email;u.role=role;u.branch=branch;u.phone=phone;
     u.initials=name.split(' ').map(function(w){return w[0];}).join('').slice(0,2).toUpperCase();
     if (customPerms) u.customPerms = customPerms; else delete u.customPerms;
     if (serviceStates) u.serviceStates = serviceStates; else delete u.serviceStates;
     if (d.pw) u.pw = d.pw;
     saveUsers(users);addToast(name+' updated','success');
+    if (typeof appendAuditEntry === 'function') {
+      var afterSnapshot = { name:u.name, email:u.email, role:u.role, branch:u.branch, customPerms:u.customPerms||null, serviceStates:u.serviceStates||null, active:u.active!==false };
+      // Action key reflects the most significant change. Role change wins
+      // because it has the largest blast radius for permissions.
+      var actionKey = roleChanged ? 'user.role_changed' : 'user.permissions_changed';
+      var summaryParts = [];
+      if (roleChanged) summaryParts.push('role: '+beforeSnapshot.role+' → '+role);
+      if (beforeSnapshot.branch !== branch) summaryParts.push('branch: '+(beforeSnapshot.branch||'—')+' → '+branch);
+      var summary = name + (summaryParts.length ? ' — '+summaryParts.join(', ') : ' updated');
+      appendAuditEntry({
+        entityType:'user', entityId:u.id, action:actionKey,
+        summary:summary,
+        before:beforeSnapshot, after:afterSnapshot,
+        branch:branch,
+      });
+    }
   }
   adminEditingUser=null; adminEditDraft=null; renderPage();
 }
-function adminToggleUser(uid){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;if(u.id===(getCurrentUser()||{}).id){addToast('Cannot deactivate yourself','error');return;}u.active=!u.active;saveUsers(us);addToast(u.name+(u.active?' activated':' deactivated'));renderPage();}
+function adminToggleUser(uid){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;if(u.id===(getCurrentUser()||{}).id){addToast('Cannot deactivate yourself','error');return;}var wasActive=u.active;u.active=!u.active;saveUsers(us);addToast(u.name+(u.active?' activated':' deactivated'));if(typeof appendAuditEntry==='function'){appendAuditEntry({entityType:'user',entityId:u.id,action:u.active?'user.activated':'user.deactivated',summary:(u.active?'Activated':'Deactivated')+' user: '+u.name,before:{active:wasActive},after:{active:u.active},branch:u.branch||null});}renderPage();}
 function adminChangeRole(uid,nr){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;u.role=nr;saveUsers(us);addToast(u.name+' role: '+nr);renderPage();}
 function adminChangeBranch(uid,nb){var us=getUsers();var u=us.find(function(x){return x.id===uid;});if(!u)return;u.branch=nb;saveUsers(us);renderPage();}
 function adminDeleteUser(uid){if(!confirm('Permanently delete this user? This cannot be undone.'))return;saveUsers(getUsers().filter(function(u){return u.id!==uid;}));if(typeof dbDelete==='function')dbDelete('users',uid);addToast('User deleted','warning');adminEditingUser=null;renderPage();}
@@ -485,7 +1008,7 @@ function renderAdminUserModal(){
   var deletableId = (!isNew && existingUser && existingUser.id !== (getCurrentUser()||{}).id) ? existingUser.id : null;
   return '<div class="modal-bg" onclick="if(event.target===this)adminCloseModal()"><div class="modal" style="max-width:480px">'
   +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">'+(isNew?'Add New User':'Edit User: '+_escAttr(titleName))+'</h3><button onclick="adminCloseModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button></div>'
-  +'<div style="padding:20px;display:flex;flex-direction:column;gap:14px">'
+  +'<div class="modal-body" style="display:flex;flex-direction:column;gap:14px">'
   +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Full Name *</label><input class="inp" id="au_name" value="'+_escAttr(d.name)+'" placeholder="Jane Smith" oninput="adminDraftSet(\'name\',this.value)"></div>'
   +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Email *</label><input class="inp" id="au_email" value="'+_escAttr(d.email)+'" type="email" placeholder="jane@spartandg.com.au" oninput="adminDraftSet(\'email\',this.value)"></div></div>'
   +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Role</label><select class="sel" id="au_role" onchange="adminDraftSet(\'role\',this.value)">'
@@ -553,6 +1076,24 @@ let _state = {
   leadDetailId: null,
   contactDetailId: null,
   contactActivities: {}, // keyed by contactId, shared across deals/leads/contacts
+  // Twilio Voice (stage 2). activeCall is null when the rep isn't on a call;
+  // when set, the active-call banner renders. callLogs is loaded from
+  // public.call_logs by dbLoadAll and kept fresh by the realtime subscription.
+  activeCall: null,
+  callLogs: [],
+  // Stage 3 — set when an inbound call is ringing this rep's browser. The
+  // incoming-call banner reads this to render the Answer/Decline UI.
+  // Cleared on accept (promotes to activeCall), decline, or auto-timeout.
+  incomingCall: null,
+  // Stage 4 — Twilio SMS. smsLogs is a flat array of all messages (in/out)
+  // loaded by dbLoadAll, kept fresh by realtime. The SMS tab in detail panels
+  // filters this by entity_id. smsTemplates is the saved template library.
+  smsLogs: [],
+  smsTemplates: [],
+  // Stage 6 — Phone & IVR admin-editable settings. Singleton row in
+  // public.phone_settings. Loaded by dbLoadAll, kept fresh by realtime so
+  // changes by an admin in another tab propagate within ~1s.
+  phoneSettings: null,
   leads: JSON.parse(JSON.stringify(LEADS_DATA)),
   leadFilter: 'All',
   leadSearch: '',

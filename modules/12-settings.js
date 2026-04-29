@@ -43,12 +43,22 @@ let stConfirmDeleteId = null;
 
 function renderSettings(){
   const {dealFields,dealStatuses,leadStatuses,contactStatuses,leadFields,contactFields} = getState();
+  // Brief 4 Phase 5: gate Commission Rules to admin + sales_manager. Other
+  // tabs aren't role-filtered today (the page assumes any logged-in user
+  // who reaches Settings has access). Filtering at the TABS-array level
+  // hides the tab from non-privileged users entirely.
+  const _settCu = (typeof getCurrentUser === 'function') ? getCurrentUser() || {} : {};
+  const _canSeeCommissionRules = _settCu.role === 'admin' || _settCu.role === 'sales_manager';
   const TABS=[
     ['email','Email & Gmail'],
     ['pipelines','Pipeline Manager'],
     ['customfields','Custom Fields'],
     ['statuses','Statuses'],
+    ['lostreasons','Lost Reasons'],
     ['tags','Tags'],
+    ['smstemplates','SMS Templates'],
+    ['phoneivr','Phone & IVR'],
+    ...(_canSeeCommissionRules ? [['commission_rules','Commission Rules']] : []),
     ['installers','Installers'],
     ['users','Users & Roles'],
   ];
@@ -305,6 +315,42 @@ function renderSettings(){
       <button class="btn-r" onclick="stAddStatus('${stEntityTab}')">${Icon({n:'plus',size:14})} Add Status</button>
     `;
 
+  // ── LOST REASONS (Brief 1) ─────────────────────────────────────────────────
+  } else if(settTab==='lostreasons'){
+    var _cuLR = getCurrentUser() || {};
+    var _canEditLR = _cuLR.role === 'admin' || _cuLR.role === 'sales_manager';
+    var _lrList = (typeof getLostReasons === 'function') ? getLostReasons() : [];
+    if (!_canEditLR) {
+      content = '<div style="padding:30px;text-align:center;color:#9ca3af;font-size:13px">Only admins and sales managers can manage Lost Reasons.</div>';
+    } else {
+      content = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div style="font-size:13px;color:#6b7280">${_lrList.length} reason${_lrList.length!==1?'s':''} · drag-handle replaced with up/down for v1</div>
+          <button class="btn-r" onclick="lostReasonAddNew()" style="font-size:12px">+ Add reason</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${_lrList.map(function(r, i){
+            var isFirst = i === 0;
+            var isLast  = i === _lrList.length - 1;
+            return '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:'+(r.active?'#fff':'#f9fafb')+';border:1px solid #e5e7eb;border-radius:10px">'
+              +   '<div style="display:flex;flex-direction:column;gap:2px">'
+              +     (isFirst ? '<div style="height:14px"></div>' : '<button onclick="lostReasonMove(\''+r.id+'\',-1)" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:11px;line-height:1;padding:1px 4px">▲</button>')
+              +     (isLast  ? '<div style="height:14px"></div>' : '<button onclick="lostReasonMove(\''+r.id+'\',1)"  style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:11px;line-height:1;padding:1px 4px">▼</button>')
+              +   '</div>'
+              +   '<input id="lr_label_'+r.id+'" class="inp" value="'+(r.label||'').replace(/"/g,'&quot;')+'" oninput="lostReasonRename(\''+r.id+'\',this.value)" style="flex:1;font-size:13px"'+(r.active?'':' disabled')+'>'
+              +   '<span style="font-size:10px;font-family:monospace;color:#9ca3af;width:90px;text-align:right">'+r.id+'</span>'
+              +   '<button onclick="lostReasonToggleActive(\''+r.id+'\')" class="btn-w" style="font-size:11px;padding:4px 10px;'+(r.active?'':'background:#fef9c3;border-color:#fde68a;color:#92400e')+'">'+(r.active?'Active':'Inactive')+'</button>'
+              + '</div>';
+          }).join('')}
+        </div>
+        <div style="margin-top:18px;padding:14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px">
+          <div style="font-size:12px;color:#475569;line-height:1.7">
+            <strong style="color:#0369a1">Heads-up:</strong> Deactivating a reason hides it from the modal but leaves historical references intact — existing lost deals keep their original reason. Renaming a reason changes how it shows in reports without breaking any links. Don't delete reasons; deactivate them instead so historical data stays meaningful.
+          </div>
+        </div>
+      `;
+    }
+
   // ── TAGS ────────────────────────────────────────────────────────────────────
   } else if(settTab==='tags'){
     content=`<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px">
@@ -318,7 +364,165 @@ function renderSettings(){
         <button class="btn-r" onclick="const v=document.getElementById('newTag').value;if(v){tags=[...tags,v];addToast('Tag added','success');document.getElementById('newTag').value='';renderPage()}">Add</button>
       </div>`;
 
-  // ── SMS ──────────────────────────────────────────────────────────────────────
+  // ── SMS TEMPLATES (stage 4) ─────────────────────────────────────────────────
+  } else if(settTab==='smstemplates'){
+    var _tpls = getState().smsTemplates || [];
+    var _editingId = (typeof smsTemplateEditId !== 'undefined') ? smsTemplateEditId : null;
+    var _draft = (typeof smsTemplateDraft !== 'undefined' && smsTemplateDraft) ? smsTemplateDraft : { id:'', name:'', body:'' };
+    var _editing = _editingId ? _tpls.find(function(t){return t.id===_editingId;}) : (_editingId === 'new' ? _draft : null);
+
+    content=`
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div style="font-size:13px;color:#6b7280">${_tpls.length} template${_tpls.length!==1?'s':''} · 160-char single segment recommended</div>
+        ${_editingId ? '' : '<button class="btn-r" onclick="smsTemplateNew()" style="font-size:12px">+ New Template</button>'}
+      </div>
+
+      ${_editing ? (function(){
+        var bodyChars = (_editing.body || '').length;
+        var charColor = bodyChars > 160 ? '#dc2626' : bodyChars > 140 ? '#f59e0b' : '#6b7280';
+        return `<div style="padding:14px;background:#fff5f6;border:1.5px solid #fca5a5;border-radius:12px;margin-bottom:14px">
+          <div style="font-size:13px;font-weight:700;margin-bottom:10px">${_editingId==='new'?'New Template':'Edit Template'}</div>
+          <label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">Name</label>
+          <input id="smstplName" class="inp" value="${(_editing.name||'').replace(/"/g,'&quot;')}" placeholder="e.g. On My Way" style="font-size:13px;margin-bottom:10px" oninput="smsTemplateDraft={...smsTemplateDraft,name:this.value}">
+
+          <label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:4px">Body (use {{firstName}}, {{repName}}, {{dealTitle}}, {{suburb}})</label>
+          <textarea id="smstplBody" class="inp" rows="3" placeholder="Type the SMS body…" style="font-size:13px;resize:none;border-radius:8px;padding:8px 10px;margin-bottom:6px" oninput="smsTemplateDraft={...smsTemplateDraft,body:this.value};document.getElementById('smstplCount').textContent=this.value.length+'/160';document.getElementById('smstplCount').style.color=this.value.length>160?'#dc2626':this.value.length>140?'#f59e0b':'#6b7280'">${(_editing.body||'').replace(/</g,'&lt;')}</textarea>
+          <div id="smstplCount" style="font-size:11px;color:${charColor};margin-bottom:12px">${bodyChars}/160</div>
+
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button class="btn-w" onclick="smsTemplateCancel()" style="font-size:12px">Cancel</button>
+            <button class="btn-r" onclick="smsTemplateSave()" style="font-size:12px">Save</button>
+          </div>
+        </div>`;
+      })() : ''}
+
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${_tpls.length === 0 ? '<div style="padding:30px;text-align:center;color:#9ca3af;font-size:13px">No SMS templates yet. Click + New Template to create one.</div>' : ''}
+        ${_tpls.map(function(t){
+          return '<div style="padding:12px 14px;background:#f9fafb;border-radius:10px">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+              + '<div style="font-size:13px;font-weight:600">' + t.name + '</div>'
+              + '<div style="display:flex;gap:6px">'
+                + '<button onclick="smsTemplateEdit(\''+t.id+'\')" class="btn-g" style="font-size:11px;padding:3px 10px">Edit</button>'
+                + '<button onclick="smsTemplateDelete(\''+t.id+'\')" class="btn-g" style="font-size:11px;padding:3px 10px;color:#b91c1c">Delete</button>'
+              + '</div>'
+            + '</div>'
+            + '<div style="font-size:12px;color:#374151;background:#fff;padding:8px 10px;border-radius:6px;border:1px solid #e5e7eb;line-height:1.5">' + (t.body || '') + '</div>'
+          + '</div>';
+        }).join('')}
+      </div>
+
+      ${_tpls.length === 0 ? '<div style="margin-top:16px"><button class="btn-w" onclick="smsTemplateSeedDefaults()" style="font-size:12px">📥 Seed 5 default templates</button></div>' : ''}
+    `;
+
+  // ── PHONE & IVR (stage 6) ───────────────────────────────────────────────────
+  } else if(settTab==='phoneivr'){
+    var _isAdmin = (getCurrentUser()||{}).role === 'admin';
+    if (!_isAdmin) {
+      content = '<div style="padding:30px;text-align:center;color:#9ca3af;font-size:13px">Only admins can manage phone & IVR settings.</div>';
+    } else {
+      var _ps = getState().phoneSettings || {};
+      var _greeting = _ps.greeting || '';
+      var _vmGreeting = _ps.voicemail_greeting || '';
+      var _voiceName = _ps.voice_name || 'Polly.Nicole';
+      var _menu = _ps.ivr_menu || {};
+      var _bh = _ps.business_hours || { days:['Mon','Tue','Wed','Thu','Fri'], open_hour:8, close_hour:17 };
+
+      var todayCount = (getState().callLogs || []).filter(function(c){
+        if (!c.started_at) return false;
+        return c.started_at.slice(0, 10) === new Date().toISOString().slice(0, 10);
+      }).length;
+      var lastCall = (getState().callLogs || [])[0];
+      var lastCallLabel = lastCall ? new Date(lastCall.started_at).toISOString().slice(0, 16).replace('T', ' ') : 'Never';
+
+      content=`
+        <!-- Connection status -->
+        <div style="padding:16px;background:${window._twilioReady?'#f0fdf4':'#fef9c3'};border:1px solid ${window._twilioReady?'#86efac':'#fde68a'};border-radius:12px;margin-bottom:20px;display:flex;align-items:center;gap:14px">
+          <div style="font-size:24px">${window._twilioReady?'✓':'⚠'}</div>
+          <div style="flex:1">
+            <div style="font-size:14px;font-weight:700;color:${window._twilioReady?'#15803d':'#92400e'}">${window._twilioReady?'Phone connected':'Phone not connected'}</div>
+            <div style="font-size:12px;color:#6b7280;margin-top:2px">Account ${(window.TWILIO_ACCOUNT_SID_HINT||'AC...').slice(0,8)}… · Last call: ${lastCallLabel} · ${todayCount} calls today</div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button onclick="if(typeof twilioInit==='function'){twilioInit(true);addToast('Reconnecting…','info')}" class="btn-w" style="font-size:12px">Reconnect</button>
+            <button onclick="phoneTestCall()" class="btn-r" style="font-size:12px">Test call</button>
+          </div>
+        </div>
+
+        <!-- Greeting -->
+        <div style="margin-bottom:18px">
+          <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Greeting (played to inbound callers during business hours)</label>
+          <textarea id="ps_greeting" class="inp" rows="3" style="font-size:13px;resize:vertical;border-radius:8px;padding:8px 10px">${_greeting.replace(/</g,'&lt;')}</textarea>
+        </div>
+
+        <!-- Voicemail greeting -->
+        <div style="margin-bottom:18px">
+          <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Voicemail greeting (after-hours / no-answer)</label>
+          <textarea id="ps_vmGreeting" class="inp" rows="3" style="font-size:13px;resize:vertical;border-radius:8px;padding:8px 10px">${_vmGreeting.replace(/</g,'&lt;')}</textarea>
+        </div>
+
+        <!-- Voice picker -->
+        <div style="margin-bottom:18px">
+          <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Voice</label>
+          <select id="ps_voiceName" class="sel" style="font-size:13px;max-width:260px">
+            <option value="Polly.Nicole" ${_voiceName==='Polly.Nicole'?'selected':''}>Nicole (AU female)</option>
+            <option value="Polly.Russell" ${_voiceName==='Polly.Russell'?'selected':''}>Russell (AU male)</option>
+            <option value="Polly.Olivia-Neural" ${_voiceName==='Polly.Olivia-Neural'?'selected':''}>Olivia (AU female, neural)</option>
+          </select>
+        </div>
+
+        <!-- Business hours -->
+        <div style="margin-bottom:18px">
+          <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Business hours (calls outside this window go straight to voicemail)</label>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <div>
+              <span style="font-size:12px;color:#6b7280;margin-right:6px">Open</span>
+              <input id="ps_openHour" type="number" min="0" max="23" value="${_bh.open_hour}" class="inp" style="width:70px;font-size:13px">
+            </div>
+            <div>
+              <span style="font-size:12px;color:#6b7280;margin-right:6px">Close</span>
+              <input id="ps_closeHour" type="number" min="0" max="23" value="${_bh.close_hour}" class="inp" style="width:70px;font-size:13px">
+            </div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-left:6px">
+              ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(function(d){
+                var on = (_bh.days||[]).indexOf(d) >= 0;
+                return '<label style="display:flex;align-items:center;gap:4px;font-size:11px;padding:4px 9px;border-radius:6px;cursor:pointer;background:'+(on?'#dcfce7':'#f3f4f6')+';border:1px solid '+(on?'#86efac':'#e5e7eb')+'"><input type="checkbox" class="ps-day-cb" data-day="'+d+'" '+(on?'checked':'')+' style="width:12px;height:12px;accent-color:#15803d">'+d+'</label>';
+              }).join('')}
+            </div>
+          </div>
+        </div>
+
+        <!-- IVR menu -->
+        <div style="margin-bottom:18px">
+          <label style="font-size:13px;font-weight:600;color:#374151;display:block;margin-bottom:6px">IVR menu (digit → label → roles to ring)</label>
+          <div id="ps_menuRows" style="display:flex;flex-direction:column;gap:6px">
+            ${Object.keys(_menu).sort().map(function(d){
+              var row = _menu[d] || {};
+              return '<div class="ps-menu-row" data-digit="'+d+'" style="display:flex;gap:8px;align-items:center;padding:8px 10px;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb">'
+                + '<span style="font-size:14px;font-weight:700;width:28px;text-align:center">'+d+'</span>'
+                + '<input class="inp ps-menu-label" value="'+(row.label||'').replace(/"/g,'&quot;')+'" placeholder="Sales" style="font-size:12px;width:160px">'
+                + '<input class="inp ps-menu-roles" value="'+((row.roles||[]).join(', ')).replace(/"/g,'&quot;')+'" placeholder="sales_rep, sales_manager" style="font-size:12px;flex:1;font-family:monospace">'
+                + '<button onclick="phoneSettingsRemoveMenuRow(\''+d+'\')" class="btn-g" style="font-size:11px;padding:4px 10px;color:#b91c1c">Remove</button>'
+              + '</div>';
+            }).join('')}
+          </div>
+          <div style="margin-top:8px">
+            <button onclick="phoneSettingsAddMenuRow()" class="btn-w" style="font-size:12px">+ Add menu option</button>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;padding-top:12px;border-top:1px solid #f0f0f0;gap:8px">
+          <button onclick="phoneSettingsSave()" class="btn-r" style="font-size:13px;padding:8px 18px">Save settings</button>
+        </div>
+
+        <!-- Info -->
+        <div style="margin-top:20px;padding:12px 14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;font-size:12px;color:#475569;line-height:1.7">
+          <strong style="color:#0369a1">Heads-up:</strong> changes propagate to inbound calls within ~60 seconds (backend caches settings to keep call latency low). Account credentials (Auth Token, API keys) are stored in Vercel env vars — they cannot be edited here.
+        </div>
+      `;
+    }
+
+  // ── SMS (legacy stub kept for now) ──────────────────────────────────────────
   } else if(settTab==='_disabled_sms'){
     content=[
       ['Measure Confirmation','Hi {firstName}, your measure appointment is confirmed for {date} at {time}. Our team will be in touch if anything changes. – Spartan DG'],
@@ -342,7 +546,140 @@ function renderSettings(){
       <button class="btn-r" style="width:fit-content" onclick="addToast('Invoice settings saved','success')">Save Settings</button>
     </div>`;
 
-  // ── USERS ─────────────────────────────────────────────────────────────────────
+  // ── COMMISSION RULES (Brief 4 Phase 5) ────────────────────────────────────────
+  } else if(settTab==='commission_rules'){
+    var _ccu = getCurrentUser() || {};
+    var _commCanEdit = _ccu.role === 'admin' || _ccu.role === 'sales_manager';
+    if (!_commCanEdit || typeof getCommissionRules !== 'function') {
+      content = '<div style="padding:30px;text-align:center;color:#9ca3af;font-size:13px">Only admins and sales managers can manage commission rules.</div>';
+    } else {
+      var _commRules  = getCommissionRules();
+      var _commReps   = (typeof getUsers === 'function') ? getUsers().filter(function(u){return u.active && (u.role==='sales_rep' || u.role==='sales_manager' || u.role==='admin');}) : [];
+      var _commBranches = ['VIC','ACT','SA','NSW','QLD','WA','TAS','NT'];
+      var _commGateOptions = [['won','Won'],['final_signed','Final Sign-Off'],['final_payment','Final Payment']];
+      var _commEsc = function(v){ return (v==null?'':String(v)).replace(/"/g,'&quot;'); };
+
+      // Defaults section — base rate, age threshold/penalty, realisation gate radio
+      var defaultsHtml = ''
+        + '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:18px">'
+        +   '<div style="font-size:13px;font-weight:700;margin-bottom:12px">Defaults</div>'
+        +   '<p style="font-size:12px;color:#6b7280;margin:0 0 14px;line-height:1.5">Apply to every rep / branch unless overridden below.</p>'
+        +   '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px">'
+        +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Base rate (%)</label>'
+        +       '<input type="number" step="0.5" min="0" max="100" value="' + _commEsc(_commRules.defaults.baseRate) + '" onchange="setCommissionDefault(\'baseRate\',this.value)" style="width:100%;padding:6px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;font-family:Syne,sans-serif;font-weight:700"></div>'
+        +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Age threshold (days)</label>'
+        +       '<input type="number" step="1" min="0" value="' + _commEsc(_commRules.defaults.ageThresholdDays) + '" onchange="setCommissionDefault(\'ageThresholdDays\',this.value)" style="width:100%;padding:6px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px"></div>'
+        +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Age penalty (%)</label>'
+        +       '<input type="number" step="0.5" min="0" max="100" value="' + _commEsc(_commRules.defaults.agePenaltyPct) + '" onchange="setCommissionDefault(\'agePenaltyPct\',this.value)" style="width:100%;padding:6px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px"></div>'
+        +   '</div>'
+        +   '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:6px">Realisation gate</label>'
+        +     '<div style="display:flex;gap:14px;flex-wrap:wrap">'
+        +       _commGateOptions.map(function(opt){
+                  var checked = _commRules.defaults.realisationGate === opt[0];
+                  return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">'
+                       +   '<input type="radio" name="comm_default_gate" value="' + opt[0] + '"' + (checked?' checked':'') + ' onchange="setCommissionDefault(\'realisationGate\',\'' + opt[0] + '\')">'
+                       +   '<span>' + opt[1] + '</span>'
+                       + '</label>';
+                }).join('')
+        +     '</div>'
+        +   '</div>'
+        + '</div>';
+
+      // Per-rep section — table with rate / age threshold / penalty / gate
+      var perRepHtml = ''
+        + '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:18px">'
+        +   '<div style="font-size:13px;font-weight:700;margin-bottom:8px">Per Rep Overrides</div>'
+        +   '<p style="font-size:12px;color:#6b7280;margin:0 0 12px;line-height:1.5">Empty cells use the default. Changes save automatically and audit-log.</p>'
+        +   '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+        +     '<thead><tr style="background:#f9fafb">'
+        +       '<th style="text-align:left;padding:8px;font-weight:600;color:#6b7280">Rep</th>'
+        +       '<th style="text-align:center;padding:8px;font-weight:600;color:#6b7280">Rate (%)</th>'
+        +       '<th style="text-align:center;padding:8px;font-weight:600;color:#6b7280">Age threshold (d)</th>'
+        +       '<th style="text-align:center;padding:8px;font-weight:600;color:#6b7280">Age penalty (%)</th>'
+        +       '<th style="text-align:left;padding:8px;font-weight:600;color:#6b7280">Realisation gate</th>'
+        +     '</tr></thead><tbody>';
+      _commReps.forEach(function(u){
+        var rec = (_commRules.perRep || {})[u.name] || {};
+        perRepHtml += '<tr style="border-top:1px solid #f0f0f0">'
+          + '<td style="padding:8px"><div style="display:flex;align-items:center;gap:8px"><div style="width:24px;height:24px;background:#c41230;border-radius:50%;color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">' + u.initials + '</div>' + u.name + '</div></td>'
+          + '<td style="padding:8px;text-align:center"><input type="number" step="0.5" min="0" max="100" placeholder="default" value="' + (rec.baseRate != null ? _commEsc(rec.baseRate) : '') + '" onchange="setCommissionPerRep(\'' + u.name.replace(/'/g,"\\'") + '\',\'baseRate\',this.value)" style="width:80px;padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;text-align:center"></td>'
+          + '<td style="padding:8px;text-align:center"><input type="number" step="1" min="0" placeholder="default" value="' + (rec.ageThresholdDays != null ? _commEsc(rec.ageThresholdDays) : '') + '" onchange="setCommissionPerRep(\'' + u.name.replace(/'/g,"\\'") + '\',\'ageThresholdDays\',this.value)" style="width:80px;padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;text-align:center"></td>'
+          + '<td style="padding:8px;text-align:center"><input type="number" step="0.5" min="0" max="100" placeholder="default" value="' + (rec.agePenaltyPct != null ? _commEsc(rec.agePenaltyPct) : '') + '" onchange="setCommissionPerRep(\'' + u.name.replace(/'/g,"\\'") + '\',\'agePenaltyPct\',this.value)" style="width:80px;padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;text-align:center"></td>'
+          + '<td style="padding:8px"><select onchange="setCommissionPerRep(\'' + u.name.replace(/'/g,"\\'") + '\',\'realisationGate\',this.value)" style="padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px">'
+          +   '<option value=""' + (rec.realisationGate == null ? ' selected' : '') + '>(use default)</option>'
+          +   _commGateOptions.map(function(opt){
+              return '<option value="' + opt[0] + '"' + (rec.realisationGate === opt[0] ? ' selected' : '') + '>' + opt[1] + '</option>';
+            }).join('')
+          + '</select></td>'
+          + '</tr>';
+      });
+      perRepHtml += '</tbody></table></div>';
+      perRepHtml += '</div>';
+
+      // Per-branch section — table with one column (baseRate)
+      var perBranchHtml = ''
+        + '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:18px">'
+        +   '<div style="font-size:13px;font-weight:700;margin-bottom:8px">Per Branch Overrides</div>'
+        +   '<p style="font-size:12px;color:#6b7280;margin:0 0 12px;line-height:1.5">Branch baseRate overrides the default for any rep in that branch (per-rep still wins). Empty = use default.</p>'
+        +   '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">';
+      _commBranches.forEach(function(b){
+        var br = (_commRules.perBranch || {})[b] || {};
+        perBranchHtml += '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">' + b + ' base rate (%)</label>'
+          + '<input type="number" step="0.5" min="0" max="100" placeholder="default" value="' + (br.baseRate != null ? _commEsc(br.baseRate) : '') + '" onchange="setCommissionPerBranch(\'' + b + '\',this.value)" style="width:100%;padding:6px 10px;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;text-align:center"></div>';
+      });
+      perBranchHtml += '</div></div>';
+
+      // Product multipliers list
+      var multHtml = ''
+        + '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:18px">'
+        +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-size:13px;font-weight:700">Product Multipliers</div>'
+        +     '<button class="btn-r" style="font-size:11px;padding:4px 12px" onclick="addCommissionMultiplier()">+ Add</button>'
+        +   '</div>'
+        +   '<p style="font-size:12px;color:#6b7280;margin:0 0 12px;line-height:1.5">Per-product commission uplift. <code>_default</code> is the catch-all for products without a specific entry. Multiplier 1.0 = no uplift.</p>';
+      _commRules.productMultipliers.forEach(function(pm, i){
+        var isDefault = pm.productKey === '_default';
+        multHtml += '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:' + (isDefault?'#f9fafb':'#fff') + ';border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px">'
+          + '<input placeholder="productKey" value="' + _commEsc(pm.productKey) + '" onchange="setCommissionMultiplier(' + i + ',\'productKey\',this.value)" style="flex:1;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;font-family:monospace"' + (isDefault?' disabled title="Cannot rename _default"':'') + '>'
+          + '<input placeholder="Label" value="' + _commEsc(pm.label) + '" onchange="setCommissionMultiplier(' + i + ',\'label\',this.value)" style="flex:1;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px">'
+          + '<input type="number" step="0.05" min="0" placeholder="1.0" value="' + _commEsc(pm.multiplier) + '" onchange="setCommissionMultiplier(' + i + ',\'multiplier\',this.value)" style="width:80px;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;text-align:center;font-weight:700;font-family:Syne,sans-serif">'
+          + (isDefault ? '<span style="width:32px;text-align:center;color:#9ca3af;font-size:11px" title="Cannot remove _default">—</span>' : '<button onclick="removeCommissionMultiplier(' + i + ')" style="width:32px;height:30px;background:none;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;color:#dc2626;font-size:14px" title="Remove">×</button>')
+          + '</div>';
+      });
+      if (_commRules.productMultipliers.length === 0) {
+        multHtml += '<div style="padding:14px;text-align:center;color:#9ca3af;font-size:12px">No multipliers configured. Click + Add to start.</div>';
+      }
+      multHtml += '</div>';
+
+      // Volume bonuses list
+      var bonusHtml = ''
+        + '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px">'
+        +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-size:13px;font-weight:700">Volume Bonuses</div>'
+        +     '<button class="btn-r" style="font-size:11px;padding:4px 12px" onclick="addCommissionBonus()">+ Add</button>'
+        +   '</div>'
+        +   '<p style="font-size:12px;color:#6b7280;margin:0 0 12px;line-height:1.5">When a rep\'s monthly Won total (ex-GST) crosses a threshold, subsequent deals in that month get the bonus added to their effective rate. Highest tripped threshold wins. Trigger deal does not benefit from itself (subsequent-only).</p>';
+      _commRules.volumeBonuses.forEach(function(vb, i){
+        bonusHtml += '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#fff;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px">'
+          + '<div style="font-size:11px;color:#6b7280;width:90px">When monthly</div>'
+          + '<div style="font-size:12px">≥ $</div>'
+          + '<input type="number" step="1000" min="0" placeholder="100000" value="' + _commEsc(vb.threshold) + '" onchange="setCommissionBonus(' + i + ',\'threshold\',this.value)" style="flex:1;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;font-family:Syne,sans-serif;font-weight:700">'
+          + '<div style="font-size:12px">→ +</div>'
+          + '<input type="number" step="0.5" min="0" max="100" placeholder="1" value="' + _commEsc(vb.bonusPct) + '" onchange="setCommissionBonus(' + i + ',\'bonusPct\',this.value)" style="width:70px;padding:5px 8px;border:1px solid #e5e7eb;border-radius:6px;font-size:12px;text-align:center;font-family:Syne,sans-serif;font-weight:700">'
+          + '<div style="font-size:12px">%</div>'
+          + '<button onclick="removeCommissionBonus(' + i + ')" style="width:32px;height:30px;background:none;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;color:#dc2626;font-size:14px" title="Remove">×</button>'
+          + '</div>';
+      });
+      if (_commRules.volumeBonuses.length === 0) {
+        bonusHtml += '<div style="padding:14px;text-align:center;color:#9ca3af;font-size:12px">No bonuses configured. Click + Add to start.</div>';
+      }
+      bonusHtml += '</div>';
+
+      content = defaultsHtml + perRepHtml + perBranchHtml + multHtml + bonusHtml
+        + '<div style="margin-top:18px;padding:14px 18px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;font-size:12px;color:#475569;line-height:1.7">'
+        +   '<strong style="color:#0369a1">How rates resolve:</strong> defaults → per-branch → per-rep (last write wins). The calc engine applies <strong>baseRate + volumeBonus − agePenalty</strong> capped at 0, then multiplies by <strong>productMultiplier</strong> on the won quote\'s line items. Every change to these rules writes an audit entry visible in <em>Settings → Audit</em>.'
+        + '</div>';
+    }
+
+  // ── INSTALLERS ────────────────────────────────────────────────────────────────
   } else if(settTab==='installers'){
     var instList = getInstallers();
     var instColours = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#ec4899','#f97316','#6366f1','#14b8a6'];
@@ -550,6 +887,259 @@ function stAddStatus(entity) {
   const newSt = {id:'st'+Date.now(),label:'New Status',col:'#9ca3af',isDefault:false,...(entity==='deals'?{isWon:false,isLost:false}:{})};
   setState({[key]:[...list,newSt]});
   stEditingId = newSt.id;
+}
+
+// ── SMS Template management (stage 4) ──────────────────────────────────────
+// Backed by Supabase public.sms_templates table. Realtime sub picks up
+// changes from other browsers within ~1s.
+var smsTemplateEditId = null;
+var smsTemplateDraft = { id:'', name:'', body:'' };
+
+function smsTemplateNew() {
+  smsTemplateEditId = 'new';
+  smsTemplateDraft = { id: 'tpl_' + Date.now(), name: '', body: '' };
+  renderPage();
+}
+function smsTemplateEdit(id) {
+  var t = (getState().smsTemplates || []).find(function(x){ return x.id === id; });
+  if (!t) return;
+  smsTemplateEditId = id;
+  smsTemplateDraft = { id: t.id, name: t.name || '', body: t.body || '' };
+  renderPage();
+}
+function smsTemplateCancel() {
+  smsTemplateEditId = null;
+  smsTemplateDraft = { id:'', name:'', body:'' };
+  renderPage();
+}
+function smsTemplateSave() {
+  var d = smsTemplateDraft;
+  var name = (document.getElementById('smstplName') || {}).value || d.name || '';
+  var body = (document.getElementById('smstplBody') || {}).value || d.body || '';
+  name = name.trim(); body = body.trim();
+  if (!name || !body) { addToast('Name and body are required', 'error'); return; }
+
+  var cu = getCurrentUser() || {};
+  var row = {
+    id: d.id || ('tpl_' + Date.now()),
+    name: name,
+    body: body,
+    placeholders: extractPlaceholders(body),
+    created_by: cu.id || null,
+  };
+
+  if (typeof dbUpsert === 'function') dbUpsert('sms_templates', row);
+
+  // Optimistic local insert/update so the UI reflects the change without
+  // waiting for the realtime echo.
+  var existing = getState().smsTemplates || [];
+  var found = false;
+  var next = existing.map(function(t){ if (t.id === row.id) { found = true; return row; } return t; });
+  if (!found) next = next.concat([row]);
+  next.sort(function(a, b){ return (a.name || '').localeCompare(b.name || ''); });
+  setState({ smsTemplates: next });
+
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'settings', action:'settings.template_edited',
+      summary:(found?'Edited':'Created')+' SMS template: '+name,
+      after:{ kind:'sms', id:row.id, name:name, body:body },
+    });
+  }
+  smsTemplateEditId = null;
+  smsTemplateDraft = { id:'', name:'', body:'' };
+  addToast('Template saved', 'success');
+  renderPage();
+}
+function smsTemplateDelete(id) {
+  if (!confirm('Delete this template?')) return;
+  var prev = (getState().smsTemplates || []).find(function(t){ return t.id === id; });
+  if (typeof dbDelete === 'function') dbDelete('sms_templates', id);
+  var next = (getState().smsTemplates || []).filter(function(t){ return t.id !== id; });
+  setState({ smsTemplates: next });
+  if (typeof appendAuditEntry === 'function' && prev) {
+    appendAuditEntry({
+      entityType:'settings', action:'settings.template_edited',
+      summary:'Deleted SMS template: '+prev.name,
+      before:{ kind:'sms', id:prev.id, name:prev.name, body:prev.body },
+    });
+  }
+  addToast('Template deleted', 'warning');
+  renderPage();
+}
+function smsTemplateSeedDefaults() {
+  var defaults = [
+    { id:'tpl_seed_book',     name:'Booking Confirmation', body:'Hi {{firstName}}, your measure is confirmed for {{date}} at {{time}}. — Spartan DG' },
+    { id:'tpl_seed_omw',      name:'On My Way',            body:'Hi {{firstName}}, on my way — should be there in about 15 mins. — {{repName}}' },
+    { id:'tpl_seed_followup', name:'Follow Up',            body:'Hi {{firstName}}, following up on the quote we sent. Any questions? — Spartan DG' },
+    { id:'tpl_seed_quote',    name:'Quote Sent',           body:'Hi {{firstName}}, your quote is ready: {{link}} — Spartan DG' },
+    { id:'tpl_seed_install',  name:'Install Reminder',     body:'Hi {{firstName}}, install scheduled for {{date}}. Please ensure access from 7am. — Spartan DG' },
+  ];
+  var cu = getCurrentUser() || {};
+  defaults.forEach(function(t) {
+    t.placeholders = extractPlaceholders(t.body);
+    t.created_by = cu.id || null;
+    if (typeof dbUpsert === 'function') dbUpsert('sms_templates', t);
+  });
+  setState({ smsTemplates: defaults });
+  addToast('5 default templates seeded', 'success');
+  renderPage();
+}
+function extractPlaceholders(body) {
+  var matches = String(body || '').match(/\{\{(\w+)\}\}/g) || [];
+  var keys = matches.map(function(m){ return m.slice(2, -2); });
+  // Dedupe
+  var seen = {}; var out = [];
+  keys.forEach(function(k){ if (!seen[k]) { seen[k] = 1; out.push(k); } });
+  return out;
+}
+
+// ── Phone & IVR Settings management (stage 6) ──────────────────────────────
+// Backed by Supabase public.phone_settings (singleton row id='singleton').
+// Backend reads this on every inbound call (with a 60s cache).
+
+function phoneSettingsAddMenuRow() {
+  // Find the next available digit (not already used)
+  var existing = (getState().phoneSettings || {}).ivr_menu || {};
+  var nextDigit = '0';
+  for (var d = 5; d <= 9; d++) { if (!existing[String(d)]) { nextDigit = String(d); break; } }
+  if (existing[nextDigit]) {
+    // All digits taken — try 0 or *
+    nextDigit = !existing['0'] ? '0' : (!existing['*'] ? '*' : '#');
+  }
+  var ps = JSON.parse(JSON.stringify(getState().phoneSettings || {}));
+  ps.ivr_menu = ps.ivr_menu || {};
+  ps.ivr_menu[nextDigit] = { label: '', roles: [] };
+  setState({ phoneSettings: ps });
+}
+function phoneSettingsRemoveMenuRow(digit) {
+  var ps = JSON.parse(JSON.stringify(getState().phoneSettings || {}));
+  ps.ivr_menu = ps.ivr_menu || {};
+  delete ps.ivr_menu[digit];
+  setState({ phoneSettings: ps });
+}
+function phoneSettingsSave() {
+  // Read current values from the form
+  var greeting = (document.getElementById('ps_greeting') || {}).value || '';
+  var vmGreeting = (document.getElementById('ps_vmGreeting') || {}).value || '';
+  var voiceName = (document.getElementById('ps_voiceName') || {}).value || 'Polly.Nicole';
+  var openHour = parseInt((document.getElementById('ps_openHour') || {}).value, 10);
+  var closeHour = parseInt((document.getElementById('ps_closeHour') || {}).value, 10);
+  if (isNaN(openHour) || openHour < 0 || openHour > 23) { addToast('Open hour must be 0-23', 'error'); return; }
+  if (isNaN(closeHour) || closeHour < 0 || closeHour > 23) { addToast('Close hour must be 0-23', 'error'); return; }
+  if (closeHour <= openHour) { addToast('Close hour must be after open hour', 'error'); return; }
+
+  var days = [];
+  document.querySelectorAll('.ps-day-cb').forEach(function(cb){ if (cb.checked) days.push(cb.dataset.day); });
+
+  var menu = {};
+  document.querySelectorAll('.ps-menu-row').forEach(function(rowEl){
+    var digit = rowEl.dataset.digit;
+    var label = (rowEl.querySelector('.ps-menu-label') || {}).value || '';
+    var rolesStr = (rowEl.querySelector('.ps-menu-roles') || {}).value || '';
+    var roles = rolesStr.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+    if (digit && label) {
+      menu[digit] = { label: label.trim(), roles: roles };
+    }
+  });
+
+  var settings = {
+    id: 'singleton',
+    greeting: greeting.trim(),
+    voicemail_greeting: vmGreeting.trim(),
+    voice_name: voiceName,
+    ivr_menu: menu,
+    business_hours: { days: days, open_hour: openHour, close_hour: closeHour, timezone: 'Australia/Melbourne' },
+    updated_by: ((getCurrentUser() || {}).id) || null,
+  };
+
+  var prevSettings = getState().phoneSettings;
+  if (typeof dbUpsert === 'function') dbUpsert('phone_settings', settings);
+  setState({ phoneSettings: settings });
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({
+      entityType:'settings', action:'settings.phone_edited',
+      summary:'Updated Phone & IVR settings (greeting, IVR menu, business hours)',
+      before: prevSettings, after: settings,
+    });
+  }
+  addToast('Phone & IVR settings saved — propagates to live calls within 60s', 'success');
+  renderPage();
+}
+
+// Test call — admin enters their mobile, /api/twilio/voice fires, their phone rings.
+// Effectively the same as twilioCall(<their mobile>) but with a confirmation
+// modal so the admin can't accidentally fat-finger and dial a customer.
+function phoneTestCall() {
+  var mobile = prompt('Enter your mobile number to receive the test call (e.g. +61412345678):');
+  if (!mobile) return;
+  mobile = mobile.trim();
+  if (!confirm('Twilio will now place a call to ' + mobile + '. Continue?')) return;
+  if (typeof twilioCall === 'function') {
+    twilioCall(mobile, null, null);
+  } else {
+    addToast('Twilio not connected', 'error');
+  }
+}
+
+// ── Lost Reasons management (Brief 1) ─────────────────────────────────────
+function lostReasonAddNew() {
+  var list = (typeof getLostReasons === 'function') ? getLostReasons() : [];
+  var newId = 'reason_' + Date.now().toString(36);
+  list.push({ id: newId, label: 'New reason', active: true });
+  if (typeof saveLostReasons === 'function') saveLostReasons(list);
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({ entityType:'settings', action:'settings.lost_reason_edited', summary:'Added Lost Reason: New reason', after:{ id: newId, label: 'New reason', active: true } });
+  }
+  renderPage();
+  // Focus the new label input so the admin types over the placeholder.
+  setTimeout(function(){ var el = document.getElementById('lr_label_'+newId); if (el) { el.focus(); el.select(); } }, 50);
+}
+
+function lostReasonRename(id, newLabel) {
+  var list = (typeof getLostReasons === 'function') ? getLostReasons() : [];
+  var prev = list.find(function(r){ return r.id === id; });
+  var prevLabel = prev ? prev.label : '';
+  var next = list.map(function(r){ return r.id === id ? Object.assign({}, r, { label: newLabel }) : r; });
+  if (typeof saveLostReasons === 'function') saveLostReasons(next);
+  // No re-render — the input is mid-typing. Audit happens on blur via the
+  // setTimeout debounce below to avoid flooding the audit log on every keystroke.
+  if (_lostReasonRenameTimer) clearTimeout(_lostReasonRenameTimer);
+  _lostReasonRenameTimer = setTimeout(function(){
+    if (typeof appendAuditEntry === 'function' && prevLabel !== newLabel) {
+      appendAuditEntry({ entityType:'settings', action:'settings.lost_reason_edited', summary:'Renamed Lost Reason: '+prevLabel+' → '+newLabel, before:{label:prevLabel}, after:{label:newLabel} });
+    }
+  }, 1500);
+}
+var _lostReasonRenameTimer = null;
+
+function lostReasonToggleActive(id) {
+  var list = (typeof getLostReasons === 'function') ? getLostReasons() : [];
+  var prev = list.find(function(r){ return r.id === id; });
+  if (!prev) return;
+  var next = list.map(function(r){ return r.id === id ? Object.assign({}, r, { active: !r.active }) : r; });
+  if (typeof saveLostReasons === 'function') saveLostReasons(next);
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({ entityType:'settings', action:'settings.lost_reason_edited', summary:(prev.active?'Deactivated':'Activated')+' Lost Reason: '+prev.label, before:{active:prev.active}, after:{active:!prev.active} });
+  }
+  addToast('Reason ' + (prev.active ? 'deactivated' : 'activated'), 'info');
+  renderPage();
+}
+
+function lostReasonMove(id, direction) {
+  var list = (typeof getLostReasons === 'function') ? getLostReasons() : [];
+  var idx = list.findIndex(function(r){ return r.id === id; });
+  if (idx < 0) return;
+  var newIdx = idx + direction;
+  if (newIdx < 0 || newIdx >= list.length) return;
+  var item = list[idx];
+  list.splice(idx, 1);
+  list.splice(newIdx, 0, item);
+  if (typeof saveLostReasons === 'function') saveLostReasons(list);
+  if (typeof appendAuditEntry === 'function') {
+    appendAuditEntry({ entityType:'settings', action:'settings.lost_reason_edited', summary:'Reordered Lost Reasons', metadata:{ moved: id, direction: direction > 0 ? 'down' : 'up' } });
+  }
+  renderPage();
 }
 
 
