@@ -664,6 +664,109 @@ function renderJobDetail() {
       }
       tabContent += '</div>';
 
+      // ── Original vs Measured (Manual §6.3) ──────────────────────────────────
+      // Side-by-side variance comparison so the Sales Manager can spot
+      // price-affecting changes before locking the Final Design or sending
+      // DocuSign. Variance bands per spec:
+      //   ok     — within 20mm AND within 5% on both width and height
+      //   minor  — exceeds one threshold but not both on either dim
+      //   major  — exceeds BOTH thresholds (>20mm AND >5%) on either dim →
+      //            spec calls for a Variation Quote before signing
+      var origItems = (job.cadData && Array.isArray(job.cadData.projectItems)) ? job.cadData.projectItems : [];
+      if (surveyFrames.length > 0 && origItems.length > 0) {
+        // Match measured ↔ original. Prefer frame id, fall back to index.
+        var origById = {};
+        origItems.forEach(function(o){ if (o && o.id) origById[o.id] = o; });
+        var rows = surveyFrames.map(function(m, i){
+          var o = (m.id && origById[m.id]) || origItems[i] || null;
+          var oW = o ? (+o.widthMm  || +o.width  || 0) : 0;
+          var oH = o ? (+o.heightMm || +o.height || 0) : 0;
+          var mW = +m.widthMm  || +m.width  || 0;
+          var mH = +m.heightMm || +m.height || 0;
+          var dW = (oW > 0) ? (mW - oW) : null;
+          var dH = (oH > 0) ? (mH - oH) : null;
+          var pW = (oW > 0 && dW !== null) ? Math.abs(dW) / oW : 0;
+          var pH = (oH > 0 && dH !== null) ? Math.abs(dH) / oH : 0;
+          var widthMajor  = (dW !== null) && Math.abs(dW) > 20 && pW > 0.05;
+          var heightMajor = (dH !== null) && Math.abs(dH) > 20 && pH > 0.05;
+          var widthMinor  = (dW !== null) && (Math.abs(dW) > 20 || pW > 0.05);
+          var heightMinor = (dH !== null) && (Math.abs(dH) > 20 || pH > 0.05);
+          var status;
+          if (!o) status = 'unmatched';
+          else if (widthMajor || heightMajor) status = 'major';
+          else if (widthMinor || heightMinor) status = 'minor';
+          else status = 'ok';
+          return { frame: m, orig: o, oW:oW, oH:oH, mW:mW, mH:mH, dW:dW, dH:dH, status:status };
+        });
+        var nOk = rows.filter(function(r){return r.status==='ok';}).length;
+        var nMinor = rows.filter(function(r){return r.status==='minor';}).length;
+        var nMajor = rows.filter(function(r){return r.status==='major';}).length;
+        var nUnmatched = rows.filter(function(r){return r.status==='unmatched';}).length;
+        var headerCol = nMajor > 0 ? '#b91c1c' : (nMinor > 0 ? '#d97706' : '#15803d');
+        var headerBg  = nMajor > 0 ? '#fef2f2' : (nMinor > 0 ? '#fffbeb' : '#f0fdf4');
+        var headerIcon= nMajor > 0 ? '⚠️'      : (nMinor > 0 ? '⚠️'      : '✅');
+        var headerMsg = nMajor > 0
+          ? nMajor + ' major variance' + (nMajor!==1?'s':'') + ' — Variation Quote required before sign-off'
+          : (nMinor > 0
+            ? nMinor + ' minor variance' + (nMinor!==1?'s':'') + ' — review before signing'
+            : 'All frames within tolerance — no variation quote needed');
+        tabContent += '<div class="card" style="padding:16px;margin-bottom:14px;border-left:3px solid '+headerCol+'">'
+          +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+          +'<h5 style="font-size:13px;font-weight:700;margin:0">📐 Original vs Measured — Variance Check</h5>'
+          +'<span style="font-size:10px;color:#9ca3af">Threshold: 20mm or 5% per dimension</span>'
+          +'</div>'
+          +'<div style="padding:10px 12px;background:'+headerBg+';border-radius:6px;margin-bottom:10px;font-size:12px;font-weight:700;color:'+headerCol+'">'+headerIcon+' '+headerMsg+'</div>'
+          +'<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;font-size:11px">'
+          +'<span style="padding:3px 10px;border-radius:10px;background:#f0fdf4;color:#15803d;font-weight:600">'+nOk+' OK</span>'
+          +(nMinor>0 ? '<span style="padding:3px 10px;border-radius:10px;background:#fffbeb;color:#d97706;font-weight:600">'+nMinor+' minor</span>' : '')
+          +(nMajor>0 ? '<span style="padding:3px 10px;border-radius:10px;background:#fef2f2;color:#b91c1c;font-weight:600">'+nMajor+' major</span>' : '')
+          +(nUnmatched>0 ? '<span style="padding:3px 10px;border-radius:10px;background:#f3f4f6;color:#6b7280;font-weight:600">'+nUnmatched+' new (no original)</span>' : '')
+          +'</div>'
+          +'<table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr>'
+          +'<th class="th" style="font-size:10px">Frame</th>'
+          +'<th class="th" style="font-size:10px">Original (mm)</th>'
+          +'<th class="th" style="font-size:10px">Measured (mm)</th>'
+          +'<th class="th" style="font-size:10px;text-align:right">Δ Width</th>'
+          +'<th class="th" style="font-size:10px;text-align:right">Δ Height</th>'
+          +'<th class="th" style="font-size:10px">Status</th>'
+          +'</tr></thead><tbody>';
+        rows.forEach(function(r, i){
+          var stColMap = {ok:'#15803d', minor:'#d97706', major:'#b91c1c', unmatched:'#6b7280'};
+          var stLblMap = {ok:'✓ OK', minor:'⚠ Minor', major:'⚠ Major', unmatched:'+ New frame'};
+          var stCol = stColMap[r.status];
+          var rowBg = r.status === 'major' ? '#fef2f2' : (r.status === 'minor' ? '#fffbeb' : '');
+          var fmtDelta = function(d){
+            if (d === null) return '—';
+            if (d === 0) return '<span style="color:#9ca3af">0</span>';
+            var sign = d > 0 ? '+' : '';
+            var col = (Math.abs(d) > 20) ? '#b91c1c' : (Math.abs(d) > 5 ? '#d97706' : '#15803d');
+            return '<span style="color:'+col+';font-weight:600">'+sign+d+'mm</span>';
+          };
+          tabContent += '<tr style="background:'+rowBg+';border-top:1px solid #f3f4f6">'
+            +'<td class="td" style="font-weight:700;color:#c41230">'+(r.frame.name || 'W'+(i+1))+'</td>'
+            +'<td class="td" style="font-family:monospace">'+(r.oW>0?r.oW+' × '+r.oH:'<span style="color:#9ca3af">—</span>')+'</td>'
+            +'<td class="td" style="font-family:monospace">'+r.mW+' × '+r.mH+'</td>'
+            +'<td class="td" style="text-align:right;font-family:monospace">'+fmtDelta(r.dW)+'</td>'
+            +'<td class="td" style="text-align:right;font-family:monospace">'+fmtDelta(r.dH)+'</td>'
+            +'<td class="td"><span style="color:'+stCol+';font-weight:600">'+stLblMap[r.status]+'</span></td>'
+            +'</tr>';
+        });
+        tabContent += '</tbody></table>';
+        if (nMajor > 0) {
+          tabContent += '<div style="margin-top:10px;padding:10px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:12px;color:#7f1d1d">'
+            +'<strong>⚠ Action required:</strong> '+nMajor+' frame'+(nMajor!==1?'s':'')+' exceed both 20mm <em>and</em> 5% tolerance. '
+            +'Per manual §6.3 the customer must sign a separate Variation DocuSign accepting the price change before the Final Design DocuSign. '
+            +'Generate a Variation Quote in the Sales CRM, get it signed, then return here to send the Final Design.'
+            +'</div>';
+        }
+        tabContent += '</div>';
+      } else if (surveyFrames.length > 0 && origItems.length === 0) {
+        tabContent += '<div class="card" style="padding:14px 18px;margin-bottom:14px;border-left:3px solid #6b7280;background:#f9fafb">'
+          +'<div style="font-size:12px;font-weight:600;color:#6b7280">📐 No original quote dimensions on file — variance check unavailable</div>'
+          +'<div style="font-size:11px;color:#9ca3af;margin-top:4px">This job was created without CAD project items on the won deal, so there\'s nothing to compare the measured dimensions against.</div>'
+          +'</div>';
+      }
+
       // Step 5 §5.2: three-state Final Design block.
       if (finalSigned) {
         // STATE 3 — Final Design Signed (view-only)
