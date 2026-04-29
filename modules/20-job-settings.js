@@ -80,6 +80,90 @@ function renderAvailExceptionModal() {
 }
 window.renderAvailExceptionModal = renderAvailExceptionModal;
 
+// Add-tool-to-installer modal. Picks from the global tool registry so the
+// installer's owned-tool ID matches what jobs reference in toolRequirements.
+// Free-text adds via prompt() created random t<timestamp> IDs that getJobToolCoverage
+// could never match — every coverage check showed the tool as missing.
+var _addInstToolForId = null;
+
+function openAddInstToolModal(installerId) {
+  _addInstToolForId = installerId;
+  renderPage();
+}
+function closeAddInstToolModal() {
+  _addInstToolForId = null;
+  renderPage();
+}
+function saveAddInstToolModal() {
+  var sel = document.getElementById('aitm_tool');
+  var serialEl = document.getElementById('aitm_serial');
+  if (!sel || !sel.value) { addToast('Pick a tool', 'error'); return; }
+  var registry = (typeof getTools === 'function') ? getTools() : [];
+  var picked = registry.find(function(t){ return t.id === sel.value; });
+  if (!picked) { addToast('Tool not found in registry', 'error'); return; }
+  var inst = getInstallers().find(function(i){ return i.id === _addInstToolForId; });
+  if (!inst) { addToast('Installer not found', 'error'); _addInstToolForId = null; renderPage(); return; }
+  var existing = inst.tools || [];
+  if (existing.some(function(t){ return t.id === picked.id; })) {
+    addToast(picked.name + ' is already in this installer\'s kit', 'warning');
+    return;
+  }
+  var entry = {
+    id: picked.id,                       // ← registry ID, not random
+    name: picked.name,
+    category: picked.category || 'other',
+    serialNumber: (serialEl && serialEl.value) ? serialEl.value.trim() : '',
+    dateIssued: new Date().toISOString().slice(0,10),
+    condition: 'good',
+    notes: '',
+  };
+  updateInstaller(_addInstToolForId, { tools: existing.concat([entry]) });
+  addToast(picked.name + ' added to ' + (inst.name || 'installer'), 'success');
+  _addInstToolForId = null;
+  renderPage();
+}
+window.openAddInstToolModal = openAddInstToolModal;
+window.closeAddInstToolModal = closeAddInstToolModal;
+window.saveAddInstToolModal = saveAddInstToolModal;
+
+function renderAddInstToolModal() {
+  if (!_addInstToolForId) return '';
+  var inst = (typeof getInstallers === 'function') ? getInstallers().find(function(i){ return i.id === _addInstToolForId; }) : null;
+  var instName = inst ? inst.name : 'Installer';
+  var registry = (typeof getTools === 'function') ? getTools().filter(function(t){ return t.active !== false; }) : [];
+  var ownedIds = {};
+  (inst && inst.tools || []).forEach(function(t){ if (t && t.id) ownedIds[t.id] = true; });
+  var available = registry.filter(function(t){ return !ownedIds[t.id]; });
+  var TCATS = {lifting:'Lifting',access:'Access',sealing:'Sealing',fastening:'Fastening',measuring:'Measuring',other:'Other',power_tool:'Power Tool',access_equipment:'Access Equipment',lifting_gear:'Lifting Gear',licence:'Licence',consumable:'Consumable'};
+  var optsHtml = '<option value="">— Pick a tool —</option>'
+    + available.map(function(t){ return '<option value="'+t.id+'">'+t.name+' ('+(TCATS[t.category]||t.category||'?')+')</option>'; }).join('');
+  return '<div class="modal-bg" onclick="if(event.target===this)closeAddInstToolModal()">'
+    +'<div class="modal" style="max-width:460px">'
+    +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
+    +'<div><h3 style="margin:0;font-size:15px;font-weight:700">🛠️ Add Tool to Installer</h3>'
+    +'<div style="font-size:11px;color:#6b7280;margin-top:2px">'+instName+'</div></div>'
+    +'<button onclick="closeAddInstToolModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:18px;line-height:1">×</button>'
+    +'</div>'
+    +'<div class="modal-body" style="padding:20px 22px;display:flex;flex-direction:column;gap:14px">'
+    +(registry.length === 0
+      ? '<div style="font-size:12px;color:#92400e;background:#fffbeb;padding:10px 12px;border-radius:6px">⚠ Tool registry is empty. Add tools in <strong>Settings → Tools</strong> first, then come back here to assign them to installers.</div>'
+      : (available.length === 0
+        ? '<div style="font-size:12px;color:#15803d;background:#f0fdf4;padding:10px 12px;border-radius:6px">✅ This installer already owns every tool in the registry.</div>'
+        : '<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Tool *</label>'
+        +'<select class="sel" id="aitm_tool" style="font-size:13px;padding:8px;width:100%">'+optsHtml+'</select></div>'
+        +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Serial Number <span style="color:#9ca3af;font-weight:400">(optional)</span></label>'
+        +'<input type="text" class="inp" id="aitm_serial" placeholder="e.g. SN-12345" style="font-size:13px;padding:8px;width:100%"></div>'
+        +'<div style="font-size:11px;color:#9ca3af;background:#f9fafb;padding:8px 10px;border-radius:6px">ℹ️ Picking from the registry links the tool by its global ID — required tools on jobs will count this installer as covering it.</div>'
+      )
+    )
+    +'</div>'
+    +'<div style="padding:14px 22px;border-top:1px solid #f0f0f0;display:flex;justify-content:flex-end;gap:8px">'
+    +'<button onclick="closeAddInstToolModal()" class="btn-w" style="font-size:13px">Cancel</button>'
+    +(available.length > 0 ? '<button onclick="saveAddInstToolModal()" class="btn-r" style="font-size:13px">Add Tool</button>' : '')
+    +'</div></div></div>';
+}
+window.renderAddInstToolModal = renderAddInstToolModal;
+
 function renderJobSettings() {
   var TABS = [
     ['installers','Installers & Crew'],
@@ -136,8 +220,7 @@ function renderJobSettings() {
       content += '<div class="card" style="padding:16px;margin-top:14px">'
         +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
         +'<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9ca3af">\ud83d\udee0\ufe0f Tools & Equipment <span style="font-weight:400">('+tools.length+')</span></div>'
-        +'<button onclick="var n=prompt(\'Tool name:\');if(!n)return;var sn=prompt(\'Serial number:\',\'\');var cat=prompt(\'Category (power_tool/hand_tool/safety/measuring/vehicle/other):\',\'power_tool\');'
-        +'var inst=getInstallers().find(function(i){return i.id===\''+editingInstallerId+'\';});if(!inst)return;var t=inst.tools||[];t.push({id:\'t\'+Date.now(),name:n,serialNumber:sn||\'\',category:cat||\'other\',dateIssued:new Date().toISOString().slice(0,10),condition:\'good\',notes:\'\'});updateInstaller(\''+editingInstallerId+'\',{tools:t});renderPage();" class="btn-w" style="font-size:11px;padding:4px 10px">+ Add Tool</button></div>';
+        +'<button onclick="openAddInstToolModal(\''+editingInstallerId+'\')" class="btn-w" style="font-size:11px;padding:4px 10px">+ Add Tool</button></div>';
       if (tools.length === 0) {
         content += '<div style="color:#9ca3af;font-size:12px;text-align:center;padding:12px">No tools registered</div>';
       } else {
