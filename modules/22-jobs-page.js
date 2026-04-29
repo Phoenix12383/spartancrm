@@ -1119,6 +1119,52 @@ function renderJobDetail() {
       +'<div style="font-size:10px;color:#9ca3af;margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6">ℹ️ Date, time and crew are set via the Smart Install Scheduler — the Installation Schedule page runs capacity, vehicle and glass-timing checks.</div>'
       +'</div>';
 
+    // ── Effective duration (Capacity Planner spec §5.2 / §5.3 #6) ───────────
+    // Baseline minutes from CAD, productivity-adjusted minutes per crew member,
+    // and the crew duration (slowest sets the pace when working in parallel).
+    if (typeof readJobInstallMinutes === 'function') {
+      var baselineMin = readJobInstallMinutes(job);
+      if (baselineMin > 0) {
+        var minToHM = function(m) { var h = Math.floor(m/60); var mm = m % 60; return h + 'h ' + (mm<10?'0'+mm:mm) + 'm'; };
+        tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
+          +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+          +'<h5 style="font-size:13px;font-weight:700;margin:0">⏱️ Effective Duration</h5>'
+          +'<span style="font-size:10px;color:#9ca3af">Adjusted for installer productivity %</span>'
+          +'</div>'
+          +'<div style="display:grid;grid-template-columns:140px 1fr;gap:16px;font-size:12px;align-items:start">'
+          +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:3px">Baseline (CAD)</div>'
+          +'<div style="font-weight:700;font-size:15px">'+minToHM(baselineMin)+'</div>'
+          +'<div style="font-size:10px;color:#9ca3af;margin-top:2px">'+baselineMin+' min</div></div>'
+          +'<div><div style="font-size:10px;font-weight:600;color:#9ca3af;text-transform:uppercase;margin-bottom:6px">Per Installer</div>';
+        if (crewIds.length === 0) {
+          tabContent += '<div style="font-size:11px;color:#9ca3af;font-style:italic">— no crew assigned —</div>';
+        } else {
+          var crewMaxMin = 0;
+          tabContent += '<div style="display:flex;flex-direction:column;gap:5px">';
+          crewIds.forEach(function(cid){
+            var inst = installerById[cid] || {name:'Unknown', colour:'#9ca3af', id:cid};
+            var pct  = (typeof getInstallerEfficiency === 'function') ? getInstallerEfficiency(cid) : 100;
+            var em   = effectiveMinutesFor(Object.assign({id:cid}, inst), baselineMin);
+            if (em > crewMaxMin) crewMaxMin = em;
+            var delta = em - baselineMin;
+            var deltaTxt = delta === 0 ? '' : (delta > 0 ? '+'+delta+'m slower' : Math.abs(delta)+'m faster');
+            var deltaCol = delta === 0 ? '#6b7280' : (delta > 0 ? '#b91c1c' : '#15803d');
+            tabContent += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+              +'<span style="display:inline-flex;align-items:center;gap:4px;background:'+inst.colour+'18;border:1px solid '+inst.colour+'66;color:'+inst.colour+';padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;min-width:90px;justify-content:center">'+inst.name+'</span>'
+              +'<span style="font-size:11px;color:#6b7280;min-width:42px">'+pct+'%</span>'
+              +'<span style="font-size:12px;font-weight:600;min-width:78px">'+minToHM(em)+'</span>'
+              +(deltaTxt ? '<span style="font-size:10px;color:'+deltaCol+';font-weight:600">'+deltaTxt+'</span>' : '')
+              +'</div>';
+          });
+          tabContent += '</div>';
+          if (crewIds.length > 1) {
+            tabContent += '<div style="margin-top:10px;padding-top:8px;border-top:1px solid #f3f4f6;display:flex;align-items:center;gap:10px;font-size:11px"><span style="color:#9ca3af">Crew duration (slowest sets pace)</span><span style="font-weight:700;color:#374151;font-size:13px">'+minToHM(crewMaxMin)+'</span></div>';
+          }
+        }
+        tabContent += '</div></div></div>';
+      }
+    }
+
     // ── Tool coverage (Capacity Planner spec §5.3) ──────────────────────────
     // Diff the job's required-tool list (set on the Tools tab) against the
     // assigned crew's owned tools. Warn if any required tool isn't covered

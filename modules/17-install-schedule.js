@@ -85,6 +85,54 @@ function getCrewEffectiveHours(job, crewIds, fallback) {
 }
 window.getCrewEffectiveHours = getCrewEffectiveHours;
 
+// ── Capacity Planner spec §5.1, §5.2, §5.3 #6 ────────────────────────────────
+// Lenient install-minutes reader. Prefers job.estimatedInstallMinutes, falls
+// back to the cached cadSurveyData.totals.installMinutes. Never recompute from
+// frame dimensions in CRM — that's CAD's job, duplicating it will drift.
+function readJobInstallMinutes(job) {
+  if (!job) return 0;
+  var direct = +job.estimatedInstallMinutes || 0;
+  if (direct > 0) return direct;
+  var cs = job.cadSurveyData || job.cad_survey_data || {};
+  var fromCad = (cs && cs.totals) ? +cs.totals.installMinutes : 0;
+  return fromCad > 0 ? fromCad : 0;
+}
+window.readJobInstallMinutes = readJobInstallMinutes;
+
+// Effective minutes for a single installer = baseline / (productivity/100).
+// 120% finishes a 240-min baseline in 200 min; 80% takes 300 min. Reads the
+// productivity from installer.productivityPercent first (Phoenix's spec
+// shape), falls back to the side-store getInstallerEfficiency for legacy
+// installers that don't have the field on the row.
+function effectiveMinutesFor(installer, baselineMinutes) {
+  var base = +baselineMinutes || 0;
+  if (base <= 0) return 0;
+  var pct = installer && +installer.productivityPercent;
+  if (!pct && installer && installer.id) pct = getInstallerEfficiency(installer.id);
+  if (!pct || pct <= 0) pct = 100;
+  return Math.round(base / (pct / 100));
+}
+window.effectiveMinutesFor = effectiveMinutesFor;
+
+// Crew duration when working in parallel — slowest installer sets the pace
+// (spec §5.3 #6). Returns max(effectiveMinutesFor) across the assigned crew.
+// Empty crew → returns the baseline unchanged so the caller can decide.
+function crewEffectiveMinutes(crewIds, baselineMinutes) {
+  var base = +baselineMinutes || 0;
+  if (base <= 0) return 0;
+  if (!crewIds || crewIds.length === 0) return base;
+  var byId = {};
+  (getInstallers() || []).forEach(function(i){ byId[i.id] = i; });
+  var max = 0;
+  crewIds.forEach(function(id){
+    var inst = byId[id] || {id:id};
+    var em = effectiveMinutesFor(inst, base);
+    if (em > max) max = em;
+  });
+  return max > 0 ? max : base;
+}
+window.crewEffectiveMinutes = crewEffectiveMinutes;
+
 // Auto-schedule entry point — called from the "🪄 Auto-Schedule" button.
 window.runAutoSchedule = function() {
   var jobs = getState().jobs || [];
