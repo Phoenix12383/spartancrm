@@ -54,9 +54,21 @@
         var key = r.job.installDate + '|' + r.rec.recommended.id;
         r.conflict = conflictKey[key] > 1;
       });
-      var noFit  = rows.filter(function(r){ return !r.rec.recommended; }).length;
-      var conflicts = rows.filter(function(r){ return r.conflict; }).length;
-      weeks.push({offset: startOffset + w, dates:dates, weekStart:ws, weekEnd:we, rows:rows, noFit:noFit, conflicts:conflicts});
+      // Tag each row's status. Distinguish "no CAD survey on file" from
+      // "vehicles in fleet don't fit the surveyed frames" — they look the same
+      // on the surface but mean very different things to the dispatcher.
+      rows.forEach(function(r){
+        var hasFrames = r.rec.frames && r.rec.frames.length > 0;
+        if (!hasFrames) r.statusKind = 'not_surveyed';
+        else if (!r.rec.recommended) r.statusKind = 'no_fit';
+        else if (r.conflict) r.statusKind = 'conflict';
+        else if (r.rec.fit && r.rec.fit.borderline) r.statusKind = 'tight';
+        else r.statusKind = 'ok';
+      });
+      var noFit  = rows.filter(function(r){ return r.statusKind === 'no_fit'; }).length;
+      var notSurveyed = rows.filter(function(r){ return r.statusKind === 'not_surveyed'; }).length;
+      var conflicts = rows.filter(function(r){ return r.statusKind === 'conflict'; }).length;
+      weeks.push({offset: startOffset + w, dates:dates, weekStart:ws, weekEnd:we, rows:rows, noFit:noFit, notSurveyed:notSurveyed, conflicts:conflicts});
     }
 
     // ── Header / window nav ──────────────────────────────────────────────────
@@ -76,13 +88,14 @@
     // ── Summary tiles ────────────────────────────────────────────────────────
     var totalJobs = weeks.reduce(function(s,w){return s+w.rows.length;}, 0);
     var totalNoFit = weeks.reduce(function(s,w){return s+w.noFit;}, 0);
+    var totalNotSurveyed = weeks.reduce(function(s,w){return s+w.notSurveyed;}, 0);
     var totalConflicts = weeks.reduce(function(s,w){return s+w.conflicts;}, 0);
 
     var tiles = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px">'
       +'<div class="card" style="padding:14px 18px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Active Fleet</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px">'+vehicles.length+'</div><div style="font-size:10px;color:#9ca3af;margin-top:2px">vehicle'+(vehicles.length!==1?'s':'')+' available</div></div>'
-      +'<div class="card" style="padding:14px 18px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Scheduled Jobs</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px">'+totalJobs+'</div><div style="font-size:10px;color:#9ca3af;margin-top:2px">across '+weekCount+' week'+(weekCount!==1?'s':'')+'</div></div>'
+      +'<div class="card" style="padding:14px 18px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Scheduled Jobs</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px">'+totalJobs+'</div><div style="font-size:10px;color:#9ca3af;margin-top:2px">across '+weekCount+' week'+(weekCount!==1?'s':'')+(totalNotSurveyed>0?' · '+totalNotSurveyed+' not surveyed':'')+'</div></div>'
       +'<div class="card" style="padding:14px 18px;border:1px solid '+(totalConflicts>0?'#dc2626':'#e5e7eb')+'33;background:'+(totalConflicts>0?'#fef2f2':'#fff')+'"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Vehicle Conflicts</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px;color:'+(totalConflicts>0?'#dc2626':'#374151')+'">'+totalConflicts+'</div><div style="font-size:10px;color:'+(totalConflicts>0?'#dc2626':'#9ca3af')+';margin-top:2px;font-weight:'+(totalConflicts>0?'600':'400')+'">'+(totalConflicts>0?'same truck recommended twice':'no double-booked trucks')+'</div></div>'
-      +'<div class="card" style="padding:14px 18px;border:1px solid '+(totalNoFit>0?'#7f1d1d':'#e5e7eb')+'33;background:'+(totalNoFit>0?'#fef2f2':'#fff')+'"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Won\'t Fit</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px;color:'+(totalNoFit>0?'#7f1d1d':'#374151')+'">'+totalNoFit+'</div><div style="font-size:10px;color:'+(totalNoFit>0?'#7f1d1d':'#9ca3af')+';margin-top:2px;font-weight:'+(totalNoFit>0?'600':'400')+'">'+(totalNoFit>0?'jobs with no vehicle fit':'every job has a fit')+'</div></div>'
+      +'<div class="card" style="padding:14px 18px;border:1px solid '+(totalNoFit>0?'#7f1d1d':'#e5e7eb')+'33;background:'+(totalNoFit>0?'#fef2f2':'#fff')+'"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Won\'t Fit</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin-top:4px;color:'+(totalNoFit>0?'#7f1d1d':'#374151')+'">'+totalNoFit+'</div><div style="font-size:10px;color:'+(totalNoFit>0?'#7f1d1d':'#9ca3af')+';margin-top:2px;font-weight:'+(totalNoFit>0?'600':'400')+'">'+(totalNoFit>0?'surveyed jobs with no vehicle fit':'every surveyed job has a fit')+'</div></div>'
       +'</div>';
 
     // ── No vehicles state ────────────────────────────────────────────────────
@@ -103,6 +116,8 @@
       var statusText = 'All clear';
       if (wk.noFit > 0) { statusCol = '#7f1d1d'; statusText = wk.noFit + ' won\'t fit'; }
       else if (wk.conflicts > 0) { statusCol = '#dc2626'; statusText = wk.conflicts + ' conflict' + (wk.conflicts!==1?'s':''); }
+      else if (wk.notSurveyed > 0 && wk.notSurveyed === wk.rows.length) { statusCol = '#9ca3af'; statusText = wk.notSurveyed + ' not surveyed'; }
+      else if (wk.notSurveyed > 0) { statusCol = '#16a34a'; statusText = 'All clear · ' + wk.notSurveyed + ' not surveyed'; }
       else if (wk.rows.length === 0) { statusCol = '#9ca3af'; statusText = 'No jobs'; }
 
       weekHtml += '<div style="border-top:1px solid #f3f4f6;padding:10px 0">'
@@ -138,18 +153,29 @@
               var cn = c ? (c.fn+' '+c.ln) : '—';
               var frames = r.rec.frames ? r.rec.frames.length : 0;
               var v = r.rec.recommended;
-              var rowBg = r.conflict ? '#fef2f2' : (!v ? '#fef2f2' : '#fff');
-              var statusLabel, statusCol2;
-              if (!v) { statusLabel = '✕ No fit'; statusCol2 = '#7f1d1d'; }
-              else if (r.conflict) { statusLabel = '⚠ Conflict'; statusCol2 = '#dc2626'; }
-              else if (r.rec.fit && r.rec.fit.borderline) { statusLabel = '⚠ Tight'; statusCol2 = '#d97706'; }
-              else { statusLabel = '✓ OK'; statusCol2 = '#16a34a'; }
+              var statusLabel, statusCol2, rowBg, vehicleCell;
+              if (r.statusKind === 'not_surveyed') {
+                statusLabel = '— Not Surveyed'; statusCol2 = '#9ca3af'; rowBg = '#fff';
+                vehicleCell = '<span style="color:#9ca3af;font-style:italic">awaiting CAD survey</span>';
+              } else if (r.statusKind === 'no_fit') {
+                statusLabel = '✕ No fit'; statusCol2 = '#7f1d1d'; rowBg = '#fef2f2';
+                vehicleCell = '<span style="color:#7f1d1d;font-style:italic">none fits</span>';
+              } else if (r.statusKind === 'conflict') {
+                statusLabel = '⚠ Conflict'; statusCol2 = '#dc2626'; rowBg = '#fef2f2';
+                vehicleCell = '<strong>'+v.name+'</strong>'+(v.rego?' <span style="font-family:monospace;font-size:10px;color:#6b7280">'+v.rego+'</span>':'');
+              } else if (r.statusKind === 'tight') {
+                statusLabel = '⚠ Tight'; statusCol2 = '#d97706'; rowBg = '#fff';
+                vehicleCell = '<strong>'+v.name+'</strong>'+(v.rego?' <span style="font-family:monospace;font-size:10px;color:#6b7280">'+v.rego+'</span>':'');
+              } else {
+                statusLabel = '✓ OK'; statusCol2 = '#16a34a'; rowBg = '#fff';
+                vehicleCell = '<strong>'+v.name+'</strong>'+(v.rego?' <span style="font-family:monospace;font-size:10px;color:#6b7280">'+v.rego+'</span>':'');
+              }
               weekHtml += '<tr style="border-top:1px solid #f3f4f6;background:'+rowBg+'">'
                 +'<td class="td" style="padding:6px 10px"><a href="#" onclick="event.preventDefault();setState({page:\'jobs\',jobDetailId:\''+j.id+'\'})" style="color:#3b82f6;font-weight:600;text-decoration:none">'+(j.jobNumber||j.id)+'</a></td>'
                 +'<td class="td">'+cn+'</td>'
                 +'<td class="td">'+(j.installTime||'—')+'</td>'
                 +'<td class="td">'+frames+'</td>'
-                +'<td class="td">'+(v ? '<strong>'+v.name+'</strong>'+(v.rego?' <span style="font-family:monospace;font-size:10px;color:#6b7280">'+v.rego+'</span>':'') : '<span style="color:#7f1d1d;font-style:italic">none fits</span>')+'</td>'
+                +'<td class="td">'+vehicleCell+'</td>'
                 +'<td class="td"><span style="color:'+statusCol2+';font-weight:600">'+statusLabel+'</span></td>'
                 +'</tr>';
             });
