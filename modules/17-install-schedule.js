@@ -266,6 +266,86 @@ function getJobToolCoverage(jobId, crewIds) {
 }
 window.getJobToolCoverage = getJobToolCoverage;
 
+// ── Fleet recommender (Capacity Planner spec §7) ────────────────────────────
+// Reads frame dims from the cached CAD survey and recommends the smallest
+// vehicle that fits. Spec §7.1 says frames travel flat on edge with assumed
+// 150mm depth; for fit purposes we treat each as length=max(w,h), edge=min(w,h).
+//
+// When vehicle 3D dims (internal length/width/height) are populated, the spec
+// fit logic runs. When they're missing, we fall back to the existing maxFrames
+// count so the recommender still returns a useful answer with legacy data.
+var FRAME_DEPTH_MM = 150;
+
+function getJobFrames(job) {
+  if (!job) return [];
+  var cs = job.cadSurveyData || job.cad_survey_data || {};
+  var items = Array.isArray(cs.projectItems) ? cs.projectItems : [];
+  // Existing CAD shape uses widthMm/heightMm; Phoenix's spec snippet uses
+  // width/height. Honour both — first-found wins.
+  return items.map(function(it){
+    var w = +it.widthMm || +it.width  || 0;
+    var h = +it.heightMm || +it.height || 0;
+    return { id: it.id || null, widthMm: w, heightMm: h };
+  }).filter(function(f){ return f.widthMm > 0 && f.heightMm > 0; });
+}
+window.getJobFrames = getJobFrames;
+
+function _vehicleHas3DDims(v) {
+  return v && v.internal && +v.internal.lengthMm > 0 && +v.internal.widthMm > 0 && +v.internal.heightMm > 0;
+}
+
+function _vehicleVolume(v) {
+  if (_vehicleHas3DDims(v)) return v.internal.lengthMm * v.internal.widthMm * v.internal.heightMm;
+  // Fallback ranking: maxFrames, then size keyword, then 0.
+  var sizeRank = {small:1, medium:2, large:3, xl:4};
+  return (+v.maxFrames || 0) * 1000 + (sizeRank[v.size] || 0);
+}
+
+// Returns { fits: bool, reason?, detail? } per spec §7.2.
+function vehicleFitsFrames(frames, vehicle) {
+  if (!frames || frames.length === 0) return { fits: true, reason: 'no_frames' };
+  if (!vehicle || vehicle.active === false) return { fits: false, reason: 'inactive' };
+
+  if (_vehicleHas3DDims(vehicle)) {
+    var L = vehicle.internal.lengthMm, W = vehicle.internal.widthMm, H = vehicle.internal.heightMm;
+    // Per spec: any frame's longest edge must fit truck length when laid flat-on-edge.
+    for (var i = 0; i < frames.length; i++) {
+      var longest = Math.max(frames[i].widthMm, frames[i].heightMm);
+      if (longest > L) return { fits: false, reason: 'frame_too_long', detail: 'Frame ' + (i+1) + ' is ' + longest + 'mm, truck length is ' + L + 'mm' };
+    }
+    // Stacked depth = framesCount × FRAME_DEPTH must fit truck width.
+    var totalDepth = frames.length * FRAME_DEPTH_MM;
+    if (totalDepth > W) return { fits: false, reason: 'too_many_frames', detail: frames.length + ' frames × ' + FRAME_DEPTH_MM + 'mm = ' + totalDepth + 'mm, truck width ' + W + 'mm' };
+    // Tallest frame upright must fit truck height.
+    var tallest = 0;
+    frames.forEach(function(f){ var t = Math.min(f.widthMm, f.heightMm); if (t > tallest) tallest = t; });
+    if (tallest > H) return { fits: false, reason: 'frame_too_tall', detail: 'Tallest edge ' + tallest + 'mm, truck height ' + H + 'mm' };
+    // Fits — flag borderline if >85% capacity along stacked depth.
+    var depthUtil = totalDepth / W;
+    return { fits: true, depthUtil: depthUtil, borderline: depthUtil > 0.85 };
+  }
+
+  // Fallback: frame-count only. Use existing maxFrames cap.
+  var cap = +vehicle.maxFrames || 0;
+  if (cap <= 0) return { fits: false, reason: 'no_capacity_data', detail: 'Vehicle has no maxFrames or 3D dims set' };
+  if (frames.length > cap) return { fits: false, reason: 'too_many_frames', detail: frames.length + ' frames vs ' + cap + ' max' };
+  return { fits: true, depthUtil: frames.length / cap, borderline: (frames.length / cap) > 0.85 };
+}
+window.vehicleFitsFrames = vehicleFitsFrames;
+
+function recommendVehicleForJob(job) {
+  var frames = getJobFrames(job);
+  var vehicles = (typeof getVehicles === 'function' ? getVehicles() : []).filter(function(v){ return v.active !== false; });
+  if (vehicles.length === 0) return { frames: frames, recommended: null, evaluated: [], reason: 'no_vehicles' };
+  if (frames.length === 0)   return { frames: frames, recommended: null, evaluated: [], reason: 'no_frames' };
+  // Sort smallest → largest so we pick the most economical fit first.
+  var sorted = vehicles.slice().sort(function(a,b){ return _vehicleVolume(a) - _vehicleVolume(b); });
+  var evaluated = sorted.map(function(v){ var fit = vehicleFitsFrames(frames, v); return { vehicle: v, fit: fit }; });
+  var firstFit = evaluated.find(function(e){ return e.fit.fits; });
+  return { frames: frames, recommended: firstFit ? firstFit.vehicle : null, fit: firstFit ? firstFit.fit : null, evaluated: evaluated };
+}
+window.recommendVehicleForJob = recommendVehicleForJob;
+
 // ── Install Progress Tracking (TESTING — pre-mobile app stand-in) ───────────
 // Per the manual §7.5: each frame moves through 7 stages on install day:
 //   0=Not Started · 1=Demo'd · 2=Fitted · 3=Foamed · 4=Trimmed

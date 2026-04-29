@@ -1185,6 +1185,68 @@ function renderJobDetail() {
       tabContent += '</div>';
     }
 
+    // ── Vehicle recommendation (Capacity Planner spec §7) ───────────────────
+    // Reads frame dims from the cached CAD survey, runs flat-on-edge fit logic
+    // against vehicles[], recommends the smallest fit. When vehicle 3D dims
+    // aren't populated, falls back to maxFrames count so the card still shows
+    // something sensible. Hidden if no survey data exists yet.
+    if (typeof recommendVehicleForJob === 'function') {
+      var rec = recommendVehicleForJob(job);
+      if (rec.frames && rec.frames.length > 0) {
+        var frameCount = rec.frames.length;
+        var widest = 0, tallest = 0;
+        rec.frames.forEach(function(f){
+          var l = Math.max(f.widthMm, f.heightMm);
+          var s = Math.min(f.widthMm, f.heightMm);
+          if (l > widest) widest = l;
+          if (s > tallest) tallest = s;
+        });
+        var recCol = rec.recommended ? '#15803d' : '#b91c1c';
+        var recBg  = rec.recommended ? '#f0fdf4' : '#fef2f2';
+        var recIcn = rec.recommended ? '✅' : '⚠️';
+        var recHdr = rec.recommended
+          ? 'Recommended: ' + rec.recommended.name + (rec.recommended.rego ? ' · ' + rec.recommended.rego : '')
+          : 'No vehicle fits this job';
+        tabContent += '<div class="card" style="padding:16px;margin-bottom:14px;border:1px solid '+recCol+'33">'
+          +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+          +'<h5 style="font-size:13px;font-weight:700;margin:0">🚚 Vehicle Recommendation</h5>'
+          +'<span style="font-size:10px;color:#9ca3af">'+frameCount+' frame'+(frameCount!==1?'s':'')+' · longest '+widest+'mm · tallest edge '+tallest+'mm</span>'
+          +'</div>'
+          +'<div style="padding:10px 14px;background:'+recBg+';border-radius:6px;margin-bottom:'+(rec.evaluated.length>1?'10':'0')+'px">'
+          +'<div style="font-size:13px;font-weight:700;color:'+recCol+'">'+recIcn+' '+recHdr+'</div>';
+        if (rec.recommended) {
+          var v = rec.recommended;
+          var dims = (v.internal && v.internal.lengthMm > 0) ? v.internal.lengthMm+'×'+v.internal.widthMm+'×'+v.internal.heightMm+'mm' : (v.maxFrames+' frame max');
+          tabContent += '<div style="font-size:11px;color:#374151;margin-top:4px">'+dims+(rec.fit && rec.fit.borderline ? ' · <span style="color:#d97706;font-weight:600">⚠ tight fit (>85%)</span>' : '')+'</div>';
+        } else if (rec.reason === 'no_vehicles') {
+          tabContent += '<div style="font-size:11px;color:#7f1d1d;margin-top:4px">No active vehicles in fleet. Add one in Settings → Vehicles.</div>';
+        } else {
+          tabContent += '<div style="font-size:11px;color:#7f1d1d;margin-top:4px">Job won\'t fit any single vehicle — consider splitting the delivery across two vehicles.</div>';
+        }
+        tabContent += '</div>';
+        // Show all vehicles evaluated (collapsible-like list).
+        if (rec.evaluated.length > 1) {
+          tabContent += '<div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;margin-bottom:6px">All Vehicles</div>'
+            +'<div style="display:flex;flex-direction:column;gap:4px">';
+          rec.evaluated.forEach(function(e){
+            var v = e.vehicle, fit = e.fit;
+            var col = fit.fits ? (fit.borderline ? '#d97706' : '#15803d') : '#9ca3af';
+            var icon = fit.fits ? (fit.borderline ? '⚠' : '✓') : '✕';
+            var dim = (v.internal && v.internal.lengthMm > 0) ? v.internal.lengthMm+'×'+v.internal.widthMm+'×'+v.internal.heightMm+'mm' : (v.maxFrames+' frames');
+            var note = fit.fits ? '' : ' — '+(fit.detail || fit.reason || '');
+            tabContent += '<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:4px 8px;border-radius:4px;background:#f9fafb">'
+              +'<span style="color:'+col+';font-weight:700;min-width:14px">'+icon+'</span>'
+              +'<span style="font-weight:600">'+v.name+'</span>'
+              +'<span style="color:#6b7280;font-size:11px">'+dim+'</span>'
+              +(note?'<span style="color:#9ca3af;font-size:11px">'+note+'</span>':'')
+              +'</div>';
+          });
+          tabContent += '</div>';
+        }
+        tabContent += '</div>';
+      }
+    }
+
     // ── Tool coverage (Capacity Planner spec §5.3) ──────────────────────────
     // Diff the job's required-tool list (set on the Tools tab) against the
     // assigned crew's owned tools. Warn if any required tool isn't covered

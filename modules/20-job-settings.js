@@ -167,7 +167,8 @@ function renderJobSettings() {
     var editVeh = editingVehicleId ? vehList.find(function(v){return v.id===editingVehicleId;}) : null;
 
     if ((editingVehicleId === '_new' || editVeh) && isAdmin) {
-      var vv = editVeh || {name:'',rego:'',type:'van',size:'medium',maxFrames:8,maxWeightKg:600,assignedTo:'',notes:'',active:true};
+      var vv = editVeh || {name:'',rego:'',type:'van',size:'medium',maxFrames:8,maxWeightKg:600,assignedTo:'',notes:'',active:true,internal:{lengthMm:0,widthMm:0,heightMm:0}};
+      var _vint = vv.internal || {};
       content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
         +'<h4 style="font-size:15px;font-weight:700;margin:0">'+(editVeh?'Edit Vehicle':'New Vehicle')+'</h4>'
         +'<button onclick="editingVehicleId=null;renderPage()" class="btn-g" style="font-size:12px">Cancel</button></div>';
@@ -179,6 +180,12 @@ function renderJobSettings() {
         +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Size</label><select class="sel" id="veh_size" style="font-size:13px;padding:8px">'+Object.entries(VSIZES).map(function(e){return '<option value="'+e[0]+'"'+(vv.size===e[0]?' selected':'')+'>'+e[1]+'</option>';}).join('')+'</select></div>'
         +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Max Frames Capacity</label><input type="number" class="inp" id="veh_frames" value="'+(vv.maxFrames||8)+'" style="font-size:13px;padding:8px"></div>'
         +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Max Weight (kg)</label><input type="number" class="inp" id="veh_weight" value="'+(vv.maxWeightKg||600)+'" style="font-size:13px;padding:8px"></div>'
+        +'<div style="grid-column:span 2;padding-top:8px;border-top:1px dashed #e5e7eb;margin-top:4px"><div style="font-size:11px;font-weight:700;color:#6b7280;margin-bottom:6px">Internal Bed Dimensions (mm) — optional, enables exact fit calc</div>'
+        +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">'
+        +'<div><label style="font-size:10px;color:#9ca3af">Length</label><input type="number" class="inp" id="veh_len" value="'+(+_vint.lengthMm||'')+'" placeholder="e.g. 4200" style="font-size:13px;padding:6px"></div>'
+        +'<div><label style="font-size:10px;color:#9ca3af">Width</label><input type="number" class="inp" id="veh_wid" value="'+(+_vint.widthMm||'')+'" placeholder="e.g. 1900" style="font-size:13px;padding:6px"></div>'
+        +'<div><label style="font-size:10px;color:#9ca3af">Height</label><input type="number" class="inp" id="veh_hei" value="'+(+_vint.heightMm||'')+'" placeholder="e.g. 2100" style="font-size:13px;padding:6px"></div>'
+        +'</div></div>'
         +'<div style="grid-column:span 2"><label style="font-size:10px;font-weight:600;color:#6b7280">Assigned Installer (optional)</label>'
         +'<select class="sel" id="veh_inst" style="font-size:13px;padding:8px"><option value="">Unassigned (Pool)</option>'
         +getInstallers().filter(function(i){return i.active;}).map(function(i){return '<option value="'+i.id+'"'+(vv.assignedTo===i.id?' selected':'')+'>'+i.name+'</option>';}).join('')
@@ -187,7 +194,8 @@ function renderJobSettings() {
         +'</div></div>';
       content += '<div style="display:flex;gap:8px;margin-top:14px">'
         +'<button onclick="var name=document.getElementById(\'veh_name\').value.trim();if(!name){addToast(\'Vehicle name required\',\'error\');return;}'
-        +'var d={name:name,rego:document.getElementById(\'veh_rego\').value.trim().toUpperCase(),type:document.getElementById(\'veh_type\').value,size:document.getElementById(\'veh_size\').value,maxFrames:parseInt(document.getElementById(\'veh_frames\').value)||8,maxWeightKg:parseInt(document.getElementById(\'veh_weight\').value)||600,assignedTo:document.getElementById(\'veh_inst\').value,notes:document.getElementById(\'veh_notes\').value};'
+        +'var _L=parseInt(document.getElementById(\'veh_len\').value)||0,_W=parseInt(document.getElementById(\'veh_wid\').value)||0,_H=parseInt(document.getElementById(\'veh_hei\').value)||0;'
+        +'var d={name:name,rego:document.getElementById(\'veh_rego\').value.trim().toUpperCase(),type:document.getElementById(\'veh_type\').value,size:document.getElementById(\'veh_size\').value,maxFrames:parseInt(document.getElementById(\'veh_frames\').value)||8,maxWeightKg:parseInt(document.getElementById(\'veh_weight\').value)||600,assignedTo:document.getElementById(\'veh_inst\').value,notes:document.getElementById(\'veh_notes\').value,internal:{lengthMm:_L,widthMm:_W,heightMm:_H}};'
         +'if(editingVehicleId&&editingVehicleId!==\'_new\'){updateVehicle(editingVehicleId,d);addToast(name+\' updated\',\'success\');}else{addVehicle(d);addToast(name+\' added\',\'success\');}editingVehicleId=null;renderPage();" class="btn-r" style="font-size:13px;padding:8px 24px">'+(editVeh?'Update Vehicle':'Add Vehicle')+'</button>'
         +'<button onclick="editingVehicleId=null;renderPage()" class="btn-w" style="font-size:13px">Cancel</button></div>';
     } else {
