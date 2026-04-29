@@ -146,18 +146,27 @@ Deno.serve(async (req) => {
     return new Response('ok', { status: 200, headers: corsHeaders });
   }
 
-  // Read the envelope's spartan_kind custom field set by docusign-send.
-  // Default to 'final_design' for legacy envelopes that pre-date the kind
-  // dispatch. The kind decides whether the signed event flips status to c2
-  // (final design) OR sets variation_status='signed' (variation acceptance).
-  const customFields = payload.data?.envelopeSummary?.customFields?.textCustomFields
-                    || payload.data?.envelopeSummary?.envelopeCustomFields?.textCustomFields
-                    || [];
-  const kindCF = (customFields as Array<{ name?: string; value?: string }>).find(
-    (cf) => (cf.name || '').toLowerCase() === 'spartan_kind'
-  );
-  const kind = (kindCF?.value || 'final_design') as 'final_design' | 'variation';
-  console.log('[docusign-webhook] dispatching event', event, 'as kind=', kind);
+  // Determine kind — first by which column matched the envelope ID (most
+  // reliable, doesn't depend on DocuSign Connect including customFields in
+  // the payload), then fall back to the spartan_kind custom field stamped
+  // by docusign-send for legacy / cross-validation cases.
+  let kind: 'final_design' | 'variation' = 'final_design';
+  if ((job as Record<string, unknown>).variation_envelope_id === envelopeId) {
+    kind = 'variation';
+  } else if ((job as Record<string, unknown>).docusign_envelope_id === envelopeId) {
+    kind = 'final_design';
+  } else {
+    // Fall back to customFields if the matched column wasn't either
+    // (shouldn't happen with the current schema but defensive).
+    const customFields = payload.data?.envelopeSummary?.customFields?.textCustomFields
+                      || payload.data?.envelopeSummary?.envelopeCustomFields?.textCustomFields
+                      || [];
+    const kindCF = (customFields as Array<{ name?: string; value?: string }>).find(
+      (cf) => (cf.name || '').toLowerCase() === 'spartan_kind'
+    );
+    if (kindCF?.value === 'variation') kind = 'variation';
+  }
+  console.log('[docusign-webhook] dispatching event', event, 'as kind=', kind, 'for envelopeId=', envelopeId);
 
   const updates: Record<string, unknown> = {
     docusign_status: event,
