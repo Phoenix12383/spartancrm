@@ -1648,6 +1648,226 @@ function toggleOverridePaid(monthKey) {
 
 function getSalesManager() { return getUsers().find(function(u){ return u.role === 'sales_manager' && u.active; }); }
 
+// ════════════════════════════════════════════════════════════════════════════
+// DASHBOARD SURFACES (Brief 4 Phase 6)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// MTD/YTD/Projection KPI tiles, breakdown popover for the deals table,
+// and a manager-rollup table comparing reps with a 2σ outlier flag for
+// coaching. All read-only on top of Phases 1–3+5+7 — no schema changes.
+
+// Sum commissions by state (accrued / realised / paid) across a deal
+// list, scoped by a date predicate. Status records that don't exist
+// for a Won deal default to 'accrued' (the deal was Won pre-Phase-3
+// and never accrued through the new state machine — defensive).
+function _computeCommissionStateTotals(deals, status, scopeFn) {
+  var out = { accrued: 0, realised: 0, paid: 0 };
+  (deals || []).forEach(function (d) {
+    if (!d || !d.won) return;
+    if (scopeFn && !scopeFn(d)) return;
+    var commission = 0;
+    if (typeof calcDealCommission === 'function') {
+      try { commission = calcDealCommission(d).commission || 0; } catch (e) {}
+    }
+    var rec = (status && status[d.id]) || null;
+    var st = rec ? rec.state : 'accrued'; // default for legacy
+    if (st === 'paid') out.paid += commission;
+    else if (st === 'realised') out.realised += commission;
+    else out.accrued += commission;
+  });
+  return out;
+}
+
+// "If I win everything in my pipeline" — sum calcDealCommission across
+// every open deal (not won, not lost). Filter by repName when set.
+function _computePipelineProjection(deals, repName) {
+  var total = 0;
+  (deals || []).forEach(function (d) {
+    if (!d || d.won || d.lost) return;
+    if (repName && d.rep !== repName) return;
+    if (typeof calcDealCommission !== 'function') return;
+    try { total += calcDealCommission(d).commission || 0; } catch (e) {}
+  });
+  return total;
+}
+
+// Build the manager-rollup data: per-rep totals + team avg + σ + outlier
+// flag. Returns { rows: [...], teamAvg, teamSigma } where each row is
+// { repName, wonCount, wonValue, avgValue, accrued, realised, paid,
+//   isOutlier }. Outlier flag fires when wonValue < (avg - 2σ) AND there
+// are at least 4 reps (σ is meaningless for tiny teams).
+function _computeTeamRollup(allWon, status, allReps) {
+  var byRep = {};
+  (allReps || []).forEach(function (u) {
+    byRep[u.name] = {
+      repName: u.name, role: u.role, initials: u.initials,
+      wonCount: 0, wonValue: 0, avgValue: 0,
+      accrued: 0, realised: 0, paid: 0,
+      isOutlier: false,
+    };
+  });
+  (allWon || []).forEach(function (d) {
+    if (!d || !d.won) return;
+    var rep = d.rep;
+    if (!rep || !byRep[rep]) return;
+    byRep[rep].wonCount++;
+    byRep[rep].wonValue += d.val || 0;
+    var commission = 0;
+    if (typeof calcDealCommission === 'function') {
+      try { commission = calcDealCommission(d).commission || 0; } catch (e) {}
+    }
+    var rec = (status && status[d.id]) || null;
+    var st = rec ? rec.state : 'accrued';
+    if (st === 'paid') byRep[rep].paid += commission;
+    else if (st === 'realised') byRep[rep].realised += commission;
+    else byRep[rep].accrued += commission;
+  });
+  Object.keys(byRep).forEach(function (k) {
+    if (byRep[k].wonCount > 0) byRep[k].avgValue = byRep[k].wonValue / byRep[k].wonCount;
+  });
+  var rows = Object.keys(byRep).map(function (k) { return byRep[k]; });
+  // Sort by total commission descending — top performer first
+  rows.sort(function (a, b) {
+    var ta = a.accrued + a.realised + a.paid;
+    var tb = b.accrued + b.realised + b.paid;
+    return tb - ta;
+  });
+  // Compute team avg + σ over the won-value series. Skip outlier flag
+  // when fewer than 4 reps have data — σ is meaningless on small N.
+  var values = rows.filter(function (r) { return r.wonCount > 0; }).map(function (r) { return r.wonValue; });
+  var teamAvg = 0, teamSigma = 0;
+  if (values.length > 0) {
+    teamAvg = values.reduce(function (s, v) { return s + v; }, 0) / values.length;
+    var sqDiffs = values.reduce(function (s, v) { return s + (v - teamAvg) * (v - teamAvg); }, 0);
+    teamSigma = Math.sqrt(sqDiffs / values.length);
+  }
+  if (values.length >= 4) {
+    rows.forEach(function (r) {
+      if (r.wonCount === 0) { r.isOutlier = true; return; } // no wins at all → outlier
+      if (r.wonValue < teamAvg - 2 * teamSigma) r.isOutlier = true;
+    });
+  }
+  return { rows: rows, teamAvg: teamAvg, teamSigma: teamSigma, repCount: values.length };
+}
+
+// Render the breakdown popover content for a single deal. Used inside an
+// .etrack span on the deals table. Reads calcDealCommission's breakdown
+// array and formats it as a small dark tooltip. Override .etrack-tip's
+// default white-space:nowrap so multi-line content wraps cleanly.
+function _renderCommissionBreakdownTip(deal) {
+  if (!deal || typeof calcDealCommission !== 'function') return '';
+  var c = null;
+  try { c = calcDealCommission(deal); } catch (e) { return ''; }
+  if (!c || !Array.isArray(c.breakdown) || c.breakdown.length === 0) return '';
+  return '<div class="etrack-tip" style="text-align:left;white-space:normal;min-width:240px;line-height:1.5">'
+    + '<div style="font-weight:700;font-size:11px;margin-bottom:6px;color:#fbbf24">Commission breakdown</div>'
+    + c.breakdown.map(function (b) {
+        return '<div style="display:flex;justify-content:space-between;gap:12px;font-size:11px"><span style="opacity:0.85">' + b.label + '</span><span style="font-weight:600">' + b.value + '</span></div>';
+      }).join('')
+    + '</div>';
+}
+
+// MTD/YTD/Projection tiles row. Shown on the overview tab above the
+// deals table for the current scope (rep / admin-with-rep-filter / team).
+function _renderMtdYtdProjectionTiles(scopeDeals, status, repName) {
+  var now = new Date();
+  var thisMonth = now.getMonth(), thisYear = now.getFullYear();
+  var inMonth = function (d) {
+    if (!d.wonDate) return false;
+    try { var wd = new Date(d.wonDate + 'T12:00:00'); return wd.getMonth() === thisMonth && wd.getFullYear() === thisYear; }
+    catch (e) { return false; }
+  };
+  var inYear = function (d) {
+    if (!d.wonDate) return false;
+    try { return new Date(d.wonDate + 'T12:00:00').getFullYear() === thisYear; }
+    catch (e) { return false; }
+  };
+  var mtd = _computeCommissionStateTotals(scopeDeals, status, inMonth);
+  var ytd = _computeCommissionStateTotals(scopeDeals, status, inYear);
+  // Pipeline projection across open deals (not won, not lost) — needs
+  // ALL deals from state, not just won, since scopeDeals is filtered to
+  // won by the time it lands here.
+  var allDeals = (typeof getState === 'function' && getState().deals) ? getState().deals : [];
+  var projection = _computePipelineProjection(allDeals, repName || null);
+
+  var mtdTotal = mtd.accrued + mtd.realised + mtd.paid;
+  var ytdTotal = ytd.accrued + ytd.realised + ytd.paid;
+
+  return '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">'
+    + '<div class="card" style="padding:14px 16px;border-top:3px solid #3b82f6">'
+    +   '<div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em">📅 This Month</div>'
+    +   '<div style="font-size:24px;font-weight:800;font-family:Syne,sans-serif;color:#1a1a1a;margin-top:4px">' + fmt$(mtdTotal) + '</div>'
+    +   '<div style="font-size:10px;color:#6b7280;margin-top:6px;line-height:1.5">'
+    +     '<span style="color:#22c55e">✓</span> Paid ' + fmt$(mtd.paid) + ' · '
+    +     '<span style="color:#3b82f6">●</span> Realised ' + fmt$(mtd.realised) + ' · '
+    +     '<span style="color:#f59e0b">⏳</span> Accrued ' + fmt$(mtd.accrued)
+    +   '</div>'
+    + '</div>'
+    + '<div class="card" style="padding:14px 16px;border-top:3px solid #6366f1">'
+    +   '<div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em">📊 This Year</div>'
+    +   '<div style="font-size:24px;font-weight:800;font-family:Syne,sans-serif;color:#1a1a1a;margin-top:4px">' + fmt$(ytdTotal) + '</div>'
+    +   '<div style="font-size:10px;color:#6b7280;margin-top:6px;line-height:1.5">'
+    +     '<span style="color:#22c55e">✓</span> Paid ' + fmt$(ytd.paid) + ' · '
+    +     '<span style="color:#3b82f6">●</span> Realised ' + fmt$(ytd.realised) + ' · '
+    +     '<span style="color:#f59e0b">⏳</span> Accrued ' + fmt$(ytd.accrued)
+    +   '</div>'
+    + '</div>'
+    + '<div class="card" style="padding:14px 16px;border-top:3px solid #15803d">'
+    +   '<div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em">💚 Realised + Paid (YTD)</div>'
+    +   '<div style="font-size:24px;font-weight:800;font-family:Syne,sans-serif;color:#15803d;margin-top:4px">' + fmt$(ytd.paid + ytd.realised) + '</div>'
+    +   '<div style="font-size:10px;color:#6b7280;margin-top:6px">Earned commission you can count on</div>'
+    + '</div>'
+    + '<div class="card" style="padding:14px 16px;border-top:3px solid #c41230">'
+    +   '<div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em">🚀 Pipeline Projection</div>'
+    +   '<div style="font-size:24px;font-weight:800;font-family:Syne,sans-serif;color:#c41230;margin-top:4px">' + fmt$(projection) + '</div>'
+    +   '<div style="font-size:10px;color:#6b7280;margin-top:6px">If everything open' + (repName ? ' (' + repName + ')' : '') + ' lands</div>'
+    + '</div>'
+    + '</div>';
+}
+
+// Manager-rollup tab body. Per-rep aggregated table with click-to-drill,
+// outlier flag for coaching. Manager + admin only.
+function _renderTeamRollupTab(allWon, status, allReps) {
+  var data = _computeTeamRollup(allWon, status, allReps);
+  if (data.repCount === 0) {
+    return '<div class="card" style="padding:40px;text-align:center;color:#9ca3af"><div style="font-size:36px;margin-bottom:10px">📊</div><div style="font-size:14px;color:#6b7280">No team data yet — once reps win deals, this rollup compares their performance.</div></div>';
+  }
+  var html = '<div style="margin-bottom:14px;padding:14px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;font-size:12px;color:#1e40af;line-height:1.5">'
+    + '<strong>Team avg won value:</strong> ' + fmt$(data.teamAvg) + ' per rep'
+    + (data.repCount >= 4 ? ' · <strong>2σ band:</strong> ' + fmt$(Math.max(0, data.teamAvg - 2 * data.teamSigma)) + ' to ' + fmt$(data.teamAvg + 2 * data.teamSigma) + ' (reps below the lower band are flagged)' : ' · <em>Outlier flagging requires at least 4 reps with wins (currently ' + data.repCount + ')</em>')
+    + '</div>';
+  html += '<div class="card" style="overflow:hidden;padding:0"><table style="width:100%;border-collapse:collapse">'
+    + '<thead><tr>'
+    + '<th class="th">Rep</th>'
+    + '<th class="th" style="text-align:center">Won deals</th>'
+    + '<th class="th" style="text-align:right">Won $ (inc GST)</th>'
+    + '<th class="th" style="text-align:right">Avg deal $</th>'
+    + '<th class="th" style="text-align:right">⏳ Accrued</th>'
+    + '<th class="th" style="text-align:right">● Realised</th>'
+    + '<th class="th" style="text-align:right">✓ Paid</th>'
+    + '<th class="th" style="text-align:center">vs Team Avg</th>'
+    + '</tr></thead><tbody>';
+  data.rows.forEach(function (r) {
+    var pctOfAvg = data.teamAvg > 0 ? Math.round((r.wonValue / data.teamAvg) * 100) : 0;
+    var flagColor = r.isOutlier ? '#dc2626' : (pctOfAvg >= 100 ? '#15803d' : '#6b7280');
+    var flagBg    = r.isOutlier ? '#fef2f2' : (pctOfAvg >= 100 ? '#dcfce7' : '#f3f4f6');
+    var flagText  = r.isOutlier ? '⚠️ ' + pctOfAvg + '% (outlier)' : pctOfAvg + '% of avg';
+    var safeRep = r.repName.replace(/'/g, "\\'");
+    html += '<tr style="cursor:pointer" onclick="commRepFilter=\'' + safeRep + '\';commTab=\'overview\';renderPage()" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'\'">'
+      + '<td class="td"><div style="display:flex;align-items:center;gap:8px"><div style="width:28px;height:28px;background:#c41230;border-radius:50%;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center">' + (r.initials || r.repName.charAt(0)) + '</div><div><div style="font-size:13px;font-weight:600">' + r.repName + '</div><div style="font-size:11px;color:#6b7280">' + (r.role || 'sales_rep').replace(/_/g,' ') + '</div></div></div></td>'
+      + '<td class="td" style="text-align:center;font-size:13px">' + r.wonCount + '</td>'
+      + '<td class="td" style="text-align:right;font-size:13px;font-weight:600">' + fmt$(r.wonValue) + '</td>'
+      + '<td class="td" style="text-align:right;font-size:12px;color:#6b7280">' + fmt$(r.avgValue) + '</td>'
+      + '<td class="td" style="text-align:right;font-size:13px;color:#f59e0b;font-family:Syne,sans-serif">' + fmt$(r.accrued) + '</td>'
+      + '<td class="td" style="text-align:right;font-size:13px;color:#3b82f6;font-family:Syne,sans-serif">' + fmt$(r.realised) + '</td>'
+      + '<td class="td" style="text-align:right;font-size:13px;color:#15803d;font-weight:700;font-family:Syne,sans-serif">' + fmt$(r.paid) + '</td>'
+      + '<td class="td" style="text-align:center"><span style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;background:' + flagBg + ';color:' + flagColor + '">' + flagText + '</span></td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
 function renderCommissionPage() {
   var cu = getCurrentUser() || {role:'viewer',name:'',id:''};
   var isAdmin = cu.role === 'admin' || cu.role === 'accounts';
@@ -1682,9 +1902,10 @@ function renderCommissionPage() {
   if (commStatusFilter==='unpaid') filtered = filtered.filter(function(d){ return !(paid[d.id]&&paid[d.id].status==='paid'); });
   filtered.sort(function(a,b){ return (b.wonDate||'').localeCompare(a.wonDate||''); });
 
-  // Totals
+  // Totals — Brief 4 Phase 6: use calcDealCommission so totals reflect
+  // the configured multipliers / bonuses / age penalties.
   var totalComm=0,totalPaid=0,totalUnpaid=0;
-  filtered.forEach(function(d){ var c=calcCommission(d.val,d.rep); totalComm+=c.commission; if(paid[d.id]&&paid[d.id].status==='paid')totalPaid+=c.commission; else totalUnpaid+=c.commission; });
+  filtered.forEach(function(d){ var c=calcDealCommission(d); totalComm+=c.commission; if(paid[d.id]&&paid[d.id].status==='paid')totalPaid+=c.commission; else totalUnpaid+=c.commission; });
 
   var reps=[];
   allWon.forEach(function(d){ if(d.rep&&reps.indexOf(d.rep)<0) reps.push(d.rep); });
@@ -1695,7 +1916,7 @@ function renderCommissionPage() {
     repCards='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-bottom:20px">'
       +reps.map(function(rep){
         var rd=allWon.filter(function(d){return d.rep===rep;}),rt=0,rp=0,ru=0;
-        rd.forEach(function(d){var c=calcCommission(d.val,rep);rt+=c.commission;if(paid[d.id]&&paid[d.id].status==='paid')rp+=c.commission;else ru+=c.commission;});
+        rd.forEach(function(d){var c=calcDealCommission(d);rt+=c.commission;if(paid[d.id]&&paid[d.id].status==='paid')rp+=c.commission;else ru+=c.commission;});
         return '<div class="card" style="padding:16px;cursor:pointer;border:2px solid '+(commRepFilter===rep?'#c41230':'transparent')+'" onclick="commRepFilter='+(commRepFilter===rep?"'all'":"'"+rep+"'")+';renderPage()">'
           +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-size:14px;font-weight:700">'+rep+'</div><span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#dbeafe;color:#1d4ed8">'+getRepRate(rep)+'%</span></div>'
           +'<div style="font-size:20px;font-weight:800;color:#15803d;font-family:Syne,sans-serif">'+fmt$(rt)+'</div>'
@@ -1736,13 +1957,21 @@ function renderCommissionPage() {
   var totalDue=0,totalPending=0;
   totalComm=0;totalPaid=0;totalUnpaid=0;
   filtered.forEach(function(d){
-    var c=calcCommission(d.val,d.rep);var js=getDealJobStatus(d);totalComm+=c.commission;
+    var c=calcDealCommission(d);var js=getDealJobStatus(d);totalComm+=c.commission;
     if(paid[d.id]&&paid[d.id].status==='paid')totalPaid+=c.commission;
     else if(js.isDue){totalDue+=c.commission;totalUnpaid+=c.commission;}
     else{totalPending+=c.commission;totalUnpaid+=c.commission;}
   });
 
-  var table='<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">'
+  // Brief 4 Phase 6: MTD/YTD/Projection KPI tiles above the deals
+  // table. Filter scope: when commRepFilter is set, scope to that rep;
+  // otherwise show team totals (admin) or current user (rep view).
+  var _kpiScope = (isAdmin && commRepFilter !== 'all') ? commRepFilter : (isAdmin ? null : cu.name);
+  var _kpiDeals = _kpiScope ? allWon.filter(function (d) { return d.rep === _kpiScope; }) : allWon;
+  var _kpiStatus = (typeof getCommissionStatus === 'function') ? getCommissionStatus() : {};
+  var dashboardTiles = _renderMtdYtdProjectionTiles(_kpiDeals, _kpiStatus, _kpiScope);
+
+  var table = dashboardTiles + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">'
     +'<div class="card" style="padding:14px 16px;border-left:4px solid #22c55e"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">\u2705 Paid</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#22c55e;margin-top:4px">'+fmt$(totalPaid)+'</div></div>'
     +'<div class="card" style="padding:14px 16px;border-left:4px solid #c41230"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">\ud83d\udcb0 Due (Ready to Pay)</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#c41230;margin-top:4px">'+fmt$(totalDue)+'</div></div>'
     +'<div class="card" style="padding:14px 16px;border-left:4px solid #f59e0b"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">\u23f3 Pending (Not Yet Due)</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#f59e0b;margin-top:4px">'+fmt$(totalPending)+'</div></div>'
@@ -1758,7 +1987,11 @@ function renderCommissionPage() {
   if(filtered.length===0) table+='<tr><td colspan="'+(isAdmin?11:9)+'" style="padding:40px;text-align:center;color:#9ca3af"><div style="font-size:28px;margin-bottom:8px">\ud83d\udcb0</div>No commission data'+(commDateFilter!=='all'||commStatusFilter!=='all'?' matching filters':'')+'</td></tr>';
   else filtered.forEach(function(d){
     var ct=contacts.find(function(x){return x.id===d.cid;}),cName=ct?ct.fn+' '+ct.ln:'\u2014';
-    var comm=calcCommission(d.val,d.rep),isPaid=paid[d.id]&&paid[d.id].status==='paid';
+    // Brief 4 Phase 6: switched from legacy calcCommission(val,rep) to
+    // calcDealCommission(deal) so the displayed commission $ reflects
+    // multipliers / volume bonuses / age penalties from Phase 1's rules.
+    // The legacy fields (rate/commission/exGst) are still on the return.
+    var comm=calcDealCommission(d),isPaid=paid[d.id]&&paid[d.id].status==='paid';
     var wonFmt=d.wonDate||'\u2014'; try{wonFmt=new Date(d.wonDate+'T12:00:00').toLocaleDateString('en-AU',{day:'numeric',month:'short'});}catch(e){}
     var js=getDealJobStatus(d);
 
@@ -1786,8 +2019,8 @@ function renderCommissionPage() {
       +'<td class="td" style="font-size:11px;font-weight:600;color:#3b82f6;cursor:pointer" onclick="'+(js.job?'setState({jobDetailId:\''+js.job.id+'\',page:\'jobs\',crmMode:\'jobs\'})':'')+'">'+(js.jobNumber||'\u2014')+'</td>'
       +'<td class="td" style="font-size:12px;color:#6b7280">'+cName+'</td>'
       +'<td class="td" style="text-align:right;font-size:13px">'+fmt$(d.val)+'</td>'
-      +'<td class="td" style="text-align:center;font-size:12px;color:#6b7280">'+comm.rate+'%</td>'
-      +'<td class="td" style="text-align:right;font-size:14px;font-weight:700;color:'+(isPaid?'#15803d':js.isDue?'#c41230':'#9ca3af')+';font-family:Syne,sans-serif">'+fmt$(comm.commission)+'</td>'
+      +'<td class="td" style="text-align:center;font-size:12px;color:#6b7280">'+(comm.effectiveRate != null ? comm.effectiveRate : comm.rate)+'%</td>'
+      +'<td class="td" style="text-align:right;font-size:14px;font-weight:700;color:'+(isPaid?'#15803d':js.isDue?'#c41230':'#9ca3af')+';font-family:Syne,sans-serif"><span class="etrack" style="cursor:help">'+fmt$(comm.commission)+_renderCommissionBreakdownTip(d)+'</span></td>'
       +(isAdmin?'<td class="td" style="font-size:12px;color:#6b7280">'+(d.rep||'\u2014')+'</td>':'')
       +'<td class="td" style="font-size:11px;color:#6b7280">'+wonFmt+'</td>'
       +'<td class="td" style="padding:6px 8px">'+pipeline+'</td>'
@@ -1851,7 +2084,7 @@ function renderCommissionPage() {
     var allReps=getUsers().filter(function(u){return u.active&&(u.role==='sales_rep'||u.role==='admin'||u.role==='sales_manager');});
     ratesHtml='<div class="card" style="padding:0;overflow:hidden"><table style="width:100%;border-collapse:collapse"><thead><tr><th class="th">Rep</th><th class="th" style="text-align:center">Rate (%)</th><th class="th">Won Deals</th><th class="th" style="text-align:right">Total Earned</th></tr></thead><tbody>';
     allReps.forEach(function(u){
-      var rd=getState().deals.filter(function(d){return d.won&&d.rep===u.name;}),te=rd.reduce(function(s,d){return s+calcCommission(d.val,u.name).commission;},0);
+      var rd=getState().deals.filter(function(d){return d.won&&d.rep===u.name;}),te=rd.reduce(function(s,d){return s+calcDealCommission(d).commission;},0);
       ratesHtml+='<tr><td class="td"><div style="display:flex;align-items:center;gap:8px"><div style="width:28px;height:28px;background:#c41230;border-radius:50%;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center">'+u.initials+'</div><div><div style="font-size:13px;font-weight:600">'+u.name+'</div><div style="font-size:11px;color:#6b7280">'+u.role.replace(/_/g,' ')+'</div></div></div></td>'
         +'<td class="td" style="text-align:center"><input type="number" step="0.5" min="0" max="100" value="'+getRepRate(u.name)+'" style="width:70px;text-align:center;padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:14px;font-weight:700;font-family:Syne,sans-serif" onchange="setRepRate(\''+u.name.replace(/'/g,"\\'")+'\',this.value)"> %</td>'
         +'<td class="td">'+rd.length+'</td><td class="td" style="text-align:right;font-size:14px;font-weight:700;color:#15803d;font-family:Syne,sans-serif">'+fmt$(te)+'</td></tr>';
@@ -1866,10 +2099,21 @@ function renderCommissionPage() {
     payrunsHtml = _renderPayRunHistoryTab(cu, isAdmin, isManager, isRep);
   }
 
+  // TEAM ROLLUP TAB (Brief 4 Phase 6) \u2014 admin + sales_manager only.
+  // Per-rep aggregated comparison with 2\u03c3 outlier flag for coaching.
+  var teamHtml = '';
+  if (commTab === 'team' && (isAdmin || isManager)) {
+    var _teamReps = (typeof getUsers === 'function')
+      ? getUsers().filter(function (u) { return u.active && (u.role === 'sales_rep' || u.role === 'sales_manager' || u.role === 'admin'); })
+      : [];
+    var _teamStatus = (typeof getCommissionStatus === 'function') ? getCommissionStatus() : {};
+    teamHtml = _renderTeamRollupTab(allWon, _teamStatus, _teamReps);
+  }
+
   // BUILD TABS
   var tabs=[];
-  if(isAdmin) tabs=[{id:'overview',label:'\ud83d\udcca Deals & Payments'},{id:'payruns',label:'\ud83d\udcb8 Pay Runs'},{id:'override',label:'\ud83d\udcb5 Manager Override'},{id:'rates',label:'\u2699\ufe0f Commission Rates'},{id:'audit',label:'\ud83d\udcdd Audit Log'}];
-  else if(isManager) tabs=[{id:'overview',label:'\ud83d\udcb0 My Commission'},{id:'payruns',label:'\ud83d\udcb8 Pay Runs'},{id:'override',label:'\ud83d\udcb5 My Override'}];
+  if(isAdmin) tabs=[{id:'overview',label:'\ud83d\udcca Deals & Payments'},{id:'team',label:'\ud83d\udc65 Team'},{id:'payruns',label:'\ud83d\udcb8 Pay Runs'},{id:'override',label:'\ud83d\udcb5 Manager Override'},{id:'rates',label:'\u2699\ufe0f Commission Rates'},{id:'audit',label:'\ud83d\udcdd Audit Log'}];
+  else if(isManager) tabs=[{id:'overview',label:'\ud83d\udcb0 My Commission'},{id:'team',label:'\ud83d\udc65 Team'},{id:'payruns',label:'\ud83d\udcb8 Pay Runs'},{id:'override',label:'\ud83d\udcb5 My Override'}];
   else if(isRep) tabs=[{id:'overview',label:'\ud83d\udcb0 My Commission'},{id:'payruns',label:'\ud83d\udcb8 My Payment History'}];
   else if(cu.role === 'accounts') tabs=[{id:'overview',label:'\ud83d\udcca Deals & Payments'},{id:'payruns',label:'\ud83d\udcb8 Pay Runs'},{id:'audit',label:'\ud83d\udcdd Audit Log'}];
 
@@ -1885,7 +2129,7 @@ function renderCommissionPage() {
     +(tabs.length>0?'<div style="display:flex;gap:8px;margin-bottom:16px">'+tabs.map(function(t){return '<button onclick="commTab=\''+t.id+'\';renderPage()" class="pill'+(commTab===t.id?' on':'')+'" style="font-family:inherit;font-size:13px">'+t.label+'</button>';}).join('')+'</div>':'')
     +(commTab==='overview'?'<div class="card" style="padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><select class="sel" style="width:auto;font-size:12px" onchange="commDateFilter=this.value;renderPage()"><option value="all"'+(commDateFilter==='all'?' selected':'')+'>All Time</option><option value="thisMonth"'+(commDateFilter==='thisMonth'?' selected':'')+'>This Month</option><option value="lastMonth"'+(commDateFilter==='lastMonth'?' selected':'')+'>Last Month</option><option value="thisQuarter"'+(commDateFilter==='thisQuarter'?' selected':'')+'>This Quarter</option><option value="last6"'+(commDateFilter==='last6'?' selected':'')+'>Last 6 Months</option><option value="thisYear"'+(commDateFilter==='thisYear'?' selected':'')+'>This Year</option></select>'+(isAdmin?'<select class="sel" style="width:auto;font-size:12px" onchange="commRepFilter=this.value;renderPage()"><option value="all"'+(commRepFilter==='all'?' selected':'')+'>All Reps</option>'+reps.map(function(r){return '<option value="'+r+'"'+(commRepFilter===r?' selected':'')+'>'+r+'</option>';}).join('')+'</select>':'')+'<select class="sel" style="width:auto;font-size:12px" onchange="commStatusFilter=this.value;renderPage()"><option value="all"'+(commStatusFilter==='all'?' selected':'')+'>All Status</option><option value="paid"'+(commStatusFilter==='paid'?' selected':'')+'>Paid</option><option value="due"'+(commStatusFilter==='due'?' selected':'')+'>Due (Ready to Pay)</option><option value="pending"'+(commStatusFilter==='pending'?' selected':'')+'>Pending (Not Yet Due)</option><option value="unpaid"'+(commStatusFilter==='unpaid'?' selected':'')+'>All Unpaid</option></select></div>':'')
     +repCards
-    +(commTab==='overview'?table:commTab==='override'?overrideHtml:commTab==='audit'?auditHtml:commTab==='payruns'?payrunsHtml:ratesHtml)
+    +(commTab==='overview'?table:commTab==='team'?teamHtml:commTab==='override'?overrideHtml:commTab==='audit'?auditHtml:commTab==='payruns'?payrunsHtml:ratesHtml)
     +(!isAdmin&&!isManager&&!isRep&&cu.role!=='accounts'?'<div class="card" style="padding:40px;text-align:center"><div style="font-size:28px;margin-bottom:8px">\ud83d\udd12</div><div style="font-size:14px;color:#6b7280">Commission data is restricted.</div></div>':'')
     +'</div>';
 }
