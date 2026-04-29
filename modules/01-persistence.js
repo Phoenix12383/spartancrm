@@ -862,6 +862,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'installers'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'email_sent'}, function(){ dbLoadAll(); })
     .subscribe(function(status){ console.log('[Spartan] Realtime B:', status); });
 }
 

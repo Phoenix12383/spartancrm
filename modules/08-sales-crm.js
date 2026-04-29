@@ -2764,6 +2764,109 @@ async function takeMobilePhoto(entityId, entityType) {
   }
 }
 
+// ── MOBILE: email compose modal ──────────────────────────────────────────────
+// Compose-on-mobile via /api/email/send. Sends via Workspace service account
+// with domain-wide delegation — recipient sees From:<rep@domain> as if the
+// rep had sent from desktop. Body is plain text in the textarea; the server
+// converts newlines→<br> and appends the open-tracking pixel before handing
+// off to Gmail. State held in module scope so realtime echoes don't drop the
+// in-progress draft.
+var _pendingMobileEmail = null;          // { entityId, entityType, to, subject, body, sending }
+function openMobileEmail(entityId, entityType, prefilledTo) {
+  _pendingMobileEmail = {
+    entityId: entityId, entityType: entityType,
+    to: prefilledTo || '', subject: '', body: '', sending: false,
+  };
+  renderPage();
+  setTimeout(function(){
+    var el = document.getElementById('mobEmailSubject');
+    if (el) el.focus();
+  }, 60);
+}
+function cancelMobileEmail() { _pendingMobileEmail = null; renderPage(); }
+function setMobileEmailField(field, value) {
+  if (_pendingMobileEmail) _pendingMobileEmail[field] = value;
+}
+async function sendMobileEmail() {
+  if (!_pendingMobileEmail || _pendingMobileEmail.sending) return;
+  var p = _pendingMobileEmail;
+  if (!p.to.trim() || !p.subject.trim() || !p.body.trim()) {
+    addToast('To, subject and body are required', 'warning'); return;
+  }
+  // The wrapper persists the Google ID token at sign-in time
+  // (10-integrations.js googleSignInForLoginNative). Without it, the
+  // backend can't authenticate — fall back to a clear message.
+  var idToken = '';
+  try { idToken = localStorage.getItem('spartan_native_id_token') || ''; } catch(e){}
+  if (!idToken) {
+    addToast('Sign in again to send email — token missing', 'error');
+    return;
+  }
+  p.sending = true; renderPage();
+  try {
+    var resp = await fetch('https://spaartan.tech/api/email/send', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + idToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        to: p.to.trim(),
+        subject: p.subject.trim(),
+        body: p.body,
+        entityId: p.entityId,
+        entityType: p.entityType,
+      }),
+    });
+    var data = {};
+    try { data = await resp.json(); } catch(e){}
+    if (!resp.ok) {
+      var msg = (data && data.error) || ('HTTP ' + resp.status);
+      addToast('Send failed: ' + msg, 'error');
+      p.sending = false; renderPage();
+      return;
+    }
+    _pendingMobileEmail = null;
+    addToast('Email sent ✓', 'success');
+    renderPage();
+  } catch (e) {
+    addToast('Send failed: ' + (e.message || e), 'error');
+    if (_pendingMobileEmail) { _pendingMobileEmail.sending = false; renderPage(); }
+  }
+}
+function renderMobileEmailModal() {
+  if (!_pendingMobileEmail) return '';
+  var p = _pendingMobileEmail;
+  var safeTo = (p.to || '').replace(/"/g, '&quot;');
+  var safeSubj = (p.subject || '').replace(/"/g, '&quot;');
+  var safeBody = (p.body || '').replace(/</g, '&lt;');
+  var sending = !!p.sending;
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)cancelMobileEmail()" style="z-index:300">'
+    +   '<div class="modal" style="max-width:520px;width:calc(100% - 24px);max-height:90vh;display:flex;flex-direction:column">'
+    +     '<div class="modal-header" style="padding:14px 18px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">'
+    +       '<h3 style="margin:0;font-size:15px;font-weight:700;font-family:Syne,sans-serif">Compose email</h3>'
+    +       '<button onclick="cancelMobileEmail()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1;padding:0">×</button>'
+    +     '</div>'
+    +     '<div class="modal-body" style="padding:14px 18px;display:flex;flex-direction:column;gap:10px;overflow-y:auto">'
+    +       '<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">To</label>'
+    +         '<input type="email" value="' + safeTo + '" oninput="setMobileEmailField(\'to\', this.value)" placeholder="recipient@example.com" style="width:100%;padding:9px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:13px;outline:none;box-sizing:border-box" />' +
+    +       '</div>'
+    +       '<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">Subject</label>'
+    +         '<input id="mobEmailSubject" value="' + safeSubj + '" oninput="setMobileEmailField(\'subject\', this.value)" placeholder="Subject line" style="width:100%;padding:9px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:13px;outline:none;box-sizing:border-box" />' +
+    +       '</div>'
+    +       '<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">Message</label>'
+    +         '<textarea rows="8" oninput="setMobileEmailField(\'body\', this.value)" placeholder="Write your message…" style="width:100%;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:14px;resize:vertical;outline:none;box-sizing:border-box;line-height:1.5">' + safeBody + '</textarea>' +
+    +       '</div>'
+    +     '</div>'
+    +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px;justify-content:flex-end;flex-shrink:0">'
+    +       '<button onclick="cancelMobileEmail()" ' + (sending ? 'disabled' : '') + ' style="padding:9px 14px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:600;color:#374151;cursor:' + (sending ? 'not-allowed' : 'pointer') + ';font-family:inherit;opacity:' + (sending ? '.5' : '1') + '">Cancel</button>'
+    +       '<button onclick="sendMobileEmail()" ' + (sending ? 'disabled' : '') + ' style="padding:9px 18px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:' + (sending ? 'not-allowed' : 'pointer') + ';font-family:inherit;opacity:' + (sending ? '.7' : '1') + '">' + (sending ? 'Sending…' : '✈ Send') + '</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+}
+
 // ── MOBILE: typed-note modal ─────────────────────────────────────────────────
 // Lightweight bottom-sheet replacement for the desktop notes-tab inline form.
 // Lives in module state so a renderPage triggered by setState (e.g. realtime
@@ -2898,7 +3001,7 @@ function _renderEntityDetailMobile(opts) {
   var cells = [];
   if (phone) cells.push('<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></a>');
   if (phone) cells.push('<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#3b82f6;text-decoration:none"><span style="font-size:18px">💬</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">SMS</span></a>');
-  if (email) cells.push('<a href="mailto:' + email + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></a>');
+  if (email) cells.push('<button onclick="openMobileEmail(\'' + _esc(entity.id) + '\',\'' + entityType + '\',\'' + _esc(email) + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></button>');
   cells.push('<button onclick="takeMobilePhoto(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#0a0a0a;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">📸</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">PHOTO</span></button>');
   if (cells.length) {
     var sepStyle = ';border-right:1px solid #f3f4f6';
