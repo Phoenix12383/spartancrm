@@ -98,7 +98,8 @@
           return b.mins - a.mins;
         });
       // Try each candidate; return the first that has a viable target week.
-      for (var ci = 0; ci < candidates.length; ci++) {
+      var matched = false;
+      for (var ci = 0; ci < candidates.length && !matched; ci++) {
         var cand = candidates[ci];
         // Find a future week with headroom (capacity - demand) >= cand.mins.
         // Limit search to the visible window so the suggestion stays in view.
@@ -107,6 +108,7 @@
           var headroom = target.capacity - target.demand;
           if (headroom >= cand.mins) {
             out.push({
+              kind: 'move',
               id: 'mv_' + cand.job.id + '_' + target.weekStart,
               jobId: cand.job.id,
               jobNumber: cand.job.jobNumber || cand.job.id,
@@ -118,10 +120,33 @@
               targetWeekday: cand.job.installDate || target.weekStart,
               overflowMins: wk.demand - wk.capacity,
             });
-            return; // one suggestion per overloaded week is enough
+            matched = true;
+            break;
           }
         }
       }
+      if (matched) return;
+      // Nothing fit — emit an explanation entry so the panel isn't blank when
+      // the user can clearly see a red bar above. Includes the biggest job
+      // and the best headroom seen, so the user knows the gap they're up against.
+      var biggest = candidates[0];
+      var maxHeadroom = 0;
+      var maxHeadroomLabel = '';
+      for (var ti2 = idx + 1; ti2 < weeks.length; ti2++) {
+        var t2 = weeks[ti2];
+        var h2 = t2.capacity - t2.demand;
+        if (h2 > maxHeadroom) { maxHeadroom = h2; maxHeadroomLabel = fmtShortDate(t2.dates[0]) + ' – ' + fmtShortDate(t2.dates[6]); }
+      }
+      out.push({
+        kind: 'no_fit',
+        id: 'nf_' + wk.weekStart,
+        fromWeekLabel: fmtShortDate(wk.dates[0]) + ' – ' + fmtShortDate(wk.dates[6]),
+        overflowMins: wk.demand - wk.capacity,
+        biggestJobNumber: biggest ? (biggest.job.jobNumber || biggest.job.id) : null,
+        biggestJobMins: biggest ? biggest.mins : 0,
+        bestHeadroom: maxHeadroom,
+        bestHeadroomLabel: maxHeadroomLabel,
+      });
     });
     return out;
   }
@@ -238,6 +263,20 @@
       } else {
         suggestionsHtml += '<div style="display:flex;flex-direction:column;gap:8px">';
         suggestions.forEach(function(s){
+          if (s.kind === 'no_fit') {
+            // No single move fits — explain the gap so the user knows what's up.
+            var gapMsg = s.bestHeadroom > 0
+              ? 'Best future-week headroom is '+fmtHM(s.bestHeadroom)+' ('+s.bestHeadroomLabel+') — biggest job ('+(s.biggestJobNumber||'—')+') is '+fmtHM(s.biggestJobMins)+'.'
+              : 'No future week in this window has any spare capacity.';
+            suggestionsHtml += '<div style="display:flex;align-items:flex-start;gap:12px;padding:10px 14px;background:#fff;border:1px solid #fecaca;border-radius:8px">'
+              +'<div style="flex:1;min-width:0">'
+              +'<div style="font-size:13px;font-weight:700;color:#7f1d1d">⚠ '+s.fromWeekLabel+' over by '+fmtHM(s.overflowMins)+' — no single-move fit</div>'
+              +'<div style="font-size:11px;color:#6b7280;margin-top:2px">'+gapMsg+' Options: shrink one job, split it, scroll the window forward, or add capacity (extra installer, fewer leave days).</div>'
+              +'</div>'
+              +'<button onclick="capPlanDismissSuggestion(\''+s.id+'\')" title="Dismiss" style="background:none;border:none;color:#9ca3af;cursor:pointer;font-size:14px;padding:4px 6px">✕</button>'
+              +'</div>';
+            return;
+          }
           suggestionsHtml += '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border:1px solid #fde68a;border-radius:8px">'
             +'<div style="flex:1;min-width:0">'
             +'<div style="font-size:13px;font-weight:700;color:#374151"><a href="#" onclick="event.preventDefault();setState({page:\'jobs\',jobDetailId:\''+s.jobId+'\'})" style="color:#3b82f6;text-decoration:none">'+s.jobNumber+'</a> · '+fmtHM(s.jobMinutes)+'</div>'
