@@ -66,9 +66,12 @@ function googleSignInForLogin() {
 function googleSignInForLoginNative() {
   var SocialLogin = window.Capacitor.Plugins && window.Capacitor.Plugins.SocialLogin;
   if (!SocialLogin) { alert('Native Google Sign-In plugin not available.'); return; }
+  // No `scopes` option — passing one forces the plugin's legacy Google flow,
+  // which requires registering an ActivityResultLauncher in MainActivity. The
+  // default Credential Manager flow already returns email + profile.
   SocialLogin.initialize({ google: { webClientId: GMAIL_CLIENT_ID } })
     .then(function(){
-      return SocialLogin.login({ provider: 'google', options: { scopes: ['email','profile'] } });
+      return SocialLogin.login({ provider: 'google', options: {} });
     })
     .then(function(res){
       var profile = res && res.result && res.result.profile;
