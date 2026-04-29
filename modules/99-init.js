@@ -156,6 +156,9 @@ function renderPage(){
     ${_pendingUnwindDealId ? renderUnwindDealModal() : ''}
     ${typeof _pendingLostTransition !== 'undefined' && _pendingLostTransition ? renderLostReasonModal() : ''}
     ${typeof _pendingDealTypePicker !== 'undefined' && _pendingDealTypePicker ? renderDealTypePickerModal() : ''}
+    ${typeof _pendingPayRun !== 'undefined' && _pendingPayRun ? renderPayRunModal() : ''}
+    ${typeof _pendingPayRunVoid !== 'undefined' && _pendingPayRunVoid ? renderVoidPayRunModal() : ''}
+    ${typeof _pendingPayRunDetailId !== 'undefined' && _pendingPayRunDetailId ? renderPayRunDetailModal() : ''}
   `;
   _restoreFocus(_focusSnap);
   renderToasts();
