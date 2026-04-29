@@ -303,7 +303,7 @@ function renderDashboard() {
   bLeads.forEach(l => (l.activities || []).forEach(a => allActs.push({ ...a, _title: l.fn + ' ' + l.ln, _id: l.id, _et: 'lead' })));
   allActs.sort((a, b) => b.date > a.date ? 1 : -1);
   const recentActs = allActs.slice(0, 5);
-  const AICON = { note: '📝', call: '📞', email: '✉️', task: '☑️', stage: '🔀', created: '⭐', meeting: '📅', file: '📎', edit: '✏️' };
+  const AICON = { note: '📝', call: '📞', email: '✉️', task: '☑️', stage: '🔀', created: '⭐', meeting: '📅', file: '📎', edit: '✏️', photo: '📸' };
   const unread = (emailInbox || []).filter(m => !m.read).length;
 
   // ── Branch config ────────────────────────────────────────────────────────────
@@ -2667,6 +2667,68 @@ function advanceDealStageMobile(dealId) {
   addToast('Moved to ' + next.name, 'success');
 }
 
+// ── MOBILE: camera capture ───────────────────────────────────────────────────
+// Uses @capacitor/camera (installed in the wrapper). Plugin does the on-device
+// resize to 1024px-wide, JPEG quality 80 → typical capture lands at 100-200KB.
+// We upload as a binary blob to Supabase Storage (bucket: crm-photos) and log
+// the photo as an activity with type='photo' so it appears in both the
+// desktop activity timeline and the mobile detail's Photos section.
+async function takeMobilePhoto(entityId, entityType) {
+  var Camera = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Camera;
+  if (!Camera) {
+    addToast('Camera plugin not loaded — open in the wrapper app', 'error');
+    return;
+  }
+  if (!_sb) {
+    if (typeof initSupabase === 'function') initSupabase();
+    if (!_sb) { addToast('Database not connected', 'error'); return; }
+  }
+  try {
+    var photo = await Camera.getPhoto({
+      quality: 80, width: 1024, allowEditing: false,
+      resultType: 'base64', source: 'CAMERA',
+    });
+    if (!photo || !photo.base64String) return;
+    addToast('Uploading…', 'info');
+    // Decode base64 → binary → Blob.
+    var binary = atob(photo.base64String);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    var ext = (photo.format || 'jpeg').toLowerCase();
+    var mime = 'image/' + (ext === 'jpg' ? 'jpeg' : ext);
+    var blob = new Blob([bytes], { type: mime });
+    var cu = getCurrentUser() || {};
+    var path = (cu.id || 'anon') + '/' + entityType + '-' + entityId + '/' + Date.now() + '.' + ext;
+    var up = await _sb.storage.from('crm-photos').upload(path, blob, {
+      cacheControl: '3600', upsert: false, contentType: mime,
+    });
+    if (up && up.error) {
+      console.error('[Spartan] photo upload failed:', up.error);
+      addToast('Upload failed: ' + (up.error.message || 'storage'), 'error');
+      return;
+    }
+    var pub = _sb.storage.from('crm-photos').getPublicUrl(path);
+    var publicUrl = pub && pub.data && pub.data.publicUrl;
+    if (!publicUrl) { addToast('Could not resolve photo URL', 'error'); return; }
+    if (typeof saveActivityToEntity === 'function') {
+      saveActivityToEntity(entityId, entityType, {
+        id: 'a' + Date.now(), type: 'photo', text: publicUrl,
+        date: new Date().toISOString().slice(0,10),
+        time: new Date().toTimeString().slice(0,5),
+        by: cu.name || 'Admin',
+      });
+    }
+    addToast('Photo uploaded ✓', 'success');
+    renderPage();
+  } catch (e) {
+    var msg = (e && e.message) || String(e);
+    // Capacitor cancel paths — silent.
+    if (msg.indexOf('cancel') >= 0 || msg.indexOf('Cancel') >= 0) return;
+    console.error('[Spartan] camera error:', e);
+    addToast('Camera error: ' + msg, 'error');
+  }
+}
+
 // ── MOBILE: typed-note modal ─────────────────────────────────────────────────
 // Lightweight bottom-sheet replacement for the desktop notes-tab inline form.
 // Lives in module state so a renderPage triggered by setState (e.g. realtime
@@ -2794,16 +2856,33 @@ function _renderEntityDetailMobile(opts) {
     valHtml = '<div style="font-size:24px;font-weight:800;margin-top:8px;font-family:Syne,sans-serif;color:#fbbf24">' + prefix + fmt$$(entity.val) + suffix + '</div>';
   }
 
-  // Quick action bar — Call / SMS / Email. Shows whatever's available.
+  // Quick action bar — Call / SMS / Email / Photo. Shows whatever's available
+  // (phone-less leads still get the photo button; email-less leads still get
+  // call/sms). Photo always renders since every entity supports photos.
   var actionBar = '';
-  if (phone || email) {
-    var cells = [];
-    if (phone) cells.push('<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></a>');
-    if (phone) cells.push('<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#3b82f6;text-decoration:none"><span style="font-size:18px">💬</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">SMS</span></a>');
-    if (email) cells.push('<a href="mailto:' + email + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></a>');
+  var cells = [];
+  if (phone) cells.push('<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></a>');
+  if (phone) cells.push('<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#3b82f6;text-decoration:none"><span style="font-size:18px">💬</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">SMS</span></a>');
+  if (email) cells.push('<a href="mailto:' + email + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></a>');
+  cells.push('<button onclick="takeMobilePhoto(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#0a0a0a;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">📸</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">PHOTO</span></button>');
+  if (cells.length) {
     var sepStyle = ';border-right:1px solid #f3f4f6';
     cells = cells.map(function(c, i){ return c.replace(';color:', (i < cells.length - 1 ? sepStyle : '') + ';color:'); });
     actionBar = '<div style="margin-top:-10px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);display:grid;grid-template-columns:repeat(' + cells.length + ',1fr);margin-bottom:14px">' + cells.join('') + '</div>';
+  }
+
+  // Recent photos section — pulls type='photo' activities from the entity and
+  // renders thumbnails. Tap opens full-size in the system browser. Hidden
+  // when the entity has no photos yet.
+  var photosHtml = '';
+  var photoActs = (entity.activities || []).filter(function(a){ return a.type === 'photo' && a.text; });
+  if (photoActs.length) {
+    var thumbs = photoActs.slice(0, 12).map(function(a){
+      var safeUrl = String(a.text || '').replace(/"/g, '&quot;');
+      return '<a href="' + safeUrl + '" target="_blank" rel="noopener" style="flex-shrink:0;width:84px;height:84px;border-radius:8px;overflow:hidden;display:block;box-shadow:0 1px 3px rgba(0,0,0,.06);background:#f3f4f6"><img src="' + safeUrl + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;display:block" alt=""></a>';
+    }).join('');
+    photosHtml = '<h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin:18px 4px 8px">Photos <span style="color:#9ca3af;font-weight:600">' + photoActs.length + '</span></h2>' +
+      '<div style="display:flex;gap:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px">' + thumbs + '</div>';
   }
 
   // Details rows (skip empties so the card never has dashes).
@@ -2906,6 +2985,7 @@ function _renderEntityDetailMobile(opts) {
     actionBar +
     sec('Details') +
     detailsCard +
+    photosHtml +
     notesHtml +
     bottomActions;
 }
@@ -2939,8 +3019,8 @@ function renderEntityDetail({
   const inlineForm = renderTabForm(entityId, entityType, detailTab, contact);
 
   // ── History items ─────────────────────────────────────────────────────────
-  const AICON = { note: '📝', call: '📞', email: '✉️', task: '☑️', stage: '🔀', created: '⭐', meeting: '📅', file: '📎', edit: '✏️' };
-  const ACOLBORDER = { note: '#f59e0b', call: '#3b82f6', email: '#8b5cf6', task: '#22c55e', stage: '#9ca3af', created: '#ef4444', meeting: '#0d9488', file: '#6366f1', edit: '#64748b' };
+  const AICON = { note: '📝', call: '📞', email: '✉️', task: '☑️', stage: '🔀', created: '⭐', meeting: '📅', file: '📎', edit: '✏️', photo: '📸' };
+  const ACOLBORDER = { note: '#f59e0b', call: '#3b82f6', email: '#8b5cf6', task: '#22c55e', stage: '#9ca3af', created: '#ef4444', meeting: '#0d9488', file: '#6366f1', edit: '#64748b', photo: '#ec4899' };
 
   const historyItems = activities.length === 0
     ? `<div style="padding:40px 20px;text-align:center">
@@ -2980,9 +3060,13 @@ function renderEntityDetail({
                    Other activity types stay on the existing pre-wrap raw
                    render — their text is plain and includes intentional
                    newlines from edit/note/call activities. -->
-              ${act.text && act.type !== 'stage' ? (act.type === 'email' && typeof _sanitizeEmailBody === 'function'
-                ? `<div style="font-size:13px;color:#374151;line-height:1.6;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'};overflow:hidden">${_sanitizeEmailBody(act.text)}</div>`
-                : `<div style="font-size:13px;color:#374151;line-height:1.6;white-space:pre-wrap;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'}">${act.text}</div>`) : ''}
+              ${act.text && act.type !== 'stage' ? (
+                act.type === 'photo'
+                  ? `<a href="${String(act.text).replace(/"/g,'&quot;')}" target="_blank" rel="noopener" style="display:inline-block;margin-top:4px;border-radius:8px;overflow:hidden;border:1px solid #f3f4f6;max-width:280px;box-shadow:0 1px 3px rgba(0,0,0,.06)"><img src="${String(act.text).replace(/"/g,'&quot;')}" loading="lazy" style="display:block;max-width:280px;max-height:280px;object-fit:cover" alt="Photo"></a>`
+                  : (act.type === 'email' && typeof _sanitizeEmailBody === 'function'
+                    ? `<div style="font-size:13px;color:#374151;line-height:1.6;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'};overflow:hidden">${_sanitizeEmailBody(act.text)}</div>`
+                    : `<div style="font-size:13px;color:#374151;line-height:1.6;white-space:pre-wrap;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'}">${act.text}</div>`)
+                ) : ''}
               ${act.type === 'stage' ? `<div style="font-size:13px;color:#6b7280">${act.text}</div>` : ''}
 
               <!-- Email tracking row (emails only) -->
