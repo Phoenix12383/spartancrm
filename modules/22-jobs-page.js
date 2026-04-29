@@ -889,7 +889,7 @@ function renderJobDetail() {
           if (_vStat === 'awaiting_quote') {
             tabContent += '<div style="margin-top:8px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">'
               +'<div style="flex:1;min-width:200px;font-size:12px;color:#92400e">Sales Manager: choose how to resolve.</div>'
-              +(isManager ? '<button onclick="var amt=prompt(\'Variation amount in dollars (positive = customer pays extra, negative = credit). Manual §6.3 — Sales Manager judges based on glass / hardware / material delta:\',\'\');if(amt===null)return;var a=parseFloat(amt);if(isNaN(a)){addToast(\'Invalid amount\',\'error\');return;}var n=prompt(\'Reason / notes for the variation:\',\'\')||\'\';setState({jobs:(getState().jobs||[]).map(function(j){return j.id===\''+job.id+'\'?Object.assign({},j,{variationAmount:a,variationNotes:n,hasVariation:true}):j;})});if(typeof dbUpdate===\'function\'){try{dbUpdate(\'jobs\',\''+job.id+'\',{variation_amount:a,variation_notes:n,has_variation:true});}catch(e){}}sendVariationDocuSign(\''+job.id+'\');" class="btn-r" style="font-size:12px;padding:6px 12px">📨 Generate &amp; Send Variation DocuSign</button>'
+              +(isManager ? '<button onclick="openVariationModal(\''+job.id+'\')" class="btn-r" style="font-size:12px;padding:6px 12px">📨 Generate &amp; Send Variation DocuSign</button>'
                           + '<button onclick="if(confirm(\'Mark variances as non-material? This means the price is not affected and no Variation DocuSign is needed.\')){var now=new Date().toISOString();setState({jobs:(getState().jobs||[]).map(function(j){return j.id===\''+job.id+'\'?Object.assign({},j,{variationStatus:\'not_material\',variationResolvedAt:now}):j;})});if(typeof dbUpdate===\'function\'){try{dbUpdate(\'jobs\',\''+job.id+'\',{variation_status:\'not_material\',variation_resolved_at:now});}catch(e){}}if(typeof logJobAudit===\'function\')logJobAudit(\''+job.id+'\',\'Variances Marked Non-Material\',\'Sales Manager judged no price impact\');addToast(\'⚖️ Variances marked non-material\',\'success\');renderPage();}" class="btn-w" style="font-size:12px;padding:6px 12px">⚖️ Mark Non-Material</button>'
                           : '<span style="font-size:11px;color:#92400e;font-style:italic">Only Sales Manager / admin can act on variances.</span>')
               +'</div>';
@@ -1843,6 +1843,89 @@ function renderJobDetail() {
     + '</div>'
     + '</div>';
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Variation Quote modal — replaces the wordy prompt() chain with a clean
+// dialog. Same pattern as the availability + add-tool modals: module-scoped
+// state + open/close/save helpers, rendered from the global modal injection
+// list in 99-init.js.
+// ════════════════════════════════════════════════════════════════════════════
+var _variationModalForJobId = null;
+
+function openVariationModal(jobId) {
+  _variationModalForJobId = jobId;
+  renderPage();
+}
+function closeVariationModal() {
+  _variationModalForJobId = null;
+  renderPage();
+}
+function saveVariationModalAndSend() {
+  var amtEl = document.getElementById('vmod_amount');
+  var notesEl = document.getElementById('vmod_notes');
+  if (!amtEl) return;
+  var amount = parseFloat(amtEl.value);
+  if (isNaN(amount) || amount === 0) {
+    addToast('Enter a non-zero amount', 'error');
+    amtEl.focus();
+    return;
+  }
+  var notes = (notesEl && notesEl.value) ? notesEl.value.trim() : '';
+  var jobId = _variationModalForJobId;
+  // Stamp the amount + notes on the job, then trigger the real DocuSign send.
+  setState({jobs: (getState().jobs||[]).map(function(j){
+    return j.id === jobId ? Object.assign({}, j, {variationAmount: amount, variationNotes: notes, hasVariation: true}) : j;
+  })});
+  if (typeof dbUpdate === 'function') {
+    try { dbUpdate('jobs', jobId, {variation_amount: amount, variation_notes: notes, has_variation: true}); } catch(e){}
+  }
+  _variationModalForJobId = null;
+  if (typeof sendVariationDocuSign === 'function') {
+    sendVariationDocuSign(jobId);
+  } else {
+    renderPage();
+  }
+}
+window.openVariationModal = openVariationModal;
+window.closeVariationModal = closeVariationModal;
+window.saveVariationModalAndSend = saveVariationModalAndSend;
+
+function renderVariationModal() {
+  if (!_variationModalForJobId) return '';
+  var job = (getState().jobs || []).find(function(j){ return j.id === _variationModalForJobId; });
+  if (!job) return '';
+  var contacts = getState().contacts || [];
+  var contact = contacts.find(function(c){ return c.id === (job.contactId || job.cid); }) || {};
+  var customerName = ((contact.fn||'') + ' ' + (contact.ln||'')).trim() || '—';
+  var jobNum = job.jobNumber || job.id;
+  return '<div class="modal-bg" onclick="if(event.target===this)closeVariationModal()">'
+    +'<div class="modal" style="max-width:480px">'
+    +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
+    +'<div><h3 style="margin:0;font-size:15px;font-weight:700">📐 Generate Variation Quote</h3>'
+    +'<div style="font-size:11px;color:#6b7280;margin-top:2px">'+jobNum+' · '+customerName+'</div></div>'
+    +'<button onclick="closeVariationModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:18px;line-height:1">×</button>'
+    +'</div>'
+    +'<div class="modal-body" style="padding:20px 22px;display:flex;flex-direction:column;gap:14px">'
+    +'<div>'
+      +'<label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Amount ($) *</label>'
+      +'<div style="position:relative">'
+        +'<span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#6b7280;font-size:14px;font-weight:600">$</span>'
+        +'<input type="number" class="inp" id="vmod_amount" step="0.01" placeholder="e.g. 850.00" style="font-size:14px;padding:9px 10px 9px 24px;width:100%;font-weight:600">'
+      +'</div>'
+      +'<div style="font-size:10px;color:#9ca3af;margin-top:4px">Positive = customer pays extra · Negative = credit to customer</div>'
+    +'</div>'
+    +'<div>'
+      +'<label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Reason / Notes <span style="color:#9ca3af;font-weight:400">(optional)</span></label>'
+      +'<textarea class="inp" id="vmod_notes" rows="3" placeholder="e.g. Larger glass IGU on W01-W03 due to revised dimensions" style="font-size:13px;padding:9px 10px;width:100%;resize:vertical"></textarea>'
+    +'</div>'
+    +'<div style="font-size:11px;color:#1d4ed8;background:#eff6ff;padding:8px 10px;border-radius:6px">ℹ️ A single-page Variation DocuSign will be emailed to the customer. The Final Design DocuSign stays locked until they sign this.</div>'
+    +'</div>'
+    +'<div style="padding:14px 22px;border-top:1px solid #f0f0f0;display:flex;justify-content:flex-end;gap:8px">'
+    +'<button onclick="closeVariationModal()" class="btn-w" style="font-size:13px">Cancel</button>'
+    +'<button onclick="saveVariationModalAndSend()" class="btn-r" style="font-size:13px">📨 Send Variation DocuSign</button>'
+    +'</div></div></div>';
+}
+window.renderVariationModal = renderVariationModal;
 
 // ════════════════════════════════════════════════════════════════════════════
 // Dev-mode mocks for the Final Sign-Off workflow (Manual §6.3 – §6.6).

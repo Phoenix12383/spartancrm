@@ -184,6 +184,7 @@ function renderPage(){
     ${typeof _pendingPayRunDetailId !== 'undefined' && _pendingPayRunDetailId ? renderPayRunDetailModal() : ''}
     ${typeof _availModalForInstallerId !== 'undefined' && _availModalForInstallerId ? renderAvailExceptionModal() : ''}
     ${typeof _addInstToolForId !== 'undefined' && _addInstToolForId ? renderAddInstToolModal() : ''}
+    ${typeof _variationModalForJobId !== 'undefined' && _variationModalForJobId ? renderVariationModal() : ''}
     ${typeof _pendingMobileNote !== 'undefined' && _pendingMobileNote ? renderMobileNoteModal() : ''}
   `;
   _restoreFocus(_focusSnap);
