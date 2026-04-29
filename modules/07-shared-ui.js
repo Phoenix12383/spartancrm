@@ -25,6 +25,8 @@ const PATHS = {
   jobs:'M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z|M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2',
   schedule:'M19 4H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2|M16 2v4|M8 2v4|M3 10h18|M8 14h.01|M12 14h.01|M16 14h.01|M8 18h.01|M12 18h.01',
   capacity:'M12 2a10 10 0 100 20 10 10 0 000-20z|M12 6v6l4 2|M2 12h2|M20 12h2|M12 2v2|M12 20v2',
+  capplan:'M3 4h18v16H3z|M8 2v4|M16 2v4|M3 10h18|M8 17v-3|M12 17v-5|M16 17v-2',
+  fleet:'M1 3h15v13H1z|M16 8h4l3 3v5h-2|M5.5 18a2.5 2.5 0 100-5 2.5 2.5 0 000 5z|M18.5 18a2.5 2.5 0 100-5 2.5 2.5 0 000 5z',
   cmmap:'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z|M12 10a2 2 0 100-4 2 2 0 000 4z',
   jobsettings:'M12 15a3 3 0 100-6 3 3 0 000 6z|M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z',
   servicelist:'M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z',
@@ -528,6 +530,15 @@ function renderSidebar(){
         const newLeads=id==='leads'?leads.filter(l=>l.status==='New'&&!l.converted).length:0;
         const wonCount=id==='won'?getState().deals.filter(d=>d.won).length:0;
         const jobCount=id==='jobs'?(getState().jobs||[]).length:0;
+        // Smart Planner / Installation Schedule badge — count of
+        // dispatch-ready jobs without an installDate yet. Mirrors the
+        // `unscheduled` filter in renderCapacityPlanning and
+        // renderInstallSchedule (17-install-schedule.js:1257, 1941). The
+        // actual auto-scheduled plan length can be ≤ this (capacity-bound),
+        // but running autoScheduleJobs on every sidebar render is too
+        // expensive — this queue-depth is what the user cares about.
+        const capReadyStatuses=['e_dispatch_standard','e1_dispatch_service','c2_order_schedule_standard','c3_order_schedule_service','d5_hardware_revealing'];
+        const capCount=(id==='capacity'||id==='schedule')?(getState().jobs||[]).filter(j=>!j.installDate&&capReadyStatuses.indexOf(j.status)>=0).length:0;
         return `<div class="nav-item${on?' on':''}" onclick="setState({page:'${id}',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null${native ? ',sidebarOpen:false' : ''}})" title="${!sidebarOpen?label:''}">
           ${Icon({n:id,size:17})}
           ${sidebarOpen?`<span style="flex:1">${label}</span>`:''}
@@ -535,6 +546,7 @@ function renderSidebar(){
           ${sidebarOpen&&emailUnread>0?`<span style="background:#c41230;color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${emailUnread}</span>`:''}
           ${sidebarOpen&&wonCount>0?`<span style="background:#22c55e;color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${wonCount}</span>`:''}
           ${sidebarOpen&&jobCount>0?`<span style="background:#3b82f6;color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${jobCount}</span>`:''}
+          ${sidebarOpen&&capCount>0?`<span style="background:#8b5cf6;color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${capCount}</span>`:''}
         </div>`;
       }).join('')}
     </nav>
