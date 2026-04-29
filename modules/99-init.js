@@ -159,6 +159,7 @@ function renderPage(){
     ${typeof _pendingPayRun !== 'undefined' && _pendingPayRun ? renderPayRunModal() : ''}
     ${typeof _pendingPayRunVoid !== 'undefined' && _pendingPayRunVoid ? renderVoidPayRunModal() : ''}
     ${typeof _pendingPayRunDetailId !== 'undefined' && _pendingPayRunDetailId ? renderPayRunDetailModal() : ''}
+    ${typeof _availModalForInstallerId !== 'undefined' && _availModalForInstallerId ? renderAvailExceptionModal() : ''}
   `;
   _restoreFocus(_focusSnap);
   renderToasts();

@@ -13,6 +13,72 @@ var jsAddingField = false;
 var jsEditFieldId = null;
 var editingVehicleId = null;
 var editingToolId = null;
+// Availability-exception modal state. When set, the new-exception modal
+// renders over the installer edit form. Captures installerId and (for edits)
+// the existing entry id so the same modal handles add + edit later.
+var _availModalForInstallerId = null;
+var _availModalEditId = null;
+
+function openAvailModal(installerId, editId) {
+  _availModalForInstallerId = installerId;
+  _availModalEditId = editId || null;
+  renderPage();
+}
+function closeAvailModal() {
+  _availModalForInstallerId = null;
+  _availModalEditId = null;
+  renderPage();
+}
+function saveAvailModal() {
+  var d = document.getElementById('avx_date');
+  var t = document.getElementById('avx_type');
+  var r = document.getElementById('avx_reason');
+  if (!d || !t) return;
+  var dateVal = d.value;
+  if (!dateVal || !/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) {
+    addToast('Pick a valid date', 'error');
+    return;
+  }
+  var entry = { installerId: _availModalForInstallerId, date: dateVal, type: t.value, reason: (r && r.value) ? r.value.trim() : '' };
+  if (typeof addAvailabilityEntry === 'function') addAvailabilityEntry(entry);
+  closeAvailModal();
+}
+window.openAvailModal = openAvailModal;
+window.closeAvailModal = closeAvailModal;
+window.saveAvailModal = saveAvailModal;
+
+function renderAvailExceptionModal() {
+  if (!_availModalForInstallerId) return '';
+  var inst = (typeof getInstallers === 'function') ? getInstallers().find(function(i){return i.id===_availModalForInstallerId;}) : null;
+  var instName = inst ? inst.name : 'Installer';
+  var today = new Date().toISOString().slice(0,10);
+  return '<div class="modal-bg" onclick="if(event.target===this)closeAvailModal()">'
+    +'<div class="modal" style="max-width:440px">'
+    +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
+    +'<div><h3 style="margin:0;font-size:15px;font-weight:700">📅 Add Availability Exception</h3>'
+    +'<div style="font-size:11px;color:#6b7280;margin-top:2px">'+instName+'</div></div>'
+    +'<button onclick="closeAvailModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:18px;line-height:1">×</button>'
+    +'</div>'
+    +'<div class="modal-body" style="padding:20px 22px;display:flex;flex-direction:column;gap:14px">'
+    +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Date *</label>'
+    +'<input type="date" class="inp" id="avx_date" value="'+today+'" style="font-size:13px;padding:8px;width:100%"></div>'
+    +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Type *</label>'
+    +'<select class="sel" id="avx_type" style="font-size:13px;padding:8px;width:100%">'
+    +'<option value="leave">Leave (full day off)</option>'
+    +'<option value="unavailable">Unavailable (full day)</option>'
+    +'<option value="half_day_am">Half Day (AM only off)</option>'
+    +'<option value="half_day_pm">Half Day (PM only off)</option>'
+    +'</select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Reason <span style="color:#9ca3af;font-weight:400">(optional)</span></label>'
+    +'<input type="text" class="inp" id="avx_reason" placeholder="e.g. Annual leave, Sick day, Personal" style="font-size:13px;padding:8px;width:100%"></div>'
+    +'<div style="font-size:11px;color:#9ca3af;background:#f9fafb;padding:8px 10px;border-radius:6px">ℹ️ This day will be subtracted from the installer\'s capacity in the Capacity Planner.</div>'
+    +'</div>'
+    +'<div style="padding:14px 22px;border-top:1px solid #f0f0f0;display:flex;justify-content:flex-end;gap:8px">'
+    +'<button onclick="closeAvailModal()" class="btn-w" style="font-size:13px">Cancel</button>'
+    +'<button onclick="saveAvailModal()" class="btn-r" style="font-size:13px">Save Exception</button>'
+    +'</div></div></div>';
+}
+window.renderAvailExceptionModal = renderAvailExceptionModal;
 
 function renderJobSettings() {
   var TABS = [
@@ -130,7 +196,7 @@ function renderJobSettings() {
         +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
         +'<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9ca3af">📅 Availability Exceptions <span style="font-weight:400">('+avail.length+')</span></div>'
         +(editingInstallerId && editingInstallerId !== '_new'
-          ? '<button onclick="var d=prompt(\'Date (YYYY-MM-DD):\',new Date().toISOString().slice(0,10));if(!d||!/^\\d{4}-\\d{2}-\\d{2}$/.test(d)){addToast(\'Invalid date\',\'error\');return;}var t=prompt(\'Type — unavailable / leave / half_day_am / half_day_pm:\',\'leave\');if(!t)return;var r=prompt(\'Reason (optional):\',\'\')||\'\';addAvailabilityEntry({installerId:\''+editingInstallerId+'\',date:d,type:t,reason:r});renderPage();" class="btn-w" style="font-size:11px;padding:4px 10px">+ Add Exception</button>'
+          ? '<button onclick="openAvailModal(\''+editingInstallerId+'\')" class="btn-w" style="font-size:11px;padding:4px 10px">+ Add Exception</button>'
           : '<span style="font-size:10px;color:#9ca3af;font-style:italic">Save the installer first to add exceptions</span>')
         +'</div>';
       if (avail.length === 0) {
