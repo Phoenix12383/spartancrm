@@ -327,6 +327,22 @@ function dbToAvailability(r) {
     reason: r.reason || ''
   };
 }
+// ── Install progress (per-job frame-stage tracking) — 17-install-schedule.js
+// Note: progressToDb takes (jobId, progress) — there's no progress.id field
+// on the local shape; the job id is the primary key.
+function progressToDb(jobId, p) {
+  return {
+    job_id: jobId,
+    arrived_at: (p && p.arrivedAt) || null,
+    frame_stages: (p && Array.isArray(p.frameStages)) ? p.frameStages : []
+  };
+}
+function dbToProgress(r) {
+  return {
+    arrivedAt: r.arrived_at || null,
+    frameStages: Array.isArray(r.frame_stages) ? r.frame_stages : []
+  };
+}
 function emailToDb(e) {
   return {id:e.id, to_addr:e.to||'', to_name:e.toName||'', subject:e.subject||'',
     body:e.body||'', date:e.date||'', time:e.time||'', by_user:e.by||'',
@@ -603,6 +619,7 @@ async function dbLoadAll() {
       _sb.from('vehicles').select('*'),                                                                    // index 20
       _sb.from('tools').select('*'),                                                                       // index 21
       _sb.from('installer_availability').select('*'),                                                      // index 22
+      _sb.from('install_progress').select('*'),                                                            // index 23
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -798,6 +815,14 @@ async function dbLoadAll() {
     var availRows = (results[22] && results[22].data) || [];
     var availability = availRows.map(dbToAvailability);
     localStorage.setItem('spartan_installer_availability', JSON.stringify(availability));
+    // Install progress (per-job stage tracking). Stored locally as a single
+    // {jobId: progress} map matching the original spartan_install_progress shape.
+    var progRows = (results[23] && results[23].data) || [];
+    if (progRows.length > 0) {
+      var progressMap = {};
+      progRows.forEach(function(r) { if (r.job_id) progressMap[r.job_id] = dbToProgress(r); });
+      localStorage.setItem('spartan_install_progress', JSON.stringify(progressMap));
+    }
     // entity_files (deals/leads/contacts file uploads — written by
     // 08-sales-crm.js addEntityFile and the mobile camera capture). Mirrors
     // the job_files pattern: bucket by entity_type+entity_id, keep the
@@ -991,6 +1016,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'vehicles'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'tools'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'installer_availability'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'install_progress'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'email_sent'}, function(){ dbLoadAll(); })

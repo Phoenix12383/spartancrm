@@ -553,6 +553,10 @@ function setInstallProgress(jobId, progress) {
     m[jobId] = progress;
     localStorage.setItem('spartan_install_progress', JSON.stringify(m));
   } catch(e) {}
+  if (typeof _sb !== 'undefined' && _sb && typeof progressToDb === 'function') {
+    try { dbUpsert('install_progress', progressToDb(jobId, progress)); }
+    catch(e) { console.warn('Install progress sync failed', jobId, e); }
+  }
 }
 function getInstallProgressPct(job) {
   if (!job) return 0;
