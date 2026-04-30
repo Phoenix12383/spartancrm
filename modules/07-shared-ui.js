@@ -195,21 +195,20 @@ function renderBottomNav(){
 
 // ── Mobile FAB (Schedule / Call · Hangup / SMS) ──────────────────────────────
 // Pipedrive-replacement: floating pill above the bottom nav, mirrors
-// Pipedrive's mobile UX. Three buttons:
-//   • Schedule (red +)  — opens the Phase 2 schedule modal pre-filled
-//   • Call      (green) — twilioCall → dialViaTwilioBridge on native
-//                         (becomes red Hangup with mm:ss timer when active)
-//   • SMS       (blue)  — native sms: composer
+// Pipedrive's mobile UX.
 //
-// Visibility:
-//   • Detail screens (deal/lead detail) → idle: full pill
-//   • Detail screens during active call  → full pill, Call swapped for Hangup
-//   • Non-detail screens, idle           → not rendered
-//   • Non-detail screens, active call    → minimal Hangup-only pill so the
-//                                          rep can end the call from anywhere
+// Visibility (always something rendered on native):
+//   • Deal/lead detail, idle           → full pill: Schedule + Call + SMS
+//   • Deal/lead detail, active call    → full pill, Call swaps for Hangup
+//                                        with mm:ss timer
+//   • Off-detail, idle                 → single round green Call button
+//                                        (opens dialer modal — ad-hoc Twilio)
+//   • Off-detail (or detail-less),
+//     active call                      → minimal Hangup-only pill so the rep
+//                                        can end the call from anywhere
 //
 // All actions reuse existing Twilio + schedule plumbing — no new endpoints,
-// no new state aside from the call timer (in 28-twilio.js).
+// no new state aside from the call timer + dialer (in 28-twilio.js).
 function renderMobileFAB() {
   if (typeof isNativeWrapper !== 'function' || !isNativeWrapper()) return '';
 
@@ -235,10 +234,6 @@ function renderMobileFAB() {
     }
   }
 
-  // Bail if neither on a detail screen NOR a call in progress — nothing useful
-  // to show.
-  if (!entity && !hasActiveCall) return '';
-
   var bottomGap = (typeof BOTTOMNAV_HEIGHT === 'number' ? BOTTOMNAV_HEIGHT : 56) + 12;
   var idEsc = entityId ? String(entityId).replace(/'/g, "\\'") : '';
   var nameEsc = String(contactName || '').replace(/'/g, "\\'");
@@ -249,8 +244,9 @@ function renderMobileFAB() {
   var btn = 'width:48px;height:48px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;border:none;cursor:pointer;font-size:20px;text-decoration:none;flex-shrink:0;color:#fff;font-family:inherit';
   var pillBase = 'position:fixed;left:50%;transform:translateX(-50%);bottom:' + bottomGap + 'px;z-index:50;display:inline-flex;align-items:center;gap:8px;padding:6px;background:#0a0a0a;border-radius:32px;box-shadow:0 6px 20px rgba(0,0,0,.35)';
 
-  // Hangup-only pill — non-detail screens during active call. Compact, just
-  // a label + red button, so it doesn't intrude on whatever else is showing.
+  // Hangup-only pill — off-detail (or detail-less) during an active call.
+  // Compact label + red button so it doesn't intrude on whatever else
+  // is showing on the list/screen.
   if (!entity && hasActiveCall) {
     return '<div style="' + pillBase + ';padding:8px 8px 8px 14px">' +
       '<div style="color:#fff;display:flex;flex-direction:column;align-items:flex-start;line-height:1.1;margin-right:4px">' +
@@ -259,6 +255,13 @@ function renderMobileFAB() {
       '</div>' +
       '<button onclick="hangUpActiveCallMobile()" title="End call" style="' + btn + ';background:#dc2626" aria-label="End call">📵</button>' +
     '</div>';
+  }
+
+  // Off-detail, idle — single round green Call FAB. Tap → number-pad dialer,
+  // then PSTN-bridge dial against the typed digits. Standalone round button
+  // (56px) rather than a pill so the visual signal "tap to dial" is clear.
+  if (!entity) {
+    return '<button onclick="openMobileDialer()" title="Dial" aria-label="Dial a number" style="position:fixed;left:50%;transform:translateX(-50%);bottom:' + bottomGap + 'px;z-index:50;width:56px;height:56px;border-radius:50%;border:none;background:#22c55e;color:#fff;font-size:24px;cursor:pointer;font-family:inherit;box-shadow:0 6px 20px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center">📞</button>';
   }
 
   // Full pill — Schedule / Call·Hangup / SMS.

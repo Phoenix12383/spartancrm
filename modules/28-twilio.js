@@ -1358,3 +1358,126 @@ function renderPhonePage() {
     + '</div>';
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MOBILE DIALER (Pipedrive-replacement)
+// ─────────────────────────────────────────────────────────────────────────────
+// Number-pad modal triggered from the mobile FAB when no deal/lead is in
+// focus. Lets the rep place an ad-hoc Twilio call to any number — same
+// PSTN-bridge plumbing as deal/lead calls, just with null entityId/entityType
+// (which the /api/twilio/dial endpoint already handles — see api/twilio/dial.js
+// lines 66 and 122). The call still records and still creates a call_logs
+// row; it just isn't attached to a CRM entity.
+//
+// Lives in module state so a renderPage triggered by realtime echo doesn't
+// drop the in-progress digits — same pattern as _pendingMobileNote /
+// _pendingMobileSchedule.
+
+var _pendingMobileDialer = null;   // { digits } | null
+
+function openMobileDialer() {
+  _pendingMobileDialer = { digits: '' };
+  if (typeof renderPage === 'function') renderPage();
+}
+function cancelMobileDialer() {
+  _pendingMobileDialer = null;
+  if (typeof renderPage === 'function') renderPage();
+}
+function mobileDialerPress(d) {
+  if (!_pendingMobileDialer) return;
+  // Cap at 16 chars so the display never overflows on narrow screens.
+  if (_pendingMobileDialer.digits.length >= 16) return;
+  _pendingMobileDialer.digits += String(d);
+  if (typeof renderPage === 'function') renderPage();
+}
+function mobileDialerBackspace() {
+  if (!_pendingMobileDialer) return;
+  _pendingMobileDialer.digits = _pendingMobileDialer.digits.slice(0, -1);
+  if (typeof renderPage === 'function') renderPage();
+}
+function mobileDialerCall() {
+  if (!_pendingMobileDialer) return;
+  var digits = (_pendingMobileDialer.digits || '').trim();
+  if (!digits) {
+    if (typeof addToast === 'function') addToast('Enter a number first', 'warning');
+    return;
+  }
+  // Format the digits for display in the active-call FAB. AU shapes:
+  //   04XX XXX XXX, 0X XXXX XXXX, +614XX XXX XXX. Falls through to digits
+  //   as-typed if it doesn't match a known shape.
+  var formatted = _formatPhoneForDisplay(digits);
+  // Close the dialer FIRST — dialViaTwilioBridge will renderPage and we
+  // want the active-call FAB to appear cleanly.
+  _pendingMobileDialer = null;
+  if (typeof dialViaTwilioBridge === 'function') {
+    // Pass the formatted display string as contactName so the active-call
+    // FAB shows "On call · 0412 345 678" rather than "On call · customer".
+    dialViaTwilioBridge(digits, null, null, formatted);
+  } else if (typeof addToast === 'function') {
+    addToast('Calling not available', 'error');
+  }
+}
+function _formatPhoneForDisplay(raw) {
+  if (!raw) return '';
+  var s = String(raw).replace(/\s+/g, '');
+  // +61 4XX XXX XXX (AU mobile in international shape)
+  if (/^\+614\d{8}$/.test(s)) return '+61 ' + s.slice(3, 4) + s.slice(4, 7) + ' ' + s.slice(7, 10) + ' ' + s.slice(10);
+  // 04XX XXX XXX (AU mobile)
+  if (/^04\d{8}$/.test(s))    return s.slice(0, 4) + ' ' + s.slice(4, 7) + ' ' + s.slice(7);
+  // 0X XXXX XXXX (AU landline)
+  if (/^0\d{9}$/.test(s) && !/^04/.test(s)) return s.slice(0, 2) + ' ' + s.slice(2, 6) + ' ' + s.slice(6);
+  return s;
+}
+
+function renderMobileDialerModal() {
+  if (!_pendingMobileDialer) return '';
+  if (typeof isNativeWrapper !== 'function' || !isNativeWrapper()) return '';
+  var digits = _pendingMobileDialer.digits || '';
+  var displayText = digits ? _formatPhoneForDisplay(digits) : 'Enter number';
+  var displayCol = digits ? '#0a0a0a' : '#9ca3af';
+
+  // Number pad layout — 3 columns, 4 rows. Bottom row: + / 0 / ⌫ so the
+  // backspace lives where the right thumb naturally falls. Each cell is
+  // 64px tall — well past the HIG/Material 44px minimum.
+  var rows = [
+    ['1', '2', '3'],
+    ['4', '5', '6'],
+    ['7', '8', '9'],
+    ['+', '0', '⌫'],
+  ];
+  var cellBase = 'height:56px;border:none;border-radius:14px;background:#f3f4f6;font-size:22px;font-weight:600;color:#0a0a0a;cursor:pointer;font-family:Syne,sans-serif;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:rgba(196,18,48,.2)';
+
+  var pad = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">' +
+    rows.map(function(row) {
+      return row.map(function(d) {
+        if (d === '⌫') {
+          return '<button onclick="mobileDialerBackspace()" style="' + cellBase + ';font-size:18px;color:#6b7280" aria-label="Backspace">⌫</button>';
+        }
+        return '<button onclick="mobileDialerPress(\'' + d + '\')" style="' + cellBase + '" aria-label="' + d + '">' + d + '</button>';
+      }).join('');
+    }).join('') +
+  '</div>';
+
+  // Disable the Call button when no digits — visually muted, cursor blocked,
+  // onclick guarded server-side as well.
+  var callDisabled = digits.length === 0;
+  var callStyle = 'flex:1;padding:14px;border-radius:12px;border:none;background:' + (callDisabled ? '#9ca3af' : '#22c55e') + ';color:#fff;font-size:15px;font-weight:800;cursor:' + (callDisabled ? 'not-allowed' : 'pointer') + ';font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;letter-spacing:.04em';
+
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)cancelMobileDialer()" style="z-index:300;align-items:flex-end">'
+    +   '<div class="modal" style="max-width:480px;width:100%;border-radius:18px 18px 0 0;margin:0">'
+    +     '<div class="modal-header" style="padding:14px 18px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
+    +       '<h3 style="margin:0;font-size:15px;font-weight:700;font-family:Syne,sans-serif">Dial a number</h3>'
+    +       '<button onclick="cancelMobileDialer()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1;padding:0">×</button>'
+    +     '</div>'
+    +     '<div class="modal-body" style="padding:14px 18px;display:flex;flex-direction:column;gap:14px">'
+    +       '<div style="text-align:center;padding:10px;background:#f9fafb;border-radius:12px;font-size:24px;font-weight:700;color:' + displayCol + ';font-family:Syne,sans-serif;letter-spacing:.02em;min-height:36px;line-height:36px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + displayText + '</div>'
+    +       pad
+    +     '</div>'
+    +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px">'
+    +       '<button onclick="cancelMobileDialer()" style="padding:14px 20px;border-radius:12px;border:1px solid #e5e7eb;background:#fff;font-size:14px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit">Cancel</button>'
+    +       '<button onclick="' + (callDisabled ? '' : 'mobileDialerCall()') + '" ' + (callDisabled ? 'disabled' : '') + ' style="' + callStyle + '"><span style="font-size:18px">📞</span><span>CALL</span></button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+}
+
