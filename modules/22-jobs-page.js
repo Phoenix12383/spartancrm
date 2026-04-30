@@ -317,12 +317,21 @@ function renderJobDetail() {
     }
   }
   // Action: if exactly one next status is available, show a single primary button.
-  // If multiple, show a compact pill-styled dropdown. Either is right-aligned.
+  // In dev mode, the admin god-mode in canTransition() means availableNext can
+  // include arbitrary later statuses — render that as a compact icon-only "DEV"
+  // pill so it doesn't dominate the row.
   var actionHtml = '';
   if (availableNext.length === 1) {
     actionHtml = '<button onclick="transitionJobStatus(\''+job.id+'\',\''+availableNext[0].key+'\',\'\')" class="btn-r" style="font-size:12px;padding:8px 16px;font-weight:600;white-space:nowrap;gap:4px">Advance → '+availableNext[0].label+'</button>';
-  } else if (availableNext.length > 1) {
+  } else if (availableNext.length > 1 && availableNext.length <= 4) {
     actionHtml = '<select onchange="if(this.value){transitionJobStatus(\''+job.id+'\',this.value,\'\')}" class="sel" style="font-size:12px;padding:7px 14px;background:#c41230;color:#fff;border-color:#c41230;font-weight:600;cursor:pointer"><option value="" style="color:#374151">Advance status…</option>'+availableNext.map(function(s){return '<option value="'+s.key+'" style="color:#374151">'+s.label+'</option>';}).join('')+'</select>';
+  } else if (availableNext.length > 4 && jobDetailDevMode) {
+    actionHtml = '<select onchange="if(this.value){transitionJobStatus(\''+job.id+'\',this.value,\'\')}" '
+      +'title="Dev mode — admin god-mode status picker" '
+      +'class="sel" style="font-size:11px;padding:6px 10px;background:#c41230;color:#fff;border-color:#c41230;font-weight:700;cursor:pointer;letter-spacing:.04em">'
+      +'<option value="" style="color:#374151">⚙ DEV · Advance…</option>'
+      +availableNext.map(function(s){return '<option value="'+s.key+'" style="color:#374151">'+s.label+'</option>';}).join('')
+      +'</select>';
   }
 
   var statusCard = '<div class="card" style="padding:14px 18px;margin-bottom:16px;border-left:4px solid '+currentStatus.col+';display:flex;align-items:center;gap:24px;flex-wrap:wrap">'

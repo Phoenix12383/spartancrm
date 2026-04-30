@@ -237,9 +237,9 @@ function canTransition(job, toStatus) {
     if (['c_awaiting_2nd_payment','c2_order_schedule_standard','c3_order_schedule_service','h_service_booked'].indexOf(toStatus) >= 0) return {ok:true};
   }
 
-  // Admin override: any transition with reason
-  // TODO: confirm with Phoenix — currently Admin only
-  if (isAdmin) return {ok:true};
+  // Admin override: any transition (only enabled in dev mode — the dev-only
+  // "Advance status…" dropdown is the sole UI surface for this).
+  if (isAdmin && typeof isDevMode === 'function' && isDevMode()) return {ok:true};
 
   return {ok:false, reason:'This status transition is not allowed from ' + getJobStatusLabel(from) + '.'};
 }
