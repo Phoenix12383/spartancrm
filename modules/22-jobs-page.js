@@ -2102,3 +2102,334 @@ window.devMockSignFinalDocuSign = function(jobId) {
   renderPage();
 };
 
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FINAL SIGN OFF + WEEKLY REVENUE — relocated from 16-factory-crm.js.
+// Both are job-flavoured (sales-manager approval queue and per-job invoice
+// streams), so they live with the rest of the jobs-page renders here.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// FINAL SIGN OFF — Queue of jobs awaiting sales manager approval
+// ══════════════════════════════════════════════════════════════════════════════
+
+function renderFinalSignOff() {
+  var jobs = getState().jobs || [];
+  var contacts = getState().contacts || [];
+  var branch = getState().branch || 'all';
+  if (branch !== 'all') jobs = jobs.filter(function(j){return j.branch===branch;});
+  var now = new Date();
+
+  var awaitingSignOff = jobs.filter(function(j){return j.cmCompletedAt && !j.finalSignedAt && j.status!=='h_completed_standard' && j.status!=='i_cancelled';});
+  var recentlySigned = jobs.filter(function(j){return j.finalSignedAt;}).sort(function(a,b){return (b.finalSignedAt||'').localeCompare(a.finalSignedAt||'');}).slice(0,15);
+  var cmInProgress = jobs.filter(function(j){return !j.cmCompletedAt && (j.cadSurveyData || j.cmBookedDate) && j.status!=='h_completed_standard' && j.status!=='i_cancelled';});
+  var totalAwaitingVal = awaitingSignOff.reduce(function(s,j){return s+(j.val||0);},0);
+  var signedThisMonth = recentlySigned.filter(function(j){return j.finalSignedAt&&j.finalSignedAt.slice(0,7)===now.toISOString().slice(0,7);});
+
+  var h = '<div style="margin-bottom:20px"><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:24px;margin:0">\u270d\ufe0f Final Sign Off</h2>'
+    +'<p style="color:#6b7280;font-size:13px;margin:4px 0 0">Jobs with completed check measures awaiting sales manager approval'+(branch!=='all'?' \u2014 '+branch:'')+'</p></div>';
+
+  // KPIs
+  h += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px">'
+    +'<div class="card" style="padding:14px 18px;border-left:4px solid #c41230"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Awaiting Sign Off</div><div style="font-size:24px;font-weight:800;font-family:Syne,sans-serif;color:#c41230;margin-top:4px">'+awaitingSignOff.length+'</div></div>'
+    +'<div class="card" style="padding:14px 18px;border-left:4px solid #f59e0b"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">CM In Progress</div><div style="font-size:24px;font-weight:800;font-family:Syne,sans-serif;color:#f59e0b;margin-top:4px">'+cmInProgress.length+'</div></div>'
+    +'<div class="card" style="padding:14px 18px;border-left:4px solid #22c55e"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Signed This Month</div><div style="font-size:24px;font-weight:800;font-family:Syne,sans-serif;color:#22c55e;margin-top:4px">'+signedThisMonth.length+'</div></div>'
+    +'<div class="card" style="padding:14px 18px;border-left:4px solid #3b82f6"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Value Awaiting</div><div style="font-size:24px;font-weight:800;font-family:Syne,sans-serif;color:#3b82f6;margin-top:4px">$'+Math.round(totalAwaitingVal/1000)+'k</div></div></div>';
+
+  // ── Awaiting Sign Off table ───────────────────────────────────────────────
+  h += '<div class="card" style="padding:0;overflow:hidden;margin-bottom:16px">'
+    +'<div style="padding:14px 20px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;background:#fef2f2">'
+    +'<h4 style="font-size:14px;font-weight:700;margin:0;color:#c41230">\u26a1 Awaiting Your Approval ('+awaitingSignOff.length+')</h4></div>';
+
+  if (awaitingSignOff.length === 0) {
+    h += '<div style="padding:40px;text-align:center;color:#22c55e;font-size:13px"><div style="font-size:36px;margin-bottom:8px">\u2705</div>All clear \u2014 no jobs awaiting sign off</div>';
+  } else {
+    h += '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
+      +'<th class="th">Job #</th><th class="th">Client</th><th class="th">Suburb</th><th class="th">Branch</th><th class="th" style="text-align:right">Value</th><th class="th">Payment</th><th class="th">CM Completed</th><th class="th">Waiting</th><th class="th">Frames</th><th class="th" style="width:190px"></th>'
+      +'</tr></thead><tbody>';
+    awaitingSignOff.sort(function(a,b){return (a.cmCompletedAt||'').localeCompare(b.cmCompletedAt||'');}).forEach(function(j,i){
+      var c = contacts.find(function(ct){return ct.id===j.contactId;});
+      var cName = c ? c.fn+' '+c.ln : '\u2014';
+      var cmDate = j.cmCompletedAt ? new Date(j.cmCompletedAt) : null;
+      var waitDays = cmDate ? Math.floor((now-cmDate)/86400000) : 0;
+      var waitCol = waitDays>7?'#ef4444':waitDays>3?'#f59e0b':'#22c55e';
+      var frames = (j.cadSurveyData&&j.cadSurveyData.projectItems)?j.cadSurveyData.projectItems.length:(j.cadData&&j.cadData.projectItems)?j.cadData.projectItems.length:0;
+      var pmBadge = j.paymentMethod==='zip'?'<span style="background:#faf5ff;color:#7c3aed;font-size:9px;font-weight:800;padding:1px 6px;border-radius:4px;border:1px solid #c4b5fd">ZIP</span>':'<span style="background:#f0fdf4;color:#15803d;font-size:9px;font-weight:800;padding:1px 6px;border-radius:4px;border:1px solid #86efac">COD</span>';
+      h += '<tr style="'+(i%2?'background:#fafafa':'')+'" onmouseover="this.style.background=\'#f0f9ff\'" onmouseout="this.style.background=\''+(i%2?'#fafafa':'')+'\'">'
+        +'<td class="td" style="font-weight:700;color:#c41230;cursor:pointer" onclick="setState({page:\'jobs\',jobDetailId:\''+j.id+'\',jobDetailTab:\'final_design\'})">'+(j.jobNumber||'\u2014')+'</td>'
+        +'<td class="td" style="cursor:pointer" onclick="setState({page:\'jobs\',jobDetailId:\''+j.id+'\',jobDetailTab:\'final_design\'})">'+cName+'</td>'
+        +'<td class="td">'+(j.suburb||'')+'</td>'
+        +'<td class="td">'+(j.branch||'')+'</td>'
+        +'<td class="td" style="text-align:right;font-weight:600">$'+Number(j.val||0).toLocaleString()+'</td>'
+        +'<td class="td">'+pmBadge+'</td>'
+        +'<td class="td">'+(cmDate?cmDate.toLocaleDateString('en-AU'):'\u2014')+'</td>'
+        +'<td class="td"><span style="font-weight:700;color:'+waitCol+'">'+waitDays+'d</span></td>'
+        +'<td class="td" style="text-align:center">'+frames+'</td>'
+        +'<td class="td"><div style="display:flex;gap:4px;justify-content:flex-end">'
+        +'<button onclick="openCadDesigner(\'job\',\''+j.id+'\',\'survey\')" class="btn-w" style="font-size:10px;padding:3px 8px">\ud83d\udc41 View CAD</button>'
+        +'<button onclick="setState({page:\'jobs\',jobDetailId:\''+j.id+'\',jobDetailTab:\'final_design\'})" class="btn-r" style="font-size:10px;padding:3px 10px">\u2192 Open Job</button>'
+        +'</div></td></tr>';
+    });
+    h += '</tbody></table>';
+  }
+  h += '</div>';
+
+  // ── CM In Progress (upcoming) ─────────────────────────────────────────────
+  if (cmInProgress.length > 0) {
+    h += '<div class="card" style="padding:0;overflow:hidden;margin-bottom:16px">'
+      +'<div style="padding:14px 20px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;background:#fffbeb">'
+      +'<h4 style="font-size:14px;font-weight:700;margin:0;color:#92400e">\ud83d\udccf CM In Progress \u2014 Coming Soon ('+cmInProgress.length+')</h4></div>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th class="th">Job #</th><th class="th">Client</th><th class="th">Suburb</th><th class="th">Branch</th><th class="th" style="text-align:right">Value</th><th class="th">CM Booked</th><th class="th">Status</th></tr></thead><tbody>';
+    cmInProgress.sort(function(a,b){return (a.cmBookedDate||'zzz').localeCompare(b.cmBookedDate||'zzz');}).slice(0,10).forEach(function(j,i){
+      var c = contacts.find(function(ct){return ct.id===j.contactId;});
+      var cName = c?c.fn+' '+c.ln:'\u2014';
+      var hasSurvey = j.cadSurveyData && j.cadSurveyData.projectItems && j.cadSurveyData.projectItems.length > 0;
+      h += '<tr style="'+(i%2?'background:#fafafa':'')+'" onclick="setState({page:\'jobs\',jobDetailId:\''+j.id+'\',jobDetailTab:\'check_measure\'})" style="cursor:pointer" onmouseover="this.style.background=\'#fffbeb\'" onmouseout="this.style.background=\''+(i%2?'#fafafa':'')+'\'">'
+        +'<td class="td" style="font-weight:700;color:#c41230">'+(j.jobNumber||'\u2014')+'</td>'
+        +'<td class="td">'+cName+'</td>'
+        +'<td class="td">'+(j.suburb||'')+'</td>'
+        +'<td class="td">'+(j.branch||'')+'</td>'
+        +'<td class="td" style="text-align:right;font-weight:600">$'+Number(j.val||0).toLocaleString()+'</td>'
+        +'<td class="td">'+(j.cmBookedDate||'\u2014')+'</td>'
+        +'<td class="td"><span style="font-size:10px;font-weight:600;color:'+(hasSurvey?'#3b82f6':'#f59e0b')+'">'+(hasSurvey?'\ud83d\udccf Survey started':'\u23f3 Awaiting CM')+'</span></td></tr>';
+    });
+    h += '</tbody></table></div>';
+  }
+
+  // ── Recently Signed ───────────────────────────────────────────────────────
+  if (recentlySigned.length > 0) {
+    h += '<div class="card" style="padding:0;overflow:hidden">'
+      +'<div style="padding:14px 20px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;background:#f0fdf4">'
+      +'<h4 style="font-size:14px;font-weight:700;margin:0;color:#15803d">\u2705 Recently Signed Off ('+recentlySigned.length+')</h4></div>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th class="th">Job #</th><th class="th">Client</th><th class="th">Suburb</th><th class="th" style="text-align:right">Value</th><th class="th">Signed</th><th class="th">Install Date</th><th class="th">Status</th></tr></thead><tbody>';
+    recentlySigned.forEach(function(j,i){
+      var c = contacts.find(function(ct){return ct.id===j.contactId;});
+      var cName = c?c.fn+' '+c.ln:'\u2014';
+      var st = getJobStatusObj(j.status);
+      h += '<tr style="'+(i%2?'background:#fafafa':'')+'" onclick="setState({page:\'jobs\',jobDetailId:\''+j.id+'\'})" style="cursor:pointer" onmouseover="this.style.background=\'#f0fdf4\'" onmouseout="this.style.background=\''+(i%2?'#fafafa':'')+'\'">'
+        +'<td class="td" style="font-weight:700;color:#c41230">'+(j.jobNumber||'\u2014')+'</td>'
+        +'<td class="td">'+cName+'</td>'
+        +'<td class="td">'+(j.suburb||'')+'</td>'
+        +'<td class="td" style="text-align:right;font-weight:600">$'+Number(j.val||0).toLocaleString()+'</td>'
+        +'<td class="td">'+new Date(j.finalSignedAt).toLocaleDateString('en-AU')+'</td>'
+        +'<td class="td">'+(j.installDate||'\u2014')+'</td>'
+        +'<td class="td"><span class="bdg" style="background:'+st.col+'20;color:'+st.col+';font-size:10px">'+st.label+'</span></td></tr>';
+    });
+    h += '</tbody></table></div>';
+  }
+
+  return '<div>'+h+'</div>';
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// WEEKLY REVENUE — All invoice streams in one view
+// ══════════════════════════════════════════════════════════════════════════════
+var revWeekOffset = 0;
+
+function renderWeeklyRevenue() {
+  var jobs = getState().jobs || [];
+  var contacts = getState().contacts || [];
+  var branch = getState().branch || 'all';
+  var invoices = typeof getInvoices === 'function' ? getInvoices() : [];
+  var weekDates = getWeekDates(revWeekOffset);
+  var weekStart = isoDate(weekDates[0]);
+  var weekEnd = isoDate(weekDates[6]);
+
+  if (branch !== 'all') jobs = jobs.filter(function(j){return j.branch===branch;});
+
+  // Categorise all revenue streams for this week
+  var streams = {
+    deposit: {label:'5% Deposit (New Sales)', col:'#3b82f6', icon:'\ud83d\udcb0', items:[], total:0},
+    cm: {label:'45% Check Measure', col:'#f59e0b', icon:'\ud83d\udccf', items:[], total:0},
+    preinstall: {label:'45% Pre-Installation', col:'#a855f7', icon:'\ud83d\udee0\ufe0f', items:[], total:0},
+    completion: {label:'5% Completion', col:'#22c55e', icon:'\u2705', items:[], total:0},
+  };
+
+  // Scan all jobs for claims activity this week
+  jobs.forEach(function(j){
+    var claims = getJobClaims(j.id);
+    var c = contacts.find(function(ct){return ct.id===j.contactId;});
+    var cName = c ? c.fn+' '+c.ln : '\u2014';
+    var valExGst = Math.round((j.val||0)/1.1*100)/100;
+
+    claims.forEach(function(cl){
+      // Find invoice for this claim
+      var inv = cl.invoiceId ? invoices.find(function(i){return i.id===cl.invoiceId;}) : null;
+      var invDate = inv ? (inv.issueDate||inv.created||'').slice(0,10) : '';
+      if (!invDate || invDate < weekStart || invDate > weekEnd) return;
+
+      var item = {
+        jobId:j.id, jobNumber:j.jobNumber||'', contactName:cName, suburb:j.suburb||'',
+        amountExGst:cl.amountExGst, amountIncGst:cl.amountIncGst,
+        invoiceNumber:cl.invoiceNumber||'', status:cl.status, date:invDate, paidDate:cl.paidDate||''
+      };
+
+      if (cl.id === 'cl_dep') { streams.deposit.items.push(item); streams.deposit.total += cl.amountIncGst; }
+      else if (cl.id === 'cl_cm') { streams.cm.items.push(item); streams.cm.total += cl.amountIncGst; }
+      else if (cl.id === 'cl_preinstall') { streams.preinstall.items.push(item); streams.preinstall.total += cl.amountIncGst; }
+      else if (cl.id === 'cl_final') { streams.completion.items.push(item); streams.completion.total += cl.amountIncGst; }
+    });
+  });
+
+  // Also scan invoices directly (for any that have jobId but might not match claims)
+  invoices.forEach(function(inv){
+    if (!inv.jobId) return;
+    var invDate = (inv.issueDate||inv.created||'').slice(0,10);
+    if (!invDate || invDate < weekStart || invDate > weekEnd) return;
+    // Check if already counted via claims
+    var alreadyCounted = false;
+    Object.values(streams).forEach(function(s){
+      s.items.forEach(function(it){if(it.invoiceNumber===inv.invoiceNumber) alreadyCounted=true;});
+    });
+    if (alreadyCounted) return;
+    // Categorise by description
+    var desc = (inv.description||'').toLowerCase();
+    var c = contacts.find(function(ct){return ct.id===inv.contactId;});
+    var item = {jobId:inv.jobId,jobNumber:inv.jobNumber||'',contactName:c?c.fn+' '+c.ln:(inv.contactName||''),suburb:'',
+      amountExGst:inv.subtotal||0,amountIncGst:inv.total||0,invoiceNumber:inv.invoiceNumber||'',status:inv.status||'sent',date:invDate,paidDate:''};
+    if(desc.includes('deposit')||desc.includes('5% dep')){streams.deposit.items.push(item);streams.deposit.total+=inv.total||0;}
+    else if(desc.includes('check measure')||desc.includes('45% check')){streams.cm.items.push(item);streams.cm.total+=inv.total||0;}
+    else if(desc.includes('pre-install')||desc.includes('pre install')){streams.preinstall.items.push(item);streams.preinstall.total+=inv.total||0;}
+    else if(desc.includes('completion')||desc.includes('final')){streams.completion.items.push(item);streams.completion.total+=inv.total||0;}
+  });
+
+  var grandTotal = streams.deposit.total + streams.cm.total + streams.preinstall.total + streams.completion.total;
+  var totalPaid = 0;
+  Object.values(streams).forEach(function(s){s.items.forEach(function(it){if(it.status==='paid') totalPaid+=it.amountIncGst;});});
+  var totalItems = streams.deposit.items.length + streams.cm.items.length + streams.preinstall.items.length + streams.completion.items.length;
+
+  // Week nav
+  var nav = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:16px">'
+    +'<button onclick="revWeekOffset--;renderPage()" class="btn-w" style="padding:5px 10px;font-size:12px">\u2190</button>'
+    +'<button onclick="revWeekOffset=0;renderPage()" class="btn-'+(revWeekOffset===0?'r':'w')+'" style="padding:5px 14px;font-size:12px;font-weight:700">This Week</button>'
+    +'<button onclick="revWeekOffset++;renderPage()" class="btn-w" style="padding:5px 10px;font-size:12px">\u2192</button>'
+    +'<span style="font-family:Syne,sans-serif;font-weight:700;font-size:14px;margin-left:8px">'+fmtShortDate(weekDates[0])+' \u2014 '+fmtShortDate(weekDates[6])+'</span></div>';
+
+  // KPI
+  var kpi = '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px">';
+  kpi += '<div class="card" style="padding:16px;border-left:4px solid #c41230"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Total Invoiced</div><div style="font-size:24px;font-weight:800;font-family:Syne,sans-serif;color:#c41230;margin-top:4px">$'+Math.round(grandTotal).toLocaleString()+'</div><div style="font-size:10px;color:#9ca3af">'+totalItems+' invoices this week</div></div>';
+  Object.entries(streams).forEach(function(e){
+    var key=e[0]; var s=e[1];
+    kpi += '<div class="card" style="padding:16px;border-left:4px solid '+s.col+'"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">'+s.icon+' '+key.charAt(0).toUpperCase()+key.slice(1)+'</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;color:'+s.col+';margin-top:4px">$'+Math.round(s.total).toLocaleString()+'</div><div style="font-size:10px;color:#9ca3af">'+s.items.length+' invoice'+(s.items.length!==1?'s':'')+'</div></div>';
+  });
+  kpi += '</div>';
+
+  // ── Stacked bar chart: revenue by stream by day ───────────────────────────
+  var chart = '<div class="card" style="padding:20px;margin-bottom:16px">';
+  chart += '<div style="font-size:14px;font-weight:700;font-family:Syne,sans-serif;margin-bottom:4px">Revenue by Day & Source</div>'
+    +'<div style="font-size:12px;color:#6b7280;margin-bottom:16px">Stacked by invoice type \u2014 showing where your cash flow is coming from</div>';
+
+  // Legend
+  chart += '<div style="display:flex;gap:16px;margin-bottom:12px">';
+  Object.values(streams).forEach(function(s){
+    chart += '<div style="display:flex;align-items:center;gap:4px;font-size:11px"><div style="width:12px;height:12px;border-radius:3px;background:'+s.col+'"></div><span>'+s.label+'</span></div>';
+  });
+  chart += '</div>';
+
+  // Compute daily totals per stream
+  var dayTotals = [];
+  var maxDayTotal = 1;
+  weekDates.forEach(function(d){
+    var ds = isoDate(d);
+    var day = {date:d, ds:ds};
+    Object.entries(streams).forEach(function(e){
+      day[e[0]] = e[1].items.filter(function(it){return it.date===ds;}).reduce(function(s,it){return s+it.amountIncGst;},0);
+    });
+    day.total = (day.deposit||0)+(day.cm||0)+(day.preinstall||0)+(day.completion||0);
+    if (day.total > maxDayTotal) maxDayTotal = day.total;
+    dayTotals.push(day);
+  });
+
+  // Stacked bars
+  var barH = 180;
+  chart += '<div style="display:flex;gap:8px;align-items:flex-end;height:'+barH+'px;padding:0 4px;border-bottom:2px solid #e5e7eb">';
+  dayTotals.forEach(function(dd){
+    var td = isToday(dd.date);
+    var stackH = dd.total > 0 ? Math.max(8, Math.round(dd.total/maxDayTotal*barH*0.85)) : 4;
+    chart += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">';
+    if (dd.total > 0) chart += '<div style="font-size:10px;font-weight:700;color:#374151">$'+Math.round(dd.total/1000)+'k</div>';
+    chart += '<div style="width:100%;max-width:65px;height:'+stackH+'px;border-radius:4px 4px 0 0;overflow:hidden;display:flex;flex-direction:column-reverse">';
+    var streamKeys = ['deposit','cm','preinstall','completion'];
+    var streamCols = [streams.deposit.col, streams.cm.col, streams.preinstall.col, streams.completion.col];
+    streamKeys.forEach(function(sk,i){
+      var segVal = dd[sk]||0;
+      if (segVal <= 0) return;
+      var segPct = Math.round(segVal/dd.total*100);
+      chart += '<div style="width:100%;height:'+segPct+'%;background:'+streamCols[i]+';min-height:2px" title="'+streams[sk].label+': $'+Math.round(segVal).toLocaleString()+'"></div>';
+    });
+    chart += '</div></div>';
+  });
+  chart += '</div>';
+
+  // Day labels
+  chart += '<div style="display:flex;gap:8px;padding:6px 4px 0">';
+  dayTotals.forEach(function(dd){
+    var td = isToday(dd.date);
+    chart += '<div style="flex:1;text-align:center;font-size:10px;font-weight:'+(td?'700':'500')+';color:'+(td?'#c41230':'#6b7280')+'">'+fmtShortDate(dd.date)+'</div>';
+  });
+  chart += '</div></div>';
+
+  // ── Donut / proportion breakdown ──────────────────────────────────────────
+  var proportions = '<div class="card" style="padding:20px;margin-bottom:16px">';
+  proportions += '<div style="font-size:14px;font-weight:700;font-family:Syne,sans-serif;margin-bottom:14px">Revenue Composition</div>';
+  proportions += '<div style="display:flex;gap:20px;align-items:center">';
+  // Visual proportion bar
+  proportions += '<div style="flex:1"><div style="height:40px;border-radius:8px;overflow:hidden;display:flex">';
+  if (grandTotal > 0) {
+    Object.entries(streams).forEach(function(e){
+      var pct = Math.round(e[1].total/grandTotal*100);
+      if (pct > 0) proportions += '<div style="width:'+pct+'%;background:'+e[1].col+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:'+(pct>10?'12':'9')+'px;font-weight:700;min-width:2px">'+pct+'%</div>';
+    });
+  } else {
+    proportions += '<div style="width:100%;background:#f3f4f6;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:12px">No invoices this week</div>';
+  }
+  proportions += '</div>';
+  // Breakdown list
+  proportions += '<div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+  Object.entries(streams).forEach(function(e){
+    var pct = grandTotal>0?Math.round(e[1].total/grandTotal*100):0;
+    proportions += '<div style="display:flex;align-items:center;gap:8px;font-size:12px">'
+      +'<div style="width:12px;height:12px;border-radius:3px;background:'+e[1].col+';flex-shrink:0"></div>'
+      +'<span style="color:#6b7280">'+e[1].label+'</span>'
+      +'<span style="font-weight:700;margin-left:auto">$'+Math.round(e[1].total).toLocaleString()+' ('+pct+'%)</span></div>';
+  });
+  proportions += '</div></div>';
+  // Payment status
+  var unpaid = grandTotal - totalPaid;
+  proportions += '<div style="width:200px;flex-shrink:0;text-align:center">'
+    +'<div style="font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:8px">Payment Status</div>'
+    +'<div style="height:12px;border-radius:6px;overflow:hidden;display:flex;background:#f3f4f6">'
+    +(totalPaid>0?'<div style="width:'+Math.round(totalPaid/Math.max(grandTotal,1)*100)+'%;background:#22c55e"></div>':'')
+    +'</div>'
+    +'<div style="display:flex;justify-content:space-between;margin-top:4px;font-size:10px"><span style="color:#22c55e;font-weight:600">$'+Math.round(totalPaid).toLocaleString()+' paid</span><span style="color:#c41230;font-weight:600">$'+Math.round(unpaid).toLocaleString()+' owing</span></div></div>';
+  proportions += '</div></div>';
+
+  // ── Detailed invoice list per stream ───────────────────────────────────────
+  var details = '';
+  Object.entries(streams).forEach(function(e){
+    var key=e[0]; var s=e[1];
+    if (s.items.length === 0) return;
+    details += '<div class="card" style="padding:0;overflow:hidden;margin-bottom:12px">'
+      +'<div style="padding:12px 20px;background:'+s.col+'08;border-bottom:1px solid '+s.col+'20;display:flex;justify-content:space-between;align-items:center">'
+      +'<span style="font-size:13px;font-weight:700;color:'+s.col+'">'+s.icon+' '+s.label+'</span>'
+      +'<span style="font-size:14px;font-weight:800;font-family:Syne,sans-serif;color:'+s.col+'">$'+Math.round(s.total).toLocaleString()+'</span></div>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr><th class="th" style="font-size:10px">Invoice</th><th class="th" style="font-size:10px">Job</th><th class="th" style="font-size:10px">Client</th><th class="th" style="font-size:10px">Date</th><th class="th" style="font-size:10px">Status</th><th class="th" style="font-size:10px;text-align:right">Ex GST</th><th class="th" style="font-size:10px;text-align:right">Inc GST</th></tr></thead><tbody>';
+    s.items.forEach(function(it){
+      var stCol = it.status==='paid'?'#22c55e':it.status==='sent'||it.status==='invoiced'?'#3b82f6':'#9ca3af';
+      details += '<tr onclick="setState({page:\'jobs\',jobDetailId:\''+it.jobId+'\',crmMode:\'jobs\'})" style="cursor:pointer" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'\'">'
+        +'<td class="td" style="font-weight:600">'+it.invoiceNumber+'</td>'
+        +'<td class="td" style="font-weight:700;color:#c41230">'+it.jobNumber+'</td>'
+        +'<td class="td">'+it.contactName+'</td>'
+        +'<td class="td">'+it.date+'</td>'
+        +'<td class="td"><span style="color:'+stCol+';font-weight:600">\u25cf '+(it.status==='paid'?'Paid':it.status==='invoiced'||it.status==='sent'?'Sent':'Pending')+'</span></td>'
+        +'<td class="td" style="text-align:right">$'+Math.round(it.amountExGst).toLocaleString()+'</td>'
+        +'<td class="td" style="text-align:right;font-weight:700">$'+Math.round(it.amountIncGst).toLocaleString()+'</td></tr>';
+    });
+    details += '</tbody></table></div>';
+  });
+
+  return '<div>'
+    +'<div style="margin-bottom:16px"><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:24px;margin:0">\ud83d\udcb0 Weekly Revenue</h2>'
+    +'<p style="color:#6b7280;font-size:13px;margin:4px 0 0">All invoice streams \u2014 deposits, check measures, pre-installation, and completion</p></div>'
+    +nav+kpi+chart+proportions+details
+    +'</div>';
+}
