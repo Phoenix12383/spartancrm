@@ -706,6 +706,15 @@ async function dbLoadAll() {
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
 
+    // Per-query error flags. When a query errors (statement timeout, transient
+    // network drop), don't merge its empty result into state — that would wipe
+    // valid local data. Caller below uses these flags to skip the merge for
+    // affected slices, so the user sees stale data instead of empty data.
+    var contactsErr = !!results[0].error;
+    var leadsErr    = !!results[1].error;
+    var dealsErr    = !!results[2].error;
+    var jobsErr     = !!results[3].error;
+
     var contacts = (results[0].data||[]).map(dbToContact);
     var leads = (results[1].data||[]).map(dbToLead);
     var deals = (results[2].data||[]).map(function(r){ return dbToDeal(r); });
@@ -819,10 +828,12 @@ async function dbLoadAll() {
       }
       // Only include slices that actually changed, so setState doesn't notify
       // listeners (and trigger renderPage) when realtime echoes unchanged rows.
-      var nextContacts = contacts.length > 0 ? _preserveLocal(contacts, st.contacts) : st.contacts;
-      var nextLeads    = leads.length    > 0 ? _preserveLocal(leads, st.leads)       : st.leads;
-      var nextDeals    = deals.length    > 0 ? _preserveLocal(deals, st.deals)       : st.deals;
-      var nextJobs     = jobs.length     > 0 ? _preserveLocal(jobs, st.jobs)         : st.jobs;
+      // If a query errored (statement timeout etc.), preserve local state
+      // unconditionally — an empty array from a failed query is meaningless.
+      var nextContacts = contactsErr ? st.contacts : (contacts.length > 0 ? _preserveLocal(contacts, st.contacts) : st.contacts);
+      var nextLeads    = leadsErr    ? st.leads    : (leads.length    > 0 ? _preserveLocal(leads, st.leads)       : st.leads);
+      var nextDeals    = dealsErr    ? st.deals    : (deals.length    > 0 ? _preserveLocal(deals, st.deals)       : st.deals);
+      var nextJobs     = jobsErr     ? st.jobs     : (jobs.length     > 0 ? _preserveLocal(jobs, st.jobs)         : st.jobs);
       var _patch = {};
       if (!_recordsEqual(nextContacts, st.contacts)) _patch.contacts = nextContacts;
       if (!_recordsEqual(nextLeads,    st.leads))    _patch.leads    = nextLeads;
@@ -1040,6 +1051,10 @@ async function dbLoadAll() {
 // re-fires the same failing write). Dedupe by table+message so the console
 // stays readable and the toast only fires once per unique failure.
 var _dbWarnedFailures = {};
+// Tables that returned "table does not exist" — short-circuit further writes
+// so the browser stops spamming raw 404s in the console (we can't suppress
+// those network-level logs, only the writes that cause them).
+var _dbMissingTables = {};
 function _dbWarnOnce(op, table, msg, showToast) {
   var key = op + '|' + table + '|' + msg;
   if (_dbWarnedFailures[key]) return;
@@ -1049,14 +1064,35 @@ function _dbWarnOnce(op, table, msg, showToast) {
     addToast("Couldn't save to database — changes only apply to your session", 'warning');
   }
 }
+function _isMissingTableError(msg) {
+  if (!msg) return false;
+  // PostgREST schema-cache miss for unknown table.
+  return msg.indexOf("Could not find the table") >= 0
+      || msg.indexOf('schema cache') >= 0;
+}
 function dbInsert(table, row) {
   if (!_sb) return;
+  if (_dbMissingTables[table]) return;
   _sb.from(table).insert(row).then(function(res){
-    if (res.error) _dbWarnOnce('Insert', table, res.error.message, true);
+    if (res.error) {
+      if (_isMissingTableError(res.error.message)) _dbMissingTables[table] = true;
+      _dbWarnOnce('Insert', table, res.error.message, !_dbMissingTables[table]);
+    }
   });
 }
-function dbUpdate(table, id, changes) {
+function _isTransientError(msg) {
+  if (!msg) return false;
+  // Safari "TypeError: Load failed" + Chrome "Failed to fetch" + network blips.
+  // Statement timeout is also transient — the row exists, the DB is just busy.
+  return msg.indexOf('Load failed') >= 0
+      || msg.indexOf('Failed to fetch') >= 0
+      || msg.indexOf('NetworkError') >= 0
+      || msg.indexOf('statement timeout') >= 0
+      || msg.indexOf('network connection') >= 0;
+}
+function dbUpdate(table, id, changes, _retry) {
   if (!_sb) return;
+  if (_dbMissingTables[table]) return;
   // Convert camelCase field names to snake_case for DB
   var dbChanges = {};
   Object.keys(changes).forEach(function(k) {
@@ -1065,7 +1101,17 @@ function dbUpdate(table, id, changes) {
   });
   dbChanges.updated_at = new Date().toISOString();
   _sb.from(table).update(dbChanges).eq('id', id).then(function(res){
-    if (res.error) _dbWarnOnce('Update', table, res.error.message, false);
+    if (res.error) {
+      if (_isMissingTableError(res.error.message)) _dbMissingTables[table] = true;
+      // One retry after 800ms for transient network drops. The user's drag
+      // already succeeded locally; without a retry, transient blips silently
+      // strand the change in this browser only.
+      if (_isTransientError(res.error.message) && !_retry) {
+        setTimeout(function(){ dbUpdate(table, id, changes, true); }, 800);
+        return;
+      }
+      _dbWarnOnce('Update', table, res.error.message, false);
+    }
   });
 }
 function dbDelete(table, id) {
@@ -1076,6 +1122,7 @@ function dbDelete(table, id) {
 }
 function dbUpsert(table, row) {
   if (!_sb) return;
+  if (_dbMissingTables[table]) return;
   // Match dbUpdate — convert camelCase field names to snake_case. Without this
   // conversion, every upsert of an invoice / factory order / factory item with
   // camelCased fields (claimPercent, dealValueIncGst, lineItems, issueDate, ...)
@@ -1087,7 +1134,10 @@ function dbUpsert(table, row) {
   });
   dbRow.updated_at = new Date().toISOString();
   _sb.from(table).upsert(dbRow).then(function(res){
-    if (res.error) _dbWarnOnce('Upsert', table, res.error.message, false);
+    if (res.error) {
+      if (_isMissingTableError(res.error.message)) _dbMissingTables[table] = true;
+      _dbWarnOnce('Upsert', table, res.error.message, false);
+    }
   });
 }
 
@@ -1108,6 +1158,36 @@ function dbSyncFactoryItems() {
   items.forEach(function(i) { dbUpsert('factory_items', i); });
 }
 
+// Coalesces realtime-driven reloads. Two problems this solves:
+//   1. A single user action (e.g. drag-to-reschedule) can write to jobs +
+//      job_audit + activities — three echoes, three full dbLoadAll() runs in
+//      ~50ms. Debouncing collapses those into one fetch.
+//   2. The user's own write is debounced 500ms inside setState; a different
+//      table's echo can fire dbLoadAll BEFORE that write goes out, fetch the
+//      stale row, and clobber the optimistic state. We bail when _dbSyncTimer
+//      is truthy — the upcoming write's own echo will trigger a fresh load.
+var _dbLoadDebounce = null;
+var _dbLoadDeferred = false;
+function scheduleDbLoad() {
+  if (_dbLoadDebounce) clearTimeout(_dbLoadDebounce);
+  _dbLoadDebounce = setTimeout(function() {
+    _dbLoadDebounce = null;
+    if (typeof _dbSyncTimer !== 'undefined' && _dbSyncTimer) {
+      // Write is queued — defer one more cycle. Don't keep deferring forever:
+      // _dbSyncTimer fires within 500ms and clears itself, so at worst we
+      // wait one extra round before loading.
+      _dbLoadDeferred = true;
+      setTimeout(function() {
+        if (_dbLoadDeferred) { _dbLoadDeferred = false; scheduleDbLoad(); }
+      }, 600);
+      return;
+    }
+    _dbLoadDeferred = false;
+    dbLoadAll();
+  }, 250);
+}
+window.scheduleDbLoad = scheduleDbLoad;
+
 // -- Realtime subscriptions --
 function setupRealtime() {
   if (!_sb) return;
@@ -1118,32 +1198,32 @@ function setupRealtime() {
   // a 14-listener app channel didn't.
   // Channel A: high-cardinality entity tables.
   var channelA = _sb.channel('spartan-realtime-entities')
-    .on('postgres_changes', {event:'*', schema:'public', table:'contacts'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'leads'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'deals'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'jobs'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'invoices'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'factory_orders'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'users'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'contacts'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'leads'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'deals'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'jobs'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'invoices'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'factory_orders'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'users'}, function(){ scheduleDbLoad(); })
     .subscribe(function(status){ console.log('[Spartan] Realtime A:', status); });
   // Channel B: communication + activity + file tables.
   var channelB = _sb.channel('spartan-realtime-comms')
-    .on('postgres_changes', {event:'*', schema:'public', table:'call_logs'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'sms_logs'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'sms_templates'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'phone_settings'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'installers'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'vehicles'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'tools'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'installer_availability'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'install_progress'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'job_costs'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'job_claims'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'job_audit'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'kpi_thresholds'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
-    .on('postgres_changes', {event:'*', schema:'public', table:'email_sent'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'call_logs'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'sms_logs'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'sms_templates'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'phone_settings'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'installers'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'vehicles'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'tools'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'installer_availability'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'install_progress'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'job_costs'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'job_claims'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'job_audit'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'kpi_thresholds'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ scheduleDbLoad(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'email_sent'}, function(){ scheduleDbLoad(); })
     .subscribe(function(status){ console.log('[Spartan] Realtime B:', status); });
 }
 

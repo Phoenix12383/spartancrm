@@ -1205,6 +1205,10 @@ const setState = (patch, opts) => {
       _upsertChanged(patch.leads,    prevState.leads,    'leads',    leadToDb);
       _upsertChanged(patch.deals,    prevState.deals,    'deals',    dealToDb);
       _upsertChanged(patch.jobs,     prevState.jobs,     'jobs',     jobToDb);
+      // Clear once writes have been dispatched so scheduleDbLoad() can stop
+      // suppressing realtime-driven reloads. Without this clear, _dbSyncTimer
+      // stays truthy forever after the first write and we'd never reload.
+      _dbSyncTimer = null;
     }, 500);
   }
 };
