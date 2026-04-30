@@ -5,18 +5,6 @@
 // ═════════════════════════════════════════════════════════════════════════════
 
 // ══════════════════════════════════════════════════════════════════════════════
-// FACTORY CRM — Native production management built into CRM
-// ══════════════════════════════════════════════════════════════════════════════
-var FACTORY_STATIONS = [
-  {id:'frame_cutting',n:'Frame Cutting',col:'#6366f1'},
-  {id:'sash_cutting',n:'Sash Cutting',col:'#8b5cf6'},
-  {id:'steel_prep',n:'Steel & CNC',col:'#3b82f6'},
-  {id:'welding',n:'Welding',col:'#f59e0b'},
-  {id:'hardware',n:'Hardware',col:'#10b981'},
-  {id:'qc',n:'QC Inspection',col:'#22c55e'},
-  {id:'packing',n:'Packing',col:'#a855f7'},
-];
-// ══════════════════════════════════════════════════════════════════════════════
 // ACCOUNTS CRM — Financial reporting, cash flow, reconciliation, Xero
 // ══════════════════════════════════════════════════════════════════════════════
 
