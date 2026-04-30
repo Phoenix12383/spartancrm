@@ -873,7 +873,13 @@ async function viewJobFile(fileId, filename) {
 
 // ── Progress Claims ─────────────────────────────────────────────────────────
 function getJobClaims(jobId) { try{return JSON.parse(localStorage.getItem('spartan_claims_'+jobId)||'[]');}catch(e){return [];} }
-function saveJobClaims(jobId, claims) { localStorage.setItem('spartan_claims_'+jobId, JSON.stringify(claims)); }
+function saveJobClaims(jobId, claims) {
+  localStorage.setItem('spartan_claims_'+jobId, JSON.stringify(claims));
+  if (typeof _sb !== 'undefined' && _sb && typeof jobClaimsToDb === 'function') {
+    try { dbUpsert('job_claims', jobClaimsToDb(jobId, claims)); }
+    catch(e) { console.warn('Job claims sync failed', jobId, e); }
+  }
+}
 
 // Brief 4 Phase 3: mark a single progress claim as paid. Extracted from
 // the previously-inline onclick handler in 22-jobs-page.js so the

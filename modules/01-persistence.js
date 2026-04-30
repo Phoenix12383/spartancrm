@@ -363,6 +363,17 @@ function dbToJobCosts(r) {
     additional: Array.isArray(r.additional) ? r.additional : []
   };
 }
+// ── Per-job progress payment claims — modules/17-install-schedule.js
+// Note: jobClaimsToDb takes (jobId, claims) — there's no top-level id.
+function jobClaimsToDb(jobId, claims) {
+  return {
+    job_id: jobId,
+    claims: Array.isArray(claims) ? claims : []
+  };
+}
+function dbToJobClaims(r) {
+  return Array.isArray(r.claims) ? r.claims : [];
+}
 function emailToDb(e) {
   return {id:e.id, to_addr:e.to||'', to_name:e.toName||'', subject:e.subject||'',
     body:e.body||'', date:e.date||'', time:e.time||'', by_user:e.by||'',
@@ -641,6 +652,7 @@ async function dbLoadAll() {
       _sb.from('installer_availability').select('*'),                                                      // index 22
       _sb.from('install_progress').select('*'),                                                            // index 23
       _sb.from('job_costs').select('*'),                                                                   // index 24
+      _sb.from('job_claims').select('*'),                                                                  // index 25
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -852,6 +864,14 @@ async function dbLoadAll() {
       try { localStorage.setItem('spartan_job_costs_' + r.job_id, JSON.stringify(dbToJobCosts(r))); }
       catch(e) { console.warn('[Spartan] Failed to cache job_costs for', r.job_id, e); }
     });
+    // Per-job progress claims. Same per-key pattern — getJobClaims reads
+    // spartan_claims_<jobId> directly so we cache one entry per job.
+    var claimRows = (results[25] && results[25].data) || [];
+    claimRows.forEach(function(r) {
+      if (!r.job_id) return;
+      try { localStorage.setItem('spartan_claims_' + r.job_id, JSON.stringify(dbToJobClaims(r))); }
+      catch(e) { console.warn('[Spartan] Failed to cache job_claims for', r.job_id, e); }
+    });
     // entity_files (deals/leads/contacts file uploads — written by
     // 08-sales-crm.js addEntityFile and the mobile camera capture). Mirrors
     // the job_files pattern: bucket by entity_type+entity_id, keep the
@@ -1047,6 +1067,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'installer_availability'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'install_progress'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'job_costs'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'job_claims'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'email_sent'}, function(){ dbLoadAll(); })
