@@ -738,7 +738,15 @@ function logJobAudit(jobId, action, detail, oldVal, newVal) {
   var entry = {id:'aud_'+Date.now(), action:action, detail:detail||'', oldValue:oldVal||'', newValue:newVal||'', user:user.name, timestamp:new Date().toISOString()};
   log.unshift(entry);
   saveJobAuditLog(jobId, log);
-  if(_sb) dbInsert('job_audit', {job_id:jobId, action:action, detail:detail||'', by_user:user.name});
+  if(_sb) dbInsert('job_audit', {
+    id: entry.id,
+    job_id: jobId,
+    action: action,
+    detail: detail || '',
+    old_value: (oldVal != null && oldVal !== '') ? String(oldVal) : null,
+    new_value: (newVal != null && newVal !== '') ? String(newVal) : null,
+    by_user: user.name
+  });
   // Brief 2 Phase 2: also write to the unified audit log so the Jobs CRM
   // audit tab keeps working AND the global audit page sees these entries.
   // Don't replace getJobAuditLog — the Jobs CRM tab still reads it directly.

@@ -374,6 +374,20 @@ function jobClaimsToDb(jobId, claims) {
 function dbToJobClaims(r) {
   return Array.isArray(r.claims) ? r.claims : [];
 }
+// ── Per-job audit log entry — modules/17-install-schedule.js logJobAudit
+// Local entry shape: { id, action, detail, oldValue, newValue, user, timestamp }.
+// DB row shape: id / job_id / action / detail / old_value / new_value / by_user / created_at.
+function dbToJobAuditEntry(r) {
+  return {
+    id: r.id,
+    action: r.action || '',
+    detail: r.detail || '',
+    oldValue: r.old_value || '',
+    newValue: r.new_value || '',
+    user: r.by_user || '',
+    timestamp: r.created_at || null
+  };
+}
 function emailToDb(e) {
   return {id:e.id, to_addr:e.to||'', to_name:e.toName||'', subject:e.subject||'',
     body:e.body||'', date:e.date||'', time:e.time||'', by_user:e.by||'',
@@ -653,6 +667,7 @@ async function dbLoadAll() {
       _sb.from('install_progress').select('*'),                                                            // index 23
       _sb.from('job_costs').select('*'),                                                                   // index 24
       _sb.from('job_claims').select('*'),                                                                  // index 25
+      _sb.from('job_audit').select('*').order('created_at', { ascending: false }).limit(5000),             // index 26
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -872,6 +887,21 @@ async function dbLoadAll() {
       try { localStorage.setItem('spartan_claims_' + r.job_id, JSON.stringify(dbToJobClaims(r))); }
       catch(e) { console.warn('[Spartan] Failed to cache job_claims for', r.job_id, e); }
     });
+    // Per-job audit log. Bucket all rows by job_id, newest first (matches
+    // logJobAudit's unshift order), persist one entry per job under
+    // spartan_audit_<jobId> so getJobAuditLog reads from the cache directly.
+    var auditRows = (results[26] && results[26].data) || [];
+    if (auditRows.length > 0) {
+      var auditBuckets = {};
+      auditRows.forEach(function(r) {
+        if (!r.job_id) return;
+        (auditBuckets[r.job_id] = auditBuckets[r.job_id] || []).push(dbToJobAuditEntry(r));
+      });
+      Object.keys(auditBuckets).forEach(function(jid) {
+        try { localStorage.setItem('spartan_audit_' + jid, JSON.stringify(auditBuckets[jid])); }
+        catch(e) { console.warn('[Spartan] Failed to cache job_audit for', jid, e); }
+      });
+    }
     // entity_files (deals/leads/contacts file uploads — written by
     // 08-sales-crm.js addEntityFile and the mobile camera capture). Mirrors
     // the job_files pattern: bucket by entity_type+entity_id, keep the
@@ -1068,6 +1098,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'install_progress'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'job_costs'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'job_claims'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'job_audit'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'email_sent'}, function(){ dbLoadAll(); })
