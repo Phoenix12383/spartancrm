@@ -108,86 +108,122 @@
 
     // ── Per-week sections ────────────────────────────────────────────────────
     var weekHtml = '<div class="card" style="padding:18px 22px">';
-    weekHtml += '<h3 style="font-family:Syne,sans-serif;font-size:15px;font-weight:800;margin:0 0 12px">Weekly Plan</h3>';
+    weekHtml += '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:0 0 14px">'
+      +'<h3 style="font-family:Syne,sans-serif;font-size:15px;font-weight:800;margin:0">Weekly Plan</h3>'
+      +'<span style="font-size:11px;color:#9ca3af">click a week to expand</span>'
+      +'</div>';
 
-    weeks.forEach(function(wk){
+    weeks.forEach(function(wk, wIdx){
       var isExpanded = expandedWeek === wk.offset;
       var todayInWeek = wk.dates.some(function(d){return isToday(d);});
       var label = fmtShortDate(wk.dates[0]) + ' – ' + fmtShortDate(wk.dates[6]);
-      var statusCol = '#16a34a';
-      var statusText = 'All clear';
-      if (wk.noFit > 0) { statusCol = '#7f1d1d'; statusText = wk.noFit + ' won\'t fit'; }
-      else if (wk.conflicts > 0) { statusCol = '#dc2626'; statusText = wk.conflicts + ' conflict' + (wk.conflicts!==1?'s':''); }
-      else if (wk.notSurveyed > 0 && wk.notSurveyed === wk.rows.length) { statusCol = '#9ca3af'; statusText = wk.notSurveyed + ' not surveyed'; }
-      else if (wk.notSurveyed > 0) { statusCol = '#16a34a'; statusText = 'All clear · ' + wk.notSurveyed + ' not surveyed'; }
-      else if (wk.rows.length === 0) { statusCol = '#9ca3af'; statusText = 'No jobs'; }
 
-      weekHtml += '<div style="border-top:1px solid #f3f4f6;padding:10px 0">'
-        +'<div onclick="setState({fleetExpandedWeek:'+(isExpanded?'null':wk.offset)+'})" style="cursor:pointer;display:flex;align-items:center;gap:14px">'
-        +'<div style="min-width:160px;font-size:12px;font-weight:'+(todayInWeek?'700':'600')+';color:'+(todayInWeek?'#c41230':'#374151')+'">'+(todayInWeek?'👉 ':'')+label+'</div>'
-        +'<div style="flex:1;font-size:11px;color:#6b7280">'+wk.rows.length+' job'+(wk.rows.length!==1?'s':'')+'</div>'
-        +'<div style="min-width:140px;text-align:right;font-size:12px;font-weight:700;color:'+statusCol+'">'+statusText+'</div>'
-        +'<div style="min-width:18px;text-align:right;color:#9ca3af;font-size:12px">'+(isExpanded?'▾':'▸')+'</div>'
+      // Week-level status pill (right side of header).
+      var pillBg = '#f0fdf4', pillBorder = '#bbf7d0', pillFg = '#15803d', pillText = 'All clear';
+      if (wk.noFit > 0) { pillBg = '#fef2f2'; pillBorder = '#fecaca'; pillFg = '#7f1d1d'; pillText = wk.noFit + ' won\'t fit'; }
+      else if (wk.conflicts > 0) { pillBg = '#fef2f2'; pillBorder = '#fecaca'; pillFg = '#dc2626'; pillText = wk.conflicts + ' conflict' + (wk.conflicts!==1?'s':''); }
+      else if (wk.rows.length === 0) { pillBg = '#f9fafb'; pillBorder = '#e5e7eb'; pillFg = '#9ca3af'; pillText = 'No jobs'; }
+      else if (wk.notSurveyed > 0 && wk.notSurveyed === wk.rows.length) { pillBg = '#f9fafb'; pillBorder = '#e5e7eb'; pillFg = '#6b7280'; pillText = wk.notSurveyed + ' not surveyed'; }
+      else if (wk.notSurveyed > 0) { pillText = 'All clear · ' + wk.notSurveyed + ' not surveyed'; }
+
+      var rowBgHover = todayInWeek ? '#fff7f7' : '#fafafa';
+      var leftBar = todayInWeek ? '3px solid #c41230' : '3px solid transparent';
+
+      weekHtml += '<div style="border-top:1px solid #f3f4f6">'
+        +'<div onclick="setState({fleetExpandedWeek:'+(isExpanded?'null':wk.offset)+'})" '
+        +'onmouseover="this.style.background=\''+rowBgHover+'\'" onmouseout="this.style.background=\'transparent\'" '
+        +'style="cursor:pointer;display:flex;align-items:center;gap:14px;padding:14px 12px;border-left:'+leftBar+';transition:background 0.12s">'
+        +'<div style="color:#9ca3af;font-size:11px;width:14px">'+(isExpanded?'▾':'▸')+'</div>'
+        +'<div style="min-width:170px;font-size:13px;font-weight:'+(todayInWeek?'700':'600')+';color:'+(todayInWeek?'#c41230':'#111827')+'">'+(todayInWeek?'This week · ':'')+label+'</div>'
+        +'<div style="flex:1;font-size:12px;color:#6b7280">'+wk.rows.length+' job'+(wk.rows.length!==1?'s':'')+'</div>'
+        +'<span style="display:inline-flex;align-items:center;font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;background:'+pillBg+';border:1px solid '+pillBorder+';color:'+pillFg+'">'+pillText+'</span>'
         +'</div>';
 
       if (isExpanded) {
         if (wk.rows.length === 0) {
-          weekHtml += '<div style="margin-top:10px;padding:14px;background:#f9fafb;border-radius:6px;font-size:12px;color:#9ca3af;font-style:italic">No jobs scheduled this week.</div>';
+          weekHtml += '<div style="margin:0 12px 14px;padding:18px;background:#f9fafb;border:1px dashed #e5e7eb;border-radius:8px;font-size:12px;color:#9ca3af;text-align:center">No jobs scheduled this week.</div>';
         } else {
           // Group rows by date for a cleaner per-day view.
           var byDate = {};
           wk.rows.forEach(function(r){ if(!byDate[r.job.installDate]) byDate[r.job.installDate]=[]; byDate[r.job.installDate].push(r); });
-          weekHtml += '<div style="margin-top:10px;padding:12px;background:#f9fafb;border-radius:6px">';
-          Object.keys(byDate).sort().forEach(function(ds){
+
+          weekHtml += '<div style="margin:0 12px 14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden">';
+          weekHtml += '<table style="width:100%;border-collapse:collapse;font-size:12.5px;table-layout:fixed">'
+            +'<colgroup>'
+            +'<col style="width:14%"><col style="width:24%"><col style="width:9%"><col style="width:9%"><col style="width:26%"><col style="width:18%">'
+            +'</colgroup>'
+            +'<thead><tr style="background:#fafafa;border-bottom:1px solid #e5e7eb">'
+            +'<th style="text-align:left;padding:9px 14px;font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Job</th>'
+            +'<th style="text-align:left;padding:9px 14px;font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Customer</th>'
+            +'<th style="text-align:left;padding:9px 14px;font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Time</th>'
+            +'<th style="text-align:left;padding:9px 14px;font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Frames</th>'
+            +'<th style="text-align:left;padding:9px 14px;font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Recommended Vehicle</th>'
+            +'<th style="text-align:left;padding:9px 14px;font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Status</th>'
+            +'</tr></thead><tbody>';
+
+          Object.keys(byDate).sort().forEach(function(ds, dIdx){
             var dayRows = byDate[ds];
             var d = new Date(ds + 'T12:00:00');
-            var dayLabel = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()] + ' ' + d.getDate() + '/' + (d.getMonth()+1);
+            var dayLabel = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][d.getDay()];
+            var dateLabel = d.getDate() + '/' + (d.getMonth()+1);
+            var isDayToday = isToday(d);
             // Vehicles tied up this day (recommended).
             var vehicleSet = {};
             dayRows.forEach(function(r){ if (r.rec.recommended) vehicleSet[r.rec.recommended.id] = r.rec.recommended; });
             var vehiclesUsed = Object.keys(vehicleSet).length;
-            weekHtml += '<div style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:12px;font-weight:700;color:#374151">'+dayLabel+'</span><span style="font-size:10px;color:#9ca3af">'+dayRows.length+' job'+(dayRows.length!==1?'s':'')+' · '+vehiclesUsed+' vehicle'+(vehiclesUsed!==1?'s':'')+'</span></div>';
-            weekHtml += '<table style="width:100%;border-collapse:collapse;font-size:12px;background:#fff;border-radius:6px;overflow:hidden">'
-              +'<thead><tr><th class="th" style="text-align:left;padding:6px 10px">Job</th><th class="th" style="text-align:left">Customer</th><th class="th" style="text-align:left">Time</th><th class="th" style="text-align:left">Frames</th><th class="th" style="text-align:left">Recommended Vehicle</th><th class="th" style="text-align:left">Status</th></tr></thead><tbody>';
+            var dayConflicts = dayRows.filter(function(r){return r.statusKind==='conflict';}).length;
+
+            // Day separator row spanning the table.
+            weekHtml += '<tr><td colspan="6" style="padding:0">'
+              +'<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;background:'+(isDayToday?'#fff7f7':'#f9fafb')+';border-top:'+(dIdx>0?'1px solid #e5e7eb':'none')+';border-bottom:1px solid #f3f4f6">'
+              +'<span style="font-size:11px;font-weight:800;color:'+(isDayToday?'#c41230':'#374151')+';text-transform:uppercase;letter-spacing:0.06em">'+(isDayToday?'Today · ':'')+dayLabel+'</span>'
+              +'<span style="font-size:11px;color:#9ca3af">'+dateLabel+'</span>'
+              +'<span style="margin-left:auto;font-size:10.5px;color:#6b7280">'
+              +dayRows.length+' job'+(dayRows.length!==1?'s':'')+' · '+vehiclesUsed+' vehicle'+(vehiclesUsed!==1?'s':'')
+              +(dayConflicts>0 ? ' · <span style="color:#dc2626;font-weight:700">'+dayConflicts+' conflict'+(dayConflicts!==1?'s':'')+'</span>' : '')
+              +'</span>'
+              +'</div>'
+              +'</td></tr>';
+
             dayRows.forEach(function(r){
               var j = r.job;
               var c = contacts.find(function(ct){return ct.id===j.contactId;});
               var cn = c ? (c.fn+' '+c.ln) : '—';
               var frames = r.rec.frames ? r.rec.frames.length : 0;
               var v = r.rec.recommended;
-              var statusLabel, statusCol2, rowBg, vehicleCell;
+              // Status badge (pill) + accent stripe.
+              var badgeBg, badgeBorder, badgeFg, badgeText, accent, vehicleCell;
               if (r.statusKind === 'not_surveyed') {
-                statusLabel = '— Not Surveyed'; statusCol2 = '#9ca3af'; rowBg = '#fff';
+                badgeBg='#f3f4f6'; badgeBorder='#e5e7eb'; badgeFg='#6b7280'; badgeText='Not surveyed'; accent='transparent';
                 vehicleCell = '<span style="color:#9ca3af;font-style:italic">awaiting CAD survey</span>';
               } else if (r.statusKind === 'split') {
                 var n = r.rec.split.plan.length;
-                statusLabel = '↗ Split ('+n+' vehicles)'; statusCol2 = '#92400e'; rowBg = '#fffbeb';
+                badgeBg='#fffbeb'; badgeBorder='#fde68a'; badgeFg='#92400e'; badgeText='Split · '+n+' vehicles'; accent='#f59e0b';
                 vehicleCell = '<span style="color:#92400e;font-weight:600">'+r.rec.split.plan.map(function(s){return s.vehicle.name;}).join(' + ')+'</span>';
               } else if (r.statusKind === 'no_fit') {
-                statusLabel = '✕ No fit'; statusCol2 = '#7f1d1d'; rowBg = '#fef2f2';
+                badgeBg='#fef2f2'; badgeBorder='#fecaca'; badgeFg='#7f1d1d'; badgeText='No fit'; accent='#7f1d1d';
                 vehicleCell = '<span style="color:#7f1d1d;font-style:italic">none fits</span>';
               } else if (r.statusKind === 'conflict') {
-                statusLabel = '⚠ Conflict'; statusCol2 = '#dc2626'; rowBg = '#fef2f2';
-                vehicleCell = '<strong>'+v.name+'</strong>'+(v.rego?' <span style="font-family:monospace;font-size:10px;color:#6b7280">'+v.rego+'</span>':'');
+                badgeBg='#fef2f2'; badgeBorder='#fecaca'; badgeFg='#dc2626'; badgeText='Conflict'; accent='#dc2626';
+                vehicleCell = '<span style="display:inline-flex;align-items:center;gap:6px"><span style="font-weight:700;color:#111827">'+v.name+'</span>'+(v.rego?'<span style="font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px">'+v.rego+'</span>':'')+'</span>';
               } else if (r.statusKind === 'tight') {
-                statusLabel = '⚠ Tight'; statusCol2 = '#d97706'; rowBg = '#fff';
-                vehicleCell = '<strong>'+v.name+'</strong>'+(v.rego?' <span style="font-family:monospace;font-size:10px;color:#6b7280">'+v.rego+'</span>':'');
+                badgeBg='#fffbeb'; badgeBorder='#fde68a'; badgeFg='#b45309'; badgeText='Tight fit'; accent='#f59e0b';
+                vehicleCell = '<span style="display:inline-flex;align-items:center;gap:6px"><span style="font-weight:700;color:#111827">'+v.name+'</span>'+(v.rego?'<span style="font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px">'+v.rego+'</span>':'')+'</span>';
               } else {
-                statusLabel = '✓ OK'; statusCol2 = '#16a34a'; rowBg = '#fff';
-                vehicleCell = '<strong>'+v.name+'</strong>'+(v.rego?' <span style="font-family:monospace;font-size:10px;color:#6b7280">'+v.rego+'</span>':'');
+                badgeBg='#f0fdf4'; badgeBorder='#bbf7d0'; badgeFg='#15803d'; badgeText='OK'; accent='transparent';
+                vehicleCell = '<span style="display:inline-flex;align-items:center;gap:6px"><span style="font-weight:700;color:#111827">'+v.name+'</span>'+(v.rego?'<span style="font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px">'+v.rego+'</span>':'')+'</span>';
               }
-              weekHtml += '<tr style="border-top:1px solid #f3f4f6;background:'+rowBg+'">'
-                +'<td class="td" style="padding:6px 10px"><a href="#" onclick="event.preventDefault();setState({page:\'jobs\',jobDetailId:\''+j.id+'\'})" style="color:#3b82f6;font-weight:600;text-decoration:none">'+(j.jobNumber||j.id)+'</a></td>'
-                +'<td class="td">'+cn+'</td>'
-                +'<td class="td">'+(j.installTime||'—')+'</td>'
-                +'<td class="td">'+frames+'</td>'
-                +'<td class="td">'+vehicleCell+'</td>'
-                +'<td class="td"><span style="color:'+statusCol2+';font-weight:600">'+statusLabel+'</span></td>'
+              weekHtml += '<tr style="border-top:1px solid #f3f4f6">'
+                +'<td style="padding:10px 14px;border-left:3px solid '+accent+'"><a href="#" onclick="event.preventDefault();setState({page:\'jobs\',jobDetailId:\''+j.id+'\'})" style="color:#2563eb;font-weight:700;text-decoration:none">'+(j.jobNumber||j.id)+'</a></td>'
+                +'<td style="padding:10px 14px;color:#374151;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+cn+'</td>'
+                +'<td style="padding:10px 14px;color:'+(j.installTime?'#374151':'#9ca3af')+';font-variant-numeric:tabular-nums">'+(j.installTime||'—')+'</td>'
+                +'<td style="padding:10px 14px;color:#374151;font-variant-numeric:tabular-nums">'+frames+'</td>'
+                +'<td style="padding:10px 14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+vehicleCell+'</td>'
+                +'<td style="padding:10px 14px"><span style="display:inline-flex;align-items:center;font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:999px;background:'+badgeBg+';border:1px solid '+badgeBorder+';color:'+badgeFg+'">'+badgeText+'</span></td>'
                 +'</tr>';
             });
-            weekHtml += '</tbody></table></div>';
           });
-          weekHtml += '</div>';
+          weekHtml += '</tbody></table></div>';
         }
       }
       weekHtml += '</div>';
