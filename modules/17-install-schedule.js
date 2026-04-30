@@ -178,9 +178,83 @@ window.runAutoSchedule = function() {
 // Drop handler for the Install Schedule Gantt — places a job at the dropped
 // installer/day/time. If dropped on an installer row not yet in the crew, the
 // installer is added as the new lead.
-window.dropJobOnGantt = function(jobId, ds, rowId, hourWidth, dayStart, offsetX) {
+// Drag the right edge of a Gantt bar to adjust install duration. Snaps to
+// 15-min increments, clamps 0.5–12h, suppresses the click navigation that
+// would otherwise fire on mouseup.
+//
+// On save we invert getCrewEffectiveHours() — the bar's pixel width is the
+// EFFECTIVE duration (manual base + 0.5h overhead, scaled by installer
+// efficiency, ceiling-rounded to 0.25h). If we naively saved the effective
+// width back as installDurationHours, the next render would re-add overhead
+// and the bar would creep ~30min wider on every drag.
+window.startBarResize = function(e, jobId, hourPx, handle) {
+  var bar = handle && handle.parentElement;
+  if (!bar) return;
+  var startX = e.clientX;
+  var startW = bar.offsetWidth;
+  var startH = Math.round((startW / hourPx) * 4) / 4;
+  var liveH = startH;
+  // Look up the job's crew + efficiency now so we can invert the formula on save.
+  var _job = (getState().jobs || []).find(function(j){ return j.id === jobId; });
+  var _crew = (_job && _job.installCrew) || [];
+  var _pct = (_crew.length && typeof getInstallerEfficiency === 'function') ? getInstallerEfficiency(_crew[0]) : 100;
+  var _overhead = (typeof INSTALL_OVERHEAD_HOURS === 'number') ? INSTALL_OVERHEAD_HOURS : 0;
+  var prevUserSelect = document.body.style.userSelect;
+  var prevCursor = document.body.style.cursor;
+  document.body.style.userSelect = 'none';
+  document.body.style.cursor = 'ew-resize';
+
+  // Floating tooltip near cursor showing live duration.
+  var tip = document.createElement('div');
+  tip.style.cssText = 'position:fixed;z-index:9999;background:#111827;color:#fff;font-size:11px;font-weight:700;padding:4px 8px;border-radius:4px;pointer-events:none;font-family:Syne,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,.2)';
+  tip.textContent = startH + 'h';
+  tip.style.left = (e.clientX + 12) + 'px';
+  tip.style.top = (e.clientY - 28) + 'px';
+  document.body.appendChild(tip);
+
+  function move(ev) {
+    var dx = ev.clientX - startX;
+    var newW = Math.max(hourPx * 0.5, Math.min(hourPx * 12, startW + dx));
+    bar.style.width = newW + 'px';
+    liveH = Math.round((newW / hourPx) * 4) / 4;
+    tip.textContent = liveH + 'h';
+    tip.style.left = (ev.clientX + 12) + 'px';
+    tip.style.top = (ev.clientY - 28) + 'px';
+  }
+  function up() {
+    window.removeEventListener('mousemove', move);
+    window.removeEventListener('mouseup', up);
+    document.body.style.userSelect = prevUserSelect;
+    document.body.style.cursor = prevCursor;
+    if (tip.parentNode) tip.parentNode.removeChild(tip);
+    // Suppress the click that fires on the bar after mouseup (would navigate
+    // to job detail). Capture-phase listener intercepts before the bar's
+    // onclick attribute (bubble phase) gets it.
+    var blocker = function(ev2){ ev2.stopPropagation(); ev2.preventDefault(); };
+    window.addEventListener('click', blocker, true);
+    setTimeout(function(){ window.removeEventListener('click', blocker, true); }, 300);
+    var newH_effective = Math.max(0.5, Math.min(12, liveH));
+    if (Math.abs(newH_effective - startH) >= 0.25 && typeof setJobDuration === 'function') {
+      // Inverse of getCrewEffectiveHours — strip overhead, undo efficiency
+      // scaling, snap to 0.25h. Next render's ceil() can still add up to
+      // 0.25h back when efficiency != 100%, but stays stable at 100%.
+      var newH_manual = (newH_effective - _overhead) * (_pct || 100) / 100;
+      newH_manual = Math.max(0.25, Math.round(newH_manual * 4) / 4);
+      setJobDuration(jobId, newH_manual);
+      if (typeof addToast === 'function') addToast('Duration set to ' + newH_effective + 'h', 'success');
+    }
+  }
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+};
+
+window.dropJobOnGantt = function(jobId, ds, rowId, hourWidth, dayStart, offsetX, grabOffset) {
   if (!jobId) return;
-  var hrFloat = (offsetX / hourWidth) + dayStart;
+  // grabOffset = px from the bar's left edge to where the user originally
+  // grabbed it. Without this, dropping at "7am" with a mid-bar grab puts the
+  // bar's left edge under the cursor — i.e. start time drifts right.
+  var adjustedX = Math.max(0, offsetX - (parseFloat(grabOffset) || 0));
+  var hrFloat = (adjustedX / hourWidth) + dayStart;
   var hh = Math.floor(hrFloat);
   var min = (hrFloat - hh) >= 0.5 ? '30' : '00';
   if (hh < 0) hh = 0;
@@ -1458,7 +1532,7 @@ function renderInstallSchedule() {
       g += '<div style="width:'+DAY_W+'px;min-width:'+DAY_W+'px;flex-shrink:0;position:relative;border-right:1px solid #e5e7eb;'+(ph?'background:repeating-linear-gradient(45deg,#fef3c7,#fef3c7 6px,#fde68a 6px,#fde68a 12px);':td?'background:#fffbfb':wk?'background:#fafafa':'')+'"'
         +' ondragover="event.preventDefault();this.style.boxShadow=\'inset 0 0 0 2px #3b82f6\';"'
         +' ondragleave="this.style.boxShadow=\'\';"'
-        +' ondrop="this.style.boxShadow=\'\';var r=this.getBoundingClientRect();dropJobOnGantt(event.dataTransfer.getData(\'text/plain\'),\''+ds+'\',\''+row.id+'\','+HOUR_W+','+DAY_START+',event.clientX-r.left);event.preventDefault();"'
+        +' ondrop="this.style.boxShadow=\'\';var r=this.getBoundingClientRect();var _d=event.dataTransfer.getData(\'text/plain\');var _p=_d.split(\'|\');dropJobOnGantt(_p[0],\''+ds+'\',\''+row.id+'\','+HOUR_W+','+DAY_START+',event.clientX-r.left,_p[1]);event.preventDefault();"'
         +'>';
 
       // Hour gridlines
@@ -1493,7 +1567,9 @@ function renderInstallSchedule() {
         if (left + width > DAY_W) width = DAY_W - left;
 
         var progPct = getInstallProgressPct(j);
-        g += '<div draggable="true" ondragstart="event.dataTransfer.setData(\'text/plain\',\''+j.id+'\');event.dataTransfer.effectAllowed=\'move\';this.style.opacity=\'.5\';" ondragend="this.style.opacity=\'\';" style="position:absolute;left:'+left+'px;top:'+(4 + idx * 0)+'px;width:'+width+'px;height:'+(ROW_H - 8)+'px;z-index:2;cursor:grab" onclick="setState({crmMode:\'jobs\',page:\'jobs\',jobDetailId:\''+j.id+'\'})" title="Drag to reschedule, click to open' + (progPct>0?' · '+progPct+'% installed':'') + '">';
+        // Encode "<jobId>|<grabOffsetPx>" so dropJobOnGantt can subtract the
+        // grab offset and place the bar's left edge under the original grab point.
+        g += '<div draggable="true" ondragstart="event.dataTransfer.setData(\'text/plain\',\''+j.id+'\'+\'|\'+(event.offsetX||0));event.dataTransfer.effectAllowed=\'move\';this.style.opacity=\'.5\';" ondragend="this.style.opacity=\'\';" style="position:absolute;left:'+left+'px;top:'+(4 + idx * 0)+'px;width:'+width+'px;height:'+(ROW_H - 8)+'px;z-index:2;cursor:grab" onclick="setState({crmMode:\'jobs\',page:\'jobs\',jobDetailId:\''+j.id+'\'})" title="Drag to reschedule, click to open' + (progPct>0?' · '+progPct+'% installed':'') + '">';
         g += '<div style="height:100%;border-radius:6px;padding:3px 6px;overflow:hidden;display:flex;flex-direction:column;justify-content:center;position:relative;'
           +'background:'+barCol+'18;border:1.5px solid '+barCol+'50;'
           +(noTime?'border-style:dashed;':'')
@@ -1516,7 +1592,17 @@ function renderInstallSchedule() {
           +(j.paymentMethod==='zip'?'<span style="font-size:7px;font-weight:800;color:#7c3aed;background:#f5f3ff;padding:0 3px;border-radius:3px">ZIP</span>':'')
           +(progPct>0?'<span style="font-size:8px;font-weight:800;color:#15803d;background:#dcfce7;padding:0 4px;border-radius:3px;margin-left:auto">'+progPct+'%</span>':'')
           +'</div>';
-        g += '</div></div>';
+        g += '</div>';
+        // Resize handle on the right edge \u2014 drag to adjust duration.
+        // draggable="false" + preventDefault on mousedown stops the parent's
+        // HTML5 drag-to-reschedule from kicking in when grabbing the handle.
+        g += '<div draggable="false" '
+          +'onmousedown="event.stopPropagation();event.preventDefault();startBarResize(event,\''+j.id+'\','+HOUR_W+',this);" '
+          +'ondragstart="event.preventDefault();return false;" '
+          +'onclick="event.stopPropagation()" '
+          +'title="Drag to adjust duration" '
+          +'style="position:absolute;right:0;top:0;bottom:0;width:8px;cursor:ew-resize;z-index:4;background:linear-gradient(to right,transparent,'+barCol+'60);border-radius:0 6px 6px 0"></div>';
+        g += '</div>';
       });
 
       // Empty cell — show dropdown if there are unscheduled jobs, otherwise a drop hint
