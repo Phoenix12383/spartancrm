@@ -2826,8 +2826,23 @@ async function sendMobileEmail() {
     var data = {};
     try { data = await resp.json(); } catch(e){}
     if (!resp.ok) {
-      var msg = (data && data.error) || ('HTTP ' + resp.status);
-      addToast('Send failed: ' + msg, 'error');
+      var raw = (data && data.error) || ('HTTP ' + resp.status);
+      // Translate the most common backend errors into something a sales rep
+      // can actually act on. Pre-launch the env var won't be set; sessions
+      // expire in an hour so token errors crop up after a long break.
+      var friendly;
+      if (/SERVICE_ACCOUNT_BASE64|env var not set/i.test(raw)) {
+        friendly = 'Email isn\'t set up yet — admin is plugging in credentials.';
+      } else if (/expired|empty bearer|invalid.*id token/i.test(raw)) {
+        friendly = 'Sign out and back in to refresh your session, then retry.';
+      } else if (/not registered/i.test(raw)) {
+        friendly = 'Your email isn\'t in the user list — contact admin.';
+      } else if (/domain.wide|delegation|unauthorized_client/i.test(raw)) {
+        friendly = 'Email permissions not authorised yet — admin needs to finish Workspace setup.';
+      } else {
+        friendly = raw;
+      }
+      addToast('Send failed: ' + friendly, 'error');
       p.sending = false; renderPage();
       return;
     }
@@ -3053,8 +3068,28 @@ function _renderEntityDetailMobile(opts) {
   }
 
   // Details rows (skip empties so the card never has dashes).
-  function row(label, val) {
+  // row(label, val)            — static row
+  // row(label, val, { tap })  — tappable row. `tap` is either a URL
+  //   (tel:/mailto:/sms:/http(s):) which renders as <a>, or a JS
+  //   expression which renders as <div onclick=...>. Tappable rows get
+  //   blue value text + a › chevron to signal they're actionable, and a
+  //   slightly bigger 13px tap target.
+  function row(label, val, opts) {
     if (!val || val === '—') return '';
+    if (opts && opts.tap) {
+      var isUrl = /^(tel:|mailto:|sms:|https?:)/.test(opts.tap);
+      var openAttr = isUrl
+        ? 'href="' + String(opts.tap).replace(/"/g,'&quot;') + '"' + (opts.tap.indexOf('http') === 0 ? ' target="_blank" rel="noopener"' : '')
+        : 'onclick="' + opts.tap + '"';
+      var tag = isUrl ? 'a' : 'div';
+      return '<' + tag + ' ' + openAttr + ' style="display:flex;justify-content:space-between;align-items:center;padding:13px 14px;border-bottom:1px solid #f3f4f6;gap:12px;text-decoration:none;color:inherit;cursor:pointer">' +
+        '<span style="font-size:11px;color:#9ca3af;flex-shrink:0">' + label + '</span>' +
+        '<span style="display:flex;align-items:center;gap:6px;min-width:0">' +
+          '<span style="font-size:13px;font-weight:600;color:#3b82f6;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">' + val + '</span>' +
+          '<span style="color:#9ca3af;font-size:14px;flex-shrink:0;line-height:1">›</span>' +
+        '</span>' +
+      '</' + tag + '>';
+    }
     return '<div style="display:flex;justify-content:space-between;align-items:center;padding:11px 14px;border-bottom:1px solid #f3f4f6;gap:12px">' +
       '<span style="font-size:11px;color:#9ca3af;flex-shrink:0">' + label + '</span>' +
       '<span style="font-size:13px;font-weight:600;color:#374151;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">' + val + '</span>' +
@@ -3064,10 +3099,16 @@ function _renderEntityDetailMobile(opts) {
   var ownerVal = owner || (entityType === 'lead'
     ? '<span style="display:inline-block;font-size:10px;font-weight:700;padding:3px 9px;border-radius:10px;background:#fef3c7;color:#92400e;border:1px solid #fde68a">Unassigned</span>'
     : '—');
+  var phoneTap = phone ? 'tel:' + String(phone).replace(/[^\d+]/g,'') : null;
+  // Email row opens the in-app composer (matches the EMAIL quick-action
+  // button at the top of the page). Falls back to mailto: if openMobileEmail
+  // isn't defined yet (during very early load).
+  var emailTap = email ? "openMobileEmail('" + _esc(entity.id) + "','" + entityType + "','" + _esc(email) + "')" : null;
+  var addrTap = addr ? 'https://maps.google.com/?q=' + encodeURIComponent(addr) : null;
   var detailsCard = '<div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)">' +
-    row('Phone', phone) +
-    row('Email', email) +
-    row('Address', addr) +
+    row('Phone', phone, { tap: phoneTap }) +
+    row('Email', email, { tap: emailTap }) +
+    row('Address', addr, { tap: addrTap }) +
     row(entityType === 'deal' ? 'Stage' : 'Status', statusBadge) +
     row(entityType === 'deal' ? 'Rep' : 'Owner', ownerVal) +
     row('Source', source) +
@@ -3088,15 +3129,20 @@ function _renderEntityDetailMobile(opts) {
   // notes. Editing is desktop-only — sales reps on mobile log activity, they
   // don't tweak deal fields.
   var bottomActions = '';
-  var noteBtn = '<button onclick="openMobileNote(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="flex:1;padding:11px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:700;color:#374151;cursor:pointer;font-family:inherit">+ Note</button>';
+  // Tap-target sizing: padding:13px + font-size:14px + line-height:1.2 ≈
+  // 44px button height, the iOS HIG / Material minimum. Long labels
+  // (e.g. "→ Quote Sent") get nowrap+ellipsis so the row stays balanced
+  // on narrow screens — three buttons in a flex row with 8px gaps.
+  var btnBase = 'flex:1;min-width:0;padding:13px 10px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  var noteBtn = '<button onclick="openMobileNote(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="' + btnBase + ';border:1px solid #e5e7eb;background:#fff;color:#374151">+ Note</button>';
   var rows = [];
   if (entityType === 'lead') {
     var canEdit = typeof canEditLead === 'function' && canEditLead(entity);
     var actions = [noteBtn];
     if (!entity.owner && !entity.converted && canEdit) {
-      actions.push('<button onclick="claimLead(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">+ Claim this lead</button>');
+      actions.push('<button onclick="claimLead(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#c41230;color:#fff">+ Claim this lead</button>');
     } else if (!entity.converted) {
-      actions.push('<button onclick="openConvertLeadModal(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Convert to Deal →</button>');
+      actions.push('<button onclick="openConvertLeadModal(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#c41230;color:#fff">Convert to Deal →</button>');
     }
     rows.push(actions);
   } else {
@@ -3113,21 +3159,21 @@ function _renderEntityDetailMobile(opts) {
       // Reopen — admin-only per existing unwindDealWon policy. Hide for non-admins.
       var cu = getCurrentUser() || {};
       if (cu.role === 'admin') {
-        greenBtn = '<button onclick="unwindDealWon(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#0a0a0a;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">↺ Reopen Deal</button>';
+        greenBtn = '<button onclick="unwindDealWon(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#0a0a0a;color:#fff">↺ Reopen Deal</button>';
       } else {
         greenBtn = '';
       }
     } else if (entity.lost) {
       greenBtn = '';   // Lost is terminal at the moment; reopening lost is desktop-only.
     } else if (nextStage && nextStage.isWon) {
-      greenBtn = '<button onclick="markDealWon(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#22c55e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">✓ Mark Won</button>';
+      greenBtn = '<button onclick="markDealWon(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#22c55e;color:#fff">✓ Mark Won</button>';
     } else if (nextStage) {
-      greenBtn = '<button onclick="advanceDealStageMobile(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#22c55e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">→ ' + nextStage.name + '</button>';
+      greenBtn = '<button onclick="advanceDealStageMobile(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#22c55e;color:#fff" title="Move to ' + nextStage.name + '">→ ' + nextStage.name + '</button>';
     } else {
       greenBtn = '';
     }
     var lostBtn = (!entity.won && !entity.lost)
-      ? '<button onclick="markDealLost(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#fef2f2;color:#b91c1c;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid #fecaca">✗ Mark Lost</button>'
+      ? '<button onclick="markDealLost(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';background:#fef2f2;color:#b91c1c;border:1px solid #fecaca">✗ Mark Lost</button>'
       : '';
     var dealRow = [lostBtn, noteBtn, greenBtn].filter(Boolean);
     if (dealRow.length) rows.push(dealRow);
