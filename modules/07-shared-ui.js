@@ -257,11 +257,16 @@ function renderMobileFAB() {
     '</div>';
   }
 
-  // Off-detail, idle — single round green Call FAB. Tap → number-pad dialer,
-  // then PSTN-bridge dial against the typed digits. Standalone round button
-  // (56px) rather than a pill so the visual signal "tap to dial" is clear.
+  // Off-detail, idle — full 3-button pill mirroring the on-detail shape:
+  //   • + (red)       → Contacts page (so the rep can pick someone to act on)
+  //   • Phone (green) → number-pad dialer modal
+  //   • Envelope (blue) → same dialer modal (its bottom row has both Call and
+  //     SMS actions; the rep types a number and picks which one to fire)
   if (!entity) {
-    return '<button onclick="openMobileDialer()" title="Dial" aria-label="Dial a number" style="position:fixed;left:50%;transform:translateX(-50%);bottom:' + bottomGap + 'px;z-index:50;width:56px;height:56px;border-radius:50%;border:none;background:#22c55e;color:#fff;font-size:24px;cursor:pointer;font-family:inherit;box-shadow:0 6px 20px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center">📞</button>';
+    var contactsBtn = '<button onclick="setState({page:\'contacts\',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null})" title="Contacts" aria-label="Open contacts" style="' + btn + ';background:#c41230">+</button>';
+    var dialBtn     = '<button onclick="openMobileDialer()" title="Dial" aria-label="Dial a number" style="' + btn + ';background:#22c55e">📞</button>';
+    var smsBtnOff   = '<button onclick="openMobileDialer()" title="SMS" aria-label="Send SMS" style="' + btn + ';background:#3b82f6">✉</button>';
+    return '<div style="' + pillBase + '">' + contactsBtn + dialBtn + smsBtnOff + '</div>';
   }
 
   // Full pill — Schedule / Call·Hangup / SMS.
@@ -286,9 +291,9 @@ function renderMobileFAB() {
   var smsBtn;
   if (phone) {
     var smsHref = 'sms:' + String(phone).replace(/[^\d+]/g, '');
-    smsBtn = '<a href="' + smsHref + '" title="SMS" style="' + btn + ';background:#3b82f6" aria-label="SMS">💬</a>';
+    smsBtn = '<a href="' + smsHref + '" title="SMS" style="' + btn + ';background:#3b82f6" aria-label="SMS">✉</a>';
   } else {
-    smsBtn = '<button disabled title="No phone number" style="' + btn + ';background:#374151;opacity:.5;cursor:not-allowed" aria-label="No phone number">💬</button>';
+    smsBtn = '<button disabled title="No phone number" style="' + btn + ';background:#374151;opacity:.5;cursor:not-allowed" aria-label="No phone number">✉</button>';
   }
 
   return '<div style="' + pillBase + '">' + scheduleBtn + callBtn + smsBtn + '</div>';

@@ -1416,6 +1416,29 @@ function mobileDialerCall() {
     addToast('Calling not available', 'error');
   }
 }
+
+// mobileDialerSms — close the dialer and hand off to the device's native SMS
+// composer with the typed digits prefilled. No Twilio involvement: the user's
+// phone sends the SMS the same way it would from the OS dialer's "send
+// message" action. Future Phase 13 (SMS via Twilio API) will replace this
+// with an in-app composer; the FAB entry point doesn't change.
+function mobileDialerSms() {
+  if (!_pendingMobileDialer) return;
+  var digits = (_pendingMobileDialer.digits || '').trim();
+  if (!digits) {
+    if (typeof addToast === 'function') addToast('Enter a number first', 'warning');
+    return;
+  }
+  var smsHref = 'sms:' + digits.replace(/[^\d+]/g, '');
+  _pendingMobileDialer = null;
+  if (typeof renderPage === 'function') renderPage();
+  // window.location is the most reliable way to fire sms: in a Capacitor
+  // WebView — <a href> needs a real click, and programmatic clicks on a
+  // dynamically-created anchor get blocked on some Android builds.
+  try { window.location.href = smsHref; } catch (e) {
+    if (typeof addToast === 'function') addToast('Could not open SMS composer', 'error');
+  }
+}
 function _formatPhoneForDisplay(raw) {
   if (!raw) return '';
   var s = String(raw).replace(/\s+/g, '');
@@ -1457,10 +1480,13 @@ function renderMobileDialerModal() {
     }).join('') +
   '</div>';
 
-  // Disable the Call button when no digits — visually muted, cursor blocked,
-  // onclick guarded server-side as well.
-  var callDisabled = digits.length === 0;
-  var callStyle = 'flex:1;padding:14px;border-radius:12px;border:none;background:' + (callDisabled ? '#9ca3af' : '#22c55e') + ';color:#fff;font-size:15px;font-weight:800;cursor:' + (callDisabled ? 'not-allowed' : 'pointer') + ';font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;letter-spacing:.04em';
+  // Disable the action buttons when no digits — visually muted, cursor
+  // blocked, onclick a no-op. Both the green CALL and blue SMS share the
+  // same disabled state (you need a number for either).
+  var actionDisabled = digits.length === 0;
+  var actionBase = 'flex:1;padding:14px;border-radius:12px;border:none;color:#fff;font-size:14px;font-weight:800;cursor:' + (actionDisabled ? 'not-allowed' : 'pointer') + ';font-family:inherit;display:flex;align-items:center;justify-content:center;gap:6px;letter-spacing:.04em';
+  var callBg = actionDisabled ? '#9ca3af' : '#22c55e';
+  var smsBg  = actionDisabled ? '#9ca3af' : '#3b82f6';
 
   return ''
     + '<div class="modal-bg" onclick="if(event.target===this)cancelMobileDialer()" style="z-index:300;align-items:flex-end">'
@@ -1473,9 +1499,10 @@ function renderMobileDialerModal() {
     +       '<div style="text-align:center;padding:10px;background:#f9fafb;border-radius:12px;font-size:24px;font-weight:700;color:' + displayCol + ';font-family:Syne,sans-serif;letter-spacing:.02em;min-height:36px;line-height:36px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + displayText + '</div>'
     +       pad
     +     '</div>'
-    +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px">'
-    +       '<button onclick="cancelMobileDialer()" style="padding:14px 20px;border-radius:12px;border:1px solid #e5e7eb;background:#fff;font-size:14px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit">Cancel</button>'
-    +       '<button onclick="' + (callDisabled ? '' : 'mobileDialerCall()') + '" ' + (callDisabled ? 'disabled' : '') + ' style="' + callStyle + '"><span style="font-size:18px">📞</span><span>CALL</span></button>'
+    +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px;flex-wrap:wrap">'
+    +       '<button onclick="cancelMobileDialer()" style="padding:14px 16px;border-radius:12px;border:1px solid #e5e7eb;background:#fff;font-size:14px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit">Cancel</button>'
+    +       '<button onclick="' + (actionDisabled ? '' : 'mobileDialerSms()')  + '" ' + (actionDisabled ? 'disabled' : '') + ' style="' + actionBase + ';background:' + smsBg  + '" aria-label="Send SMS"><span style="font-size:16px">✉</span><span>SMS</span></button>'
+    +       '<button onclick="' + (actionDisabled ? '' : 'mobileDialerCall()') + '" ' + (actionDisabled ? 'disabled' : '') + ' style="' + actionBase + ';background:' + callBg + '" aria-label="Call"><span style="font-size:16px">📞</span><span>CALL</span></button>'
     +     '</div>'
     +   '</div>'
     + '</div>';
