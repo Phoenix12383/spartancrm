@@ -174,11 +174,18 @@ function renderBottomNav(){
   // highlighted when the user is on a less-common screen.
   var ownerTab = page;
   if (['won','contacts','reports','audit','map','settings','profile','phone','invoicing'].indexOf(page) >= 0) ownerTab = 'more';
+  // Pipedrive-replacement Phase 5: overdue badge on the Today tab. Only
+  // renders when there's at least one overdue activity on a visible deal/lead.
+  var overdueCount = (typeof getOverdueCountForUser === 'function') ? getOverdueCountForUser() : 0;
   return `<nav id="bottomNav" style="position:fixed;bottom:0;left:0;right:0;height:${BOTTOMNAV_HEIGHT}px;background:#fff;border-top:1px solid #e5e7eb;display:flex;z-index:40;box-shadow:0 -2px 12px rgba(0,0,0,.04)">
     ${NAV.map(function(n){
       var active = ownerTab === n.id;
+      var badge = (n.id === 'dashboard' && overdueCount > 0)
+        ? `<span style="position:absolute;top:4px;right:50%;transform:translateX(18px);min-width:16px;height:16px;padding:0 4px;background:#dc2626;border-radius:8px;font-size:9px;font-weight:800;color:#fff;display:flex;align-items:center;justify-content:center;letter-spacing:0">${overdueCount > 99 ? '99+' : overdueCount}</span>`
+        : '';
       return `<button onclick="setState({page:'${n.id}',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null})" style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:none;background:none;cursor:pointer;padding:6px 2px;color:${active ? '#c41230' : '#6b7280'};font-family:inherit;position:relative">
         ${active ? '<span style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:32px;height:2px;background:#c41230;border-radius:0 0 4px 4px"></span>' : ''}
+        ${badge}
         ${Icon({n: n.icon, size: 18})}
         <span style="font-size:9px;font-weight:700;letter-spacing:.02em;white-space:nowrap">${n.label}</span>
       </button>`;

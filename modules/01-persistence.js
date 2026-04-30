@@ -131,6 +131,14 @@ function dealToDb(d) {
     // penalty calculation. Empty/null on pre-Phase-2 rows; the calc
     // engine falls back to created date when this is missing.
     stage_history:d.stageHistory||null,
+    // Pipedrive-replacement Phase 1: denormalized "next scheduled activity"
+    // triple. Populated by the schedule-activity modal (Phase 2) and read by
+    // the deal card chip (Phase 3) + Today view (Phase 6+7). Null = no
+    // activity scheduled. Kept denormalized (rather than derived from the
+    // activities table) so Today/list queries don't have to scan activities.
+    next_activity_at:d.nextActivityAt||null,
+    next_activity_type:d.nextActivityType||null,
+    next_activity_note:d.nextActivityNote||null,
     tags:d.tags||[], activities:d.activities||[]};
 }
 function dbToDeal(r) {
@@ -148,6 +156,12 @@ function dbToDeal(r) {
     dealType:r.deal_type||null,
     // Brief 4 Phase 2: stage-entry timestamp map. Empty object on legacy rows.
     stageHistory:r.stage_history||{},
+    // Pipedrive-replacement Phase 1: next scheduled activity triple. Null on
+    // legacy rows (everything pre-this-migration) — UI treats null as "no
+    // activity scheduled" and surfaces a grey chip / prompt.
+    nextActivityAt:r.next_activity_at||null,
+    nextActivityType:r.next_activity_type||null,
+    nextActivityNote:r.next_activity_note||null,
     tags:r.tags||[], activities:r.activities||[]};
 }
 function leadToDb(l) {
@@ -158,6 +172,12 @@ function leadToDb(l) {
     notes:l.notes||'', converted:!!l.converted, converted_deal_id:l.convertedDealId||l.dealRef||null,
     // Multi-quote fields (spec §3.1 — leads mirror deals so quotes transfer verbatim on conversion)
     quotes:l.quotes||[], active_quote_id:l.activeQuoteId||null, won_quote_id:l.wonQuoteId||null,
+    // Pipedrive-replacement Phase 1: next scheduled activity (mirrors deals).
+    // Carried verbatim through the lead-to-deal conversion path so a measure
+    // booked at the lead stage stays scheduled after conversion.
+    next_activity_at:l.nextActivityAt||null,
+    next_activity_type:l.nextActivityType||null,
+    next_activity_note:l.nextActivityNote||null,
     created:l.created||null};
 }
 function dbToLead(r) {
@@ -168,6 +188,10 @@ function dbToLead(r) {
     notes:r.notes, converted:!!r.converted, convertedDealId:r.converted_deal_id, dealRef:r.converted_deal_id,
     // Multi-quote fields (spec §3.1)
     quotes:Array.isArray(r.quotes)?r.quotes:[], activeQuoteId:r.active_quote_id||null, wonQuoteId:r.won_quote_id||null,
+    // Pipedrive-replacement Phase 1: next scheduled activity round-trip.
+    nextActivityAt:r.next_activity_at||null,
+    nextActivityType:r.next_activity_type||null,
+    nextActivityNote:r.next_activity_note||null,
     created:r.created, activities:[]};
 }
 function contactToDb(c) {

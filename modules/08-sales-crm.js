@@ -9,6 +9,219 @@
 // Designed for the Capacitor wrapper; rendered via renderDashboard() when
 // isNativeWrapper() is true. Layout follows SpartanSalesMobile.jsx's TodayScreen
 // pattern but uses our brand red (#c41230) and existing data shapes.
+// ─────────────────────────────────────────────────────────────────────────────
+// PIPEDRIVE-REPLACEMENT PHASES 3–8: shared helpers
+// ─────────────────────────────────────────────────────────────────────────────
+// Used by:
+//   - renderTodayMobile (this file)        — Phases 5/6/7
+//   - renderDealsMobile dealCard           — Phase 3 chip + Phase 8 inline
+//   - renderLeadsMobile leadCard (file 13) — Phase 3 chip + Phase 8 inline
+//   - renderBottomNav (file 07)            — Phase 5 overdue badge
+//   - advanceDealStageMobile, takeMobilePhoto — Phase 4 post-action prompt
+
+// _nextActivityChipState — interpret a deal/lead's denormalized next_activity_*
+// triple (Phase 1) and return everything the Phase 3 chip needs to render.
+// Tone semantics:
+//   overdue — nextActivityAt is in the past
+//   today   — nextActivityAt is between now and 23:59 today
+//   future  — anything after that
+//   none    — nextActivityAt is null/undefined ("no activity scheduled")
+function _nextActivityChipState(entity) {
+  if (!entity) return { tone: 'none', label: '+ Schedule', hint: null };
+  var iso = entity.nextActivityAt;
+  if (!iso) return { tone: 'none', label: '+ Schedule', hint: null };
+
+  var when;
+  try { when = new Date(iso); } catch(e) { return { tone: 'none', label: '+ Schedule', hint: null }; }
+  if (isNaN(when.getTime())) return { tone: 'none', label: '+ Schedule', hint: null };
+
+  var typeId = entity.nextActivityType || 'call';
+  var meta = (typeof getActivityType === 'function') ? getActivityType(typeId) : null;
+  var icon = (meta && meta.icon) || '📌';
+  var typeLabel = (meta && meta.label) || (typeId.charAt(0).toUpperCase() + typeId.slice(1));
+
+  var now = new Date();
+  var endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+  // Format helpers — relative-day prefix + 12h time so the chip stays compact
+  // ("Call today 3pm", "Call Tue 9am", "Overdue Call · 2d").
+  function fmt12(dt) {
+    var h = dt.getHours(); var m = dt.getMinutes();
+    var ap = h >= 12 ? 'pm' : 'am'; var h12 = h % 12 || 12;
+    return h12 + (m ? ':' + String(m).padStart(2, '0') : '') + ap;
+  }
+  function dayWord(dt) {
+    var sameDay = dt.toDateString() === now.toDateString();
+    if (sameDay) return 'today';
+    var tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+    if (dt.toDateString() === tomorrow.toDateString()) return 'tomorrow';
+    var diffDays = Math.round((dt - now) / 86400000);
+    if (diffDays > 0 && diffDays < 7) return dt.toLocaleDateString('en-AU', { weekday: 'short' });
+    return dt.toLocaleDateString('en-AU', { day: 'numeric', month: 'short' });
+  }
+
+  if (when < now) {
+    // Overdue — show "2d" or "1h" since due, no time-of-day.
+    var diffMs = now - when;
+    var diffDays = Math.floor(diffMs / 86400000);
+    var diffHrs = Math.floor(diffMs / 3600000);
+    var ago = diffDays >= 1 ? diffDays + 'd' : diffHrs + 'h';
+    return { tone: 'overdue', label: icon + ' ' + typeLabel + ' · ' + ago, hint: typeId };
+  }
+  if (when <= endOfToday) {
+    return { tone: 'today', label: icon + ' ' + typeLabel + ' today ' + fmt12(when), hint: typeId };
+  }
+  return { tone: 'future', label: icon + ' ' + typeLabel + ' ' + dayWord(when) + ' ' + fmt12(when), hint: typeId };
+}
+
+// renderNextActivityChip — Phase 3. Tap → openMobileSchedule (if Phase 1's
+// nextActivityAt is null, we open with default; if it's set, we still open
+// the schedule modal so the rep can reschedule). Caller passes entityType.
+function renderNextActivityChip(entity, entityType, opts) {
+  if (!entity || !entityType) return '';
+  opts = opts || {};
+  var s = _nextActivityChipState(entity);
+  var palette = {
+    overdue: { bg: '#fef2f2', border: '#fca5a5', col: '#b91c1c' },
+    today:   { bg: '#fffbeb', border: '#fcd34d', col: '#b45309' },
+    future:  { bg: '#ecfdf5', border: '#86efac', col: '#15803d' },
+    none:    { bg: '#f9fafb', border: '#e5e7eb', col: '#9ca3af' },
+  };
+  var p = palette[s.tone];
+  var idEsc = String(entity.id).replace(/'/g, "\\'");
+  // stopPropagation so tapping the chip on a card doesn't also trigger the
+  // card's "open detail" onclick.
+  var handler = "event.stopPropagation();openMobileSchedule('" + idEsc + "','" + entityType + "'" + (s.hint ? ",'" + s.hint + "'" : '') + ")";
+  var size = opts.size === 'sm' ? '10px;padding:3px 8px' : '11px;padding:4px 10px';
+  return '<button onclick="' + handler + '" style="display:inline-flex;align-items:center;gap:4px;border:1px solid ' + p.border + ';background:' + p.bg + ';color:' + p.col + ';border-radius:14px;font-size:' + size + ';font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis">' + s.label + '</button>';
+}
+
+// _renderInlineRowActions — Phase 8. Small call + SMS icon buttons rendered
+// to the right of any list-row card. event.stopPropagation prevents the
+// card's onclick from firing when the user taps an action. Phone is required;
+// rows without a phone get an empty string back and skip rendering.
+function _renderInlineRowActions(phone, entityId, entityType, contactName) {
+  if (!phone) return '';
+  var idEsc = String(entityId).replace(/'/g, "\\'");
+  var nameEsc = String(contactName || '').replace(/'/g, "\\'");
+  var phoneEsc = String(phone).replace(/'/g, "\\'");
+  var smsHref = 'sms:' + String(phone).replace(/[^\d+]/g, '');
+  var btnStyle = 'width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:none;cursor:pointer;font-size:14px;text-decoration:none;flex-shrink:0';
+  // Call button → twilioCall (which routes to dialViaTwilioBridge on native).
+  var call = '<button onclick="event.stopPropagation();twilioCall(\'' + phoneEsc + '\',\'' + idEsc + '\',\'' + entityType + '\',\'' + nameEsc + '\')" style="' + btnStyle + ';background:#dcfce7;color:#15803d" title="Call">📞</button>';
+  // SMS opens the device's native SMS composer — same pattern as the action
+  // bar's SMS button on the detail screen.
+  var sms = '<a href="' + smsHref + '" onclick="event.stopPropagation()" style="' + btnStyle + ';background:#dbeafe;color:#1d4ed8" title="SMS">💬</a>';
+  return '<div style="display:flex;gap:6px;flex-shrink:0">' + call + sms + '</div>';
+}
+
+// getOverdueCountForUser — Phase 5. Count of open deals + un-converted leads
+// owned by the user (or all, for managers) whose next_activity_at is in the
+// past. Used by renderBottomNav for the Today tab badge.
+function getOverdueCountForUser() {
+  var st = getState();
+  var cu = getCurrentUser() || { name: 'Admin', role: 'admin' };
+  var isManager = cu.role === 'admin' || cu.role === 'sales_manager' || cu.role === 'accounts';
+  var now = Date.now();
+  var count = 0;
+  (st.deals || []).forEach(function(d) {
+    if (d.won || d.lost) return;
+    if (!isManager && d.rep !== cu.name) return;
+    if (!d.nextActivityAt) return;
+    try { if (new Date(d.nextActivityAt).getTime() < now) count++; } catch(e) {}
+  });
+  (st.leads || []).forEach(function(l) {
+    if (l.converted) return;
+    if (!isManager && l.owner !== cu.name) return;
+    if (!l.nextActivityAt) return;
+    try { if (new Date(l.nextActivityAt).getTime() < now) count++; } catch(e) {}
+  });
+  return count;
+}
+
+// getTodayPayload — Phase 6 data layer. Returns a flat array of work-queue
+// items (deals + leads) bucketed by overdue/today/tomorrow/later, sorted by
+// nextActivityAt within each bucket, capped at 50 entries total. Items
+// without a nextActivityAt are excluded — the empty state on Today prompts
+// the rep to schedule one.
+//
+// Item shape: { bucket, entityType, entity, when, contactName, phone }
+function getTodayPayload() {
+  var st = getState();
+  var cu = getCurrentUser() || { name: 'Admin', role: 'admin' };
+  var isManager = cu.role === 'admin' || cu.role === 'sales_manager' || cu.role === 'accounts';
+  var contactsById = {};
+  (st.contacts || []).forEach(function(c) { contactsById[c.id] = c; });
+  var now = new Date();
+  var endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  var endOfTomorrow = new Date(endOfToday); endOfTomorrow.setDate(endOfToday.getDate() + 1);
+  var endOfWeek = new Date(endOfToday); endOfWeek.setDate(endOfToday.getDate() + 7);
+
+  function bucketFor(dt) {
+    if (dt < now) return 'overdue';
+    if (dt <= endOfToday) return 'today';
+    if (dt <= endOfTomorrow) return 'tomorrow';
+    if (dt <= endOfWeek) return 'later';
+    return 'later';
+  }
+
+  var items = [];
+  (st.deals || []).forEach(function(d) {
+    if (d.won || d.lost) return;
+    if (!isManager && d.rep !== cu.name) return;
+    if (!d.nextActivityAt) return;
+    var dt;
+    try { dt = new Date(d.nextActivityAt); } catch(e) { return; }
+    if (isNaN(dt.getTime())) return;
+    var c = d.cid ? contactsById[d.cid] : null;
+    var contactName = c ? ((c.fn || '') + ' ' + (c.ln || '')).trim() : (d.title || '');
+    var phone = (c && c.phone) || d.phone || '';
+    items.push({
+      bucket: bucketFor(dt),
+      entityType: 'deal', entity: d, when: dt,
+      contactName: contactName, phone: phone,
+    });
+  });
+  (st.leads || []).forEach(function(l) {
+    if (l.converted) return;
+    if (!isManager && l.owner !== cu.name) return;
+    if (!l.nextActivityAt) return;
+    var dt;
+    try { dt = new Date(l.nextActivityAt); } catch(e) { return; }
+    if (isNaN(dt.getTime())) return;
+    var contactName = ((l.fn || '') + ' ' + (l.ln || '')).trim();
+    items.push({
+      bucket: bucketFor(dt),
+      entityType: 'lead', entity: l, when: dt,
+      contactName: contactName, phone: l.phone || '',
+    });
+  });
+  items.sort(function(a, b) { return a.when - b.when; });
+  return items.slice(0, 50);
+}
+
+// maybePromptNextActivity — Phase 4. Bridge between an action's success path
+// and the Phase 2 schedule modal. Opens the modal pre-filled with a sensible
+// type hint, after a small delay so the action's success toast is visible
+// first. Native-only — desktop already has its own scheduling flow.
+//
+// Skipping is implicit: the modal's Cancel button does the right thing (the
+// rep just dismisses and nothing is scheduled). We considered a separate
+// "Skip / Schedule" two-button sheet but it's an extra tap with no signal —
+// reps will either schedule or won't, and the Cancel button covers that.
+function maybePromptNextActivity(entityId, entityType, hint) {
+  if (typeof isNativeWrapper !== 'function' || !isNativeWrapper()) return;
+  if (!entityId || !entityType) return;
+  // Don't stack on top of an already-open modal (e.g. user just scheduled
+  // something else). The pending-state guard prevents that.
+  if (typeof _pendingMobileSchedule !== 'undefined' && _pendingMobileSchedule) return;
+  setTimeout(function() {
+    if (typeof openMobileSchedule === 'function') {
+      openMobileSchedule(entityId, entityType, hint || null);
+    }
+  }, 350);
+}
+
 function renderTodayMobile() {
   var st = getState();
   var deals = st.deals || [];
@@ -74,14 +287,17 @@ function renderTodayMobile() {
   }
   function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
 
-  // Stat-card builder
-  function stat(label, val, sub, accent, onclick) {
+  // Compact metric strip cell — replaces the 2x2 grid (Phase 7 above-the-fold
+  // tuning). Each cell is ~58px tall vs the old ~78px stat card, so 4 of
+  // them in a single horizontal row push the work queue above the fold on a
+  // mid-range Android. The 2x2 stat grid was kept as buildable shape but
+  // collapsed via a single render path here — old `stat()` builder removed.
+  function statMini(label, val, accent, onclick) {
     var clickable = onclick ? 'cursor:pointer' : '';
     var tag = onclick ? 'button' : 'div';
-    return '<' + tag + (onclick ? ' onclick="' + onclick + '"' : '') + ' style="background:#fff;border-radius:12px;padding:12px;text-align:left;border:none;font-family:inherit;width:100%;box-shadow:0 1px 3px rgba(0,0,0,.06);' + clickable + '">' +
-      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px"><span style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;font-weight:700">' + label + '</span><span style="width:6px;height:6px;border-radius:50%;background:' + (accent || '#c41230') + ';margin-top:5px"></span></div>' +
-      '<div style="font-size:20px;font-weight:800;color:#0a0a0a;font-family:Syne,sans-serif;line-height:1">' + val + '</div>' +
-      (sub ? '<div style="font-size:10px;color:#6b7280;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + sub + '</div>' : '') +
+    return '<' + tag + (onclick ? ' onclick="' + onclick + '"' : '') + ' style="flex:1;min-width:0;background:#fff;border-radius:10px;padding:8px 10px;text-align:left;border:none;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);' + clickable + '">' +
+      '<div style="display:flex;align-items:center;gap:5px;margin-bottom:2px"><span style="width:5px;height:5px;border-radius:50%;background:' + (accent || '#c41230') + ';flex-shrink:0"></span><span style="font-size:9px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;font-weight:700">' + label + '</span></div>' +
+      '<div style="font-size:16px;font-weight:800;color:#0a0a0a;font-family:Syne,sans-serif;line-height:1">' + val + '</div>' +
     '</' + tag + '>';
   }
 
@@ -114,33 +330,54 @@ function renderTodayMobile() {
     '</div>';
   }
 
-  // Compact deal card for the "Recent open deals" list.
-  function dealCardCompact(d) {
-    var c = (st.contacts || []).find(function(x){ return x.id === d.cid; });
-    var name = c ? (c.fn + ' ' + c.ln) : d.title;
-    var stage = null;
-    try {
-      var pl = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === d.pid; });
-      if (pl) stage = pl.stages.find(function(s){ return s.id === d.sid; });
-    } catch(e){}
-    return '<button onclick="setState({dealDetailId:\'' + _esc(d.id) + '\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ' + (stage ? stage.col : '#c41230') + '">' +
-      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
-        '<div style="flex:1;min-width:0">' +
-          '<div style="font-size:14px;font-weight:700;color:#1a1a1a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
-          '<div style="font-size:11px;color:#6b7280;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (d.suburb || '') + (d.postcode ? ' · ' + d.postcode : '') + '</div>' +
-        '</div>' +
-        '<div style="text-align:right;flex-shrink:0">' +
-          '<div style="font-size:14px;font-weight:800;font-family:Syne,sans-serif">' + fmtK(d.val) + '</div>' +
-          (stage ? '<div style="font-size:10px;font-weight:600;margin-top:2px;color:' + stage.col + '">' + stage.name + '</div>' : '') +
-        '</div>' +
-      '</div>' +
-    '</button>';
+  // Section heading with count badge.
+  function sectionTitle(title, count, accent) {
+    var titleCol = accent || '#6b7280';
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:0 4px;margin:18px 0 8px"><h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:' + titleCol + ';margin:0">' + title + '</h2>' + (count !== undefined ? '<span style="font-size:11px;font-weight:700;color:#9ca3af">' + count + '</span>' : '') + '</div>';
   }
 
-  // Section heading with count badge.
-  function sectionTitle(title, count) {
-    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:0 4px;margin:18px 0 8px"><h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin:0">' + title + '</h2>' + (count !== undefined ? '<span style="font-size:11px;font-weight:700;color:#9ca3af">' + count + '</span>' : '') + '</div>';
+  // Phase 6/7 work-queue row — single line of "what to do next, in order".
+  // Tap the row body → entity detail; tap the chip → reschedule; tap call/SMS
+  // icons → direct contact (Phase 8 inline actions). Overdue rows get a red
+  // left border accent (Phase 5).
+  function workRow(item) {
+    var entity = item.entity;
+    var entityType = item.entityType;
+    var contactName = item.contactName || (entityType === 'lead' ? 'Lead' : 'Deal');
+    var dealTitle = (entityType === 'deal') ? (entity.title || '') : '';
+    var val = entity.val ? fmtK(entity.val) : '';
+    var leftBorder = item.bucket === 'overdue' ? '3px solid #dc2626' : '3px solid #f3f4f6';
+    var setStateKey = entityType === 'deal' ? 'dealDetailId' : 'leadDetailId';
+    var pageHint = entityType === 'deal' ? 'deals' : 'leads';
+    return '<div style="display:flex;align-items:center;gap:8px;background:#fff;border-radius:10px;padding:10px 12px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:' + leftBorder + '">' +
+      '<button onclick="setState({' + setStateKey + ':\'' + _esc(entity.id) + '\',page:\'' + pageHint + '\'})" style="flex:1;min-width:0;background:none;border:none;padding:0;text-align:left;font-family:inherit;cursor:pointer">' +
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;flex-wrap:wrap">' +
+          renderNextActivityChip(entity, entityType, { size: 'sm' }) +
+          (val ? '<span style="font-size:11px;color:#6b7280;font-weight:700;font-family:Syne,sans-serif">' + val + '</span>' : '') +
+        '</div>' +
+        '<div style="font-size:13px;font-weight:700;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (contactName || '—') + '</div>' +
+        (dealTitle ? '<div style="font-size:11px;color:#6b7280;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + dealTitle + '</div>' : '') +
+      '</button>' +
+      _renderInlineRowActions(item.phone, entity.id, entityType, contactName) +
+    '</div>';
   }
+
+  // Phase 6 payload + bucket grouping (Phase 7 render).
+  var payload = (typeof getTodayPayload === 'function') ? getTodayPayload() : [];
+  var byBucket = { overdue: [], today: [], tomorrow: [], later: [] };
+  payload.forEach(function(it) { (byBucket[it.bucket] || byBucket.later).push(it); });
+
+  function bucketSection(key, title, accent) {
+    var rows = byBucket[key] || [];
+    if (rows.length === 0) return '';
+    return sectionTitle(title, rows.length, accent) +
+      rows.map(workRow).join('');
+  }
+
+  // Empty state — no scheduled activities AT ALL across any bucket. Different
+  // copy from "no open deals" because the prescription is different: schedule
+  // something, not close more.
+  var queueEmpty = payload.length === 0;
 
   return '' +
     // Black hero — extends edge-to-edge by pulling out the 12px main padding.
@@ -150,27 +387,37 @@ function renderTodayMobile() {
       '<div style="font-size:11px;opacity:.5;margin-top:4px">' + roleLabel + ' · ' + branch + '</div>' +
     '</div>' +
 
-    // 2×2 stat grid — pulls up so cards overlap the hero edge slightly.
-    '<div style="margin-top:-10px">' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px">' +
-        stat("Today's appts", todaysAppts.length, todaysAppts.length === 0 ? 'None scheduled' : 'Next: ' + (fmtTime12(todaysAppts[0].time) || 'TBD'), '#c41230', "setState({page:'calendar'})") +
-        stat('Open deals', myOpenDeals.length, fmtK(myOpenValue), '#0a0a0a', "setState({page:'deals'})") +
-        stat('Wins this week', weekWon.length, fmtK(weekWonValue), '#22c55e', null) +
-        stat('Commission MTD', fmtK(monthCommission), monthWon.length + ' win' + (monthWon.length === 1 ? '' : 's'), '#f59e0b', "setState({page:'commission'})") +
-      '</div>' +
+    // Phase 7: thin metric strip — 4 mini-stats inline, ~58px tall vs the
+    // old 2x2 grid's ~150px. Pulls up to overlap the hero edge slightly.
+    '<div style="margin-top:-10px;display:flex;gap:6px;margin-bottom:6px">' +
+      statMini("Today's appts", String(todaysAppts.length), '#c41230', "setState({page:'calendar'})") +
+      statMini('Open deals', String(myOpenDeals.length), '#0a0a0a', "setState({page:'deals'})") +
+      statMini('Wins/week', String(weekWon.length), '#22c55e', null) +
+      statMini('Comm MTD', fmtK(monthCommission), '#f59e0b', "setState({page:'commission'})") +
     '</div>' +
 
-    // Today's appointments
+    // Today's appointments — kept above the work queue because reps think of
+    // "today's bookings" as a separate thing from "what to do next on my deals".
     sectionTitle("Today's appointments", todaysAppts.length) +
     (todaysAppts.length === 0
-      ? '<div style="padding:20px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:12px;font-style:italic">No appointments today.</div>'
+      ? '<div style="padding:14px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:12px;font-style:italic">No appointments today.</div>'
       : todaysAppts.map(apptCard).join('')) +
 
-    // Recent open deals (top 5)
-    sectionTitle('Recent open deals', myOpenDeals.length) +
-    (myOpenDeals.length === 0
-      ? '<div style="padding:20px;text-align:center;background:#fff;border-radius:12px;color:#9ca3af;font-size:12px;font-style:italic">No open deals — your queue is clean.</div>'
-      : myOpenDeals.slice(0, 5).map(dealCardCompact).join(''));
+    // Phase 7 work queue — the single non-negotiable Pipedrive habit.
+    // Order: Overdue (red) → Today (amber) → Tomorrow (green) → Later (grey).
+    (queueEmpty
+      ? sectionTitle('Up next', 0) +
+        '<div style="padding:20px 16px;text-align:center;background:#fff;border-radius:12px;color:#6b7280;font-size:13px;line-height:1.5">' +
+          '<div style="font-size:28px;margin-bottom:8px">📋</div>' +
+          '<div style="font-weight:600;color:#0a0a0a;margin-bottom:4px">Nothing scheduled</div>' +
+          '<div style="font-size:12px">Tap any deal and tap <b>+ Schedule</b> to start your day.</div>' +
+        '</div>'
+      : '' +
+        bucketSection('overdue',  'Overdue',           '#b91c1c') +
+        bucketSection('today',    'Today',             '#b45309') +
+        bucketSection('tomorrow', 'Tomorrow',          '#15803d') +
+        bucketSection('later',    'Later this week',   '#6b7280')
+    );
 }
 
 // ── MOBILE: MORE menu ─────────────────────────────────────────────────────────
@@ -1546,8 +1793,11 @@ function renderDealsMobile() {
     return (name || '').split(' ').map(function(w){ return (w[0] || '').toUpperCase(); }).join('').slice(0,2);
   }
 
-  // Card renderer — top row: name+address / value+quotes; bottom row:
-  // rep avatar, activity dot, source, stale clock. Red outline when very stale.
+  // Card renderer — top row: name+address / value+quotes; chip row (Phase 3
+  // next-activity chip + Phase 8 inline call/SMS); bottom row: rep avatar,
+  // activity dot, source, stale clock. Red outline when very stale.
+  // Wrapped in <div> rather than <button> so the inline action icons can stop
+  // event propagation cleanly (a button-inside-button is invalid HTML).
   function dealCard(d, stage) {
     var c = contacts.find(function(x){ return x.id === d.cid; });
     var name = c ? (c.fn + ' ' + c.ln) : (d.title || 'Untitled');
@@ -1559,9 +1809,11 @@ function renderDealsMobile() {
       try { return (Date.now() - new Date(a.date).getTime()) < 48 * 3600 * 1000; }
       catch(e) { return false; }
     });
-    return '<button onclick="setState({dealDetailId:\'' + _esc(d.id) + '\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ' + stage.col + ';' + (veryStale ? 'outline:1px solid #fca5a5;outline-offset:-1px;' : '') + '">' +
+    var contactName = c ? ((c.fn || '') + ' ' + (c.ln || '')).trim() : (d.title || '');
+    var phone = (c && c.phone) || d.phone || '';
+    return '<div onclick="setState({dealDetailId:\'' + _esc(d.id) + '\'})" style="background:#fff;border-radius:12px;padding:12px;cursor:pointer;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ' + stage.col + ';' + (veryStale ? 'outline:1px solid #fca5a5;outline-offset:-1px;' : '') + '">' +
       // Top row
-      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">' +
         '<div style="flex:1;min-width:0">' +
           '<div style="font-size:14px;font-weight:700;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
           '<div style="font-size:11px;color:#6b7280;margin-top:2px;display:flex;align-items:center;gap:4px;overflow:hidden">' +
@@ -1575,8 +1827,15 @@ function renderDealsMobile() {
           (quoteCount > 0 ? '<div style="font-size:10px;color:#6b7280;margin-top:1px">' + quoteCount + ' quote' + (quoteCount===1?'':'s') + '</div>' : '') +
         '</div>' +
       '</div>' +
+      // Chip + inline actions row (Phase 3 + Phase 8). flex-wrap so a long
+      // chip + action icons still fit on a 320px screen.
+      '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">' +
+        renderNextActivityChip(d, 'deal', { size: 'sm' }) +
+        '<div style="flex:1"></div>' +
+        _renderInlineRowActions(phone, d.id, 'deal', contactName) +
+      '</div>' +
       // Bottom row
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid #f3f4f6">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:8px;border-top:1px solid #f3f4f6">' +
         '<div style="display:flex;align-items:center;gap:6px;min-width:0">' +
           (d.rep ? '<div title="' + _esc(d.rep) + '" style="width:20px;height:20px;border-radius:50%;background:#0a0a0a;color:#fff;font-size:9px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0">' + _initials(d.rep) + '</div>' : '') +
           '<span title="' + (hasRecentAct ? 'Activity in last 48h' : 'Quiet') + '" style="width:6px;height:6px;border-radius:50%;background:' + (hasRecentAct ? '#22c55e' : '#cbd5e1') + ';flex-shrink:0"></span>' +
@@ -1587,7 +1846,7 @@ function renderDealsMobile() {
           '\u{1f553} ' + (d.age || 0) + 'd' +
         '</div>' +
       '</div>' +
-    '</button>';
+    '</div>';
   }
 
   // Column renderer — header + cards + swipe hint.
@@ -2670,6 +2929,12 @@ function advanceDealStageMobile(dealId) {
     });
   }
   addToast('Moved to ' + next.name, 'success');
+  // Phase 4: post-action prompt. After a stage advance the natural next
+  // activity is a follow-up call/meeting on the new stage — bias the chip
+  // toward 'followUp' so the rep just hits a quick-date and saves.
+  if (typeof maybePromptNextActivity === 'function') {
+    maybePromptNextActivity(dealId, 'deal', 'followUp');
+  }
 }
 
 // ── MOBILE: camera capture ───────────────────────────────────────────────────
@@ -2761,6 +3026,12 @@ async function takeMobilePhoto(entityId, entityType) {
     }
     addToast('Photo saved ✓', 'success');
     renderPage();
+    // Phase 4: prompt for next activity after a site-visit photo. The natural
+    // follow-up after a measure photo is a follow-up call when back at the
+    // office, so bias toward 'followUp'.
+    if (typeof maybePromptNextActivity === 'function') {
+      maybePromptNextActivity(entityId, entityType, 'followUp');
+    }
   } catch (e) {
     var msg = (e && e.message) || String(e);
     if (msg.indexOf('cancel') >= 0 || msg.indexOf('Cancel') >= 0) return;
@@ -2936,6 +3207,226 @@ function renderMobileNoteModal() {
     +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px;justify-content:flex-end">'
     +       '<button onclick="cancelMobileNote()" style="padding:9px 14px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit">Cancel</button>'
     +       '<button onclick="saveMobileNote()" style="padding:9px 18px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Save note</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+}
+
+// ── MOBILE: schedule-activity modal ──────────────────────────────────────────
+// Pipedrive-replacement Phase 2. Bottom-sheet equivalent of the desktop
+// schedule modal (openScheduleModal / saveScheduledActivity) but stripped to
+// what fits on a phone — type chip row + quick-date chips + time + 1-line note.
+//
+// Save side does TWO writes:
+//   1. activities timeline row (type=picked, scheduled:true, dueDate=picked
+//      date) via the existing saveActivityToEntity. Same shape the desktop
+//      modal writes, so the timeline reads it identically on both surfaces.
+//   2. The Phase 1 next_activity_* triple on the deal/lead row — both
+//      in-memory (so Phase 3's chip / Today view picks it up immediately on
+//      this device) and via dbUpdate (so the other device picks it up via
+//      realtime). This is the denormalized read path Phases 3/5/6/7 use.
+//
+// Lives in module state so a renderPage triggered by realtime echo doesn't
+// drop the user's typing — same pattern as _pendingMobileNote.
+var _pendingMobileSchedule = null;
+// shape: { entityId, entityType, type, dateISO, time, note, hint }
+
+function _mobileScheduleDefaults(hint) {
+  // Default: type = hint || 'call', date = today, time = next round hour.
+  // hint biases the type chip after a logged action — Phase 4's post-action
+  // prompt will pass 'followUp' after a call, 'call' after an SMS, etc.
+  var dt = new Date();
+  dt.setHours(dt.getHours() + 1);
+  dt.setMinutes(0, 0, 0);
+  return {
+    type: hint || 'call',
+    dateISO: dt.toISOString().slice(0, 10),
+    time: String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0'),
+  };
+}
+
+function openMobileSchedule(entityId, entityType, hint) {
+  var def = _mobileScheduleDefaults(hint);
+  _pendingMobileSchedule = {
+    entityId: entityId, entityType: entityType,
+    type: def.type, dateISO: def.dateISO, time: def.time, note: '', hint: hint || null,
+  };
+  renderPage();
+}
+function cancelMobileSchedule() { _pendingMobileSchedule = null; renderPage(); }
+function setMobileScheduleType(t) {
+  if (!_pendingMobileSchedule) return;
+  _pendingMobileSchedule.type = t;
+  renderPage();
+}
+function setMobileScheduleQuickDate(slotKey) {
+  if (!_pendingMobileSchedule) return;
+  var dt = new Date();
+  if (slotKey === 'tomorrow') dt.setDate(dt.getDate() + 1);
+  else if (slotKey === '3d')  dt.setDate(dt.getDate() + 3);
+  else if (slotKey === '7d')  dt.setDate(dt.getDate() + 7);
+  // 'today' = no offset.
+  _pendingMobileSchedule.dateISO = dt.toISOString().slice(0, 10);
+  renderPage();
+}
+function setMobileScheduleDate(v) { if (_pendingMobileSchedule) _pendingMobileSchedule.dateISO = v; }
+function setMobileScheduleTime(v) { if (_pendingMobileSchedule) _pendingMobileSchedule.time = v; }
+function setMobileScheduleNote(v) { if (_pendingMobileSchedule) _pendingMobileSchedule.note = v; }
+
+function saveMobileSchedule() {
+  if (!_pendingMobileSchedule) return;
+  var p = _pendingMobileSchedule;
+  if (!p.dateISO || !p.time) { addToast('Pick a date and time', 'error'); return; }
+
+  // Build the Phase 1 next-activity ISO timestamp. Browser local TZ; Supabase
+  // stores TIMESTAMPTZ which round-trips cleanly through dbToDeal/dbToLead.
+  var nextAt;
+  try {
+    nextAt = new Date(p.dateISO + 'T' + p.time + ':00').toISOString();
+  } catch (e) {
+    addToast('Invalid date/time', 'error'); return;
+  }
+
+  var typeMeta = (typeof getActivityType === 'function') ? getActivityType(p.type) : null;
+  var typeLabel = (typeMeta && typeMeta.label) || (p.type.charAt(0).toUpperCase() + p.type.slice(1));
+  var noteText = (p.note || '').trim();
+  var actText = typeLabel + (noteText ? ' — ' + noteText : '');
+
+  // Write #1: activities timeline row. Same shape as desktop's
+  // saveScheduledActivity (08-sales-crm.js ~2319) — type, text, date, time,
+  // scheduled:true, dueDate, by — so the desktop activity tab renders it
+  // identically.
+  if (typeof saveActivityToEntity === 'function') {
+    saveActivityToEntity(p.entityId, p.entityType, {
+      id: 'a' + Date.now(),
+      type: p.type,
+      text: actText,
+      date: p.dateISO,
+      time: p.time,
+      duration: 30,
+      by: (getCurrentUser() || { name: 'Admin' }).name,
+      done: false,
+      dueDate: p.dateISO,
+      scheduled: true,
+    });
+  }
+
+  // Write #2: Phase 1 next_activity_* triple. setState first so the chip /
+  // Today view picks it up on this device immediately, then dbUpdate so the
+  // other device picks it up via realtime (the deals/leads tables are on the
+  // entities channel — see 01-persistence.js setupRealtime).
+  var st = getState();
+  if (p.entityType === 'deal') {
+    setState({
+      deals: (st.deals || []).map(function(d) {
+        return d.id === p.entityId
+          ? Object.assign({}, d, {
+              nextActivityAt: nextAt, nextActivityType: p.type, nextActivityNote: noteText,
+            })
+          : d;
+      })
+    });
+    if (typeof dbUpdate === 'function') {
+      dbUpdate('deals', p.entityId, {
+        nextActivityAt: nextAt, nextActivityType: p.type, nextActivityNote: noteText,
+      });
+    }
+  } else if (p.entityType === 'lead') {
+    setState({
+      leads: (st.leads || []).map(function(l) {
+        return l.id === p.entityId
+          ? Object.assign({}, l, {
+              nextActivityAt: nextAt, nextActivityType: p.type, nextActivityNote: noteText,
+            })
+          : l;
+      })
+    });
+    if (typeof dbUpdate === 'function') {
+      dbUpdate('leads', p.entityId, {
+        nextActivityAt: nextAt, nextActivityType: p.type, nextActivityNote: noteText,
+      });
+    }
+  }
+
+  _pendingMobileSchedule = null;
+  addToast('✓ ' + typeLabel + ' scheduled for ' + p.dateISO + ' at ' + p.time, 'success');
+  renderPage();
+}
+
+function renderMobileScheduleModal() {
+  if (!_pendingMobileSchedule) return '';
+  var p = _pendingMobileSchedule;
+
+  // 5 picker types, all from ACTIVITY_TYPES so we don't need to extend the
+  // type whitelist or risk an activities-table CHECK-constraint failure.
+  // SMS deliberately omitted — reps log "Follow-up" with a note like
+  // "Texted re measure" instead, which keeps the type vocabulary small.
+  // Boss can promote SMS to its own type later if dogfood demands it.
+  var pickIds = ['call', 'email', 'meeting', 'task', 'followUp'];
+  var allTypes = (typeof getPickableActivityTypes === 'function') ? getPickableActivityTypes() : [];
+  var types = pickIds
+    .map(function(id) { return allTypes.find(function(t){ return t.id === id; }); })
+    .filter(Boolean);
+
+  // Quick-date offsets — same shape as desktop's quickSlots, minus the
+  // "In 1h / In 3h" entries (those are time-only and the time input handles it).
+  function fmtQD(off) {
+    var dt = new Date();
+    dt.setDate(dt.getDate() + off);
+    return dt.toISOString().slice(0, 10);
+  }
+  var quick = [
+    { key: 'today',    label: 'Today',    iso: fmtQD(0) },
+    { key: 'tomorrow', label: 'Tomorrow', iso: fmtQD(1) },
+    { key: '3d',       label: '+3 days',  iso: fmtQD(3) },
+    { key: '7d',       label: '+7 days',  iso: fmtQD(7) },
+  ];
+
+  function chip(active, label, onclick) {
+    var bg = active ? '#fff5f6' : '#fff';
+    var col = active ? '#c41230' : '#6b7280';
+    var bd = active ? '#c41230' : '#e5e7eb';
+    return '<button onclick="' + onclick + '" style="padding:8px 14px;border:1px solid ' + bd + ';border-radius:20px;font-size:13px;cursor:pointer;font-family:inherit;background:' + bg + ';color:' + col + ';font-weight:600">' + label + '</button>';
+  }
+
+  var typeChips = types.map(function(t) {
+    return chip(p.type === t.id, t.icon + ' ' + t.label, "setMobileScheduleType('" + t.id + "')");
+  }).join('');
+
+  var quickChips = quick.map(function(q) {
+    return chip(p.dateISO === q.iso, q.label, "setMobileScheduleQuickDate('" + q.key + "')");
+  }).join('');
+
+  var safeNote = (p.note || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)cancelMobileSchedule()" style="z-index:300">'
+    +   '<div class="modal" style="max-width:480px;width:calc(100% - 24px)">'
+    +     '<div class="modal-header" style="padding:14px 18px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
+    +       '<h3 style="margin:0;font-size:15px;font-weight:700;font-family:Syne,sans-serif">Schedule next activity</h3>'
+    +       '<button onclick="cancelMobileSchedule()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1;padding:0">×</button>'
+    +     '</div>'
+    +     '<div class="modal-body" style="padding:14px 18px;display:flex;flex-direction:column;gap:14px">'
+    +       '<div>'
+    +         '<label style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:8px">Type</label>'
+    +         '<div style="display:flex;flex-wrap:wrap;gap:6px">' + typeChips + '</div>'
+    +       '</div>'
+    +       '<div>'
+    +         '<label style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:8px">When</label>'
+    +         '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">' + quickChips + '</div>'
+    +         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
+    +           '<input type="date" value="' + p.dateISO + '" oninput="setMobileScheduleDate(this.value)" style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box">'
+    +           '<input type="time" value="' + p.time + '" oninput="setMobileScheduleTime(this.value)" style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box">'
+    +         '</div>'
+    +       '</div>'
+    +       '<div>'
+    +         '<label style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:8px">Note (optional)</label>'
+    +         '<input id="mobSchedNoteInput" oninput="setMobileScheduleNote(this.value)" placeholder="One-line reminder…" value="' + safeNote + '" style="width:100%;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box">'
+    +       '</div>'
+    +     '</div>'
+    +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px;justify-content:flex-end">'
+    +       '<button onclick="cancelMobileSchedule()" style="padding:9px 14px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit">Cancel</button>'
+    +       '<button onclick="saveMobileSchedule()" style="padding:9px 18px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Schedule</button>'
     +     '</div>'
     +   '</div>'
     + '</div>';
@@ -3137,20 +3628,22 @@ function _renderEntityDetailMobile(opts) {
     ? sec('Notes') + '<div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:13px;color:#374151;white-space:pre-wrap;line-height:1.6">' + entity.notes + '</div>'
     : '';
 
-  // Bottom actions (per type). Common across both: a + Note button for typed
-  // notes. Editing is desktop-only — sales reps on mobile log activity, they
-  // don't tweak deal fields.
+  // Bottom actions (per type). Common across both: a + Schedule button for
+  // booking the next activity (Pipedrive-replacement Phase 2 — replaces the
+  // earlier + Note button; the schedule modal's optional note field covers
+  // the same use case). Editing is desktop-only — sales reps on mobile log
+  // activity, they don't tweak deal fields.
   var bottomActions = '';
   // Tap-target sizing: padding:13px + font-size:14px + line-height:1.2 ≈
   // 44px button height, the iOS HIG / Material minimum. Long labels
   // (e.g. "→ Quote Sent") get nowrap+ellipsis so the row stays balanced
   // on narrow screens — three buttons in a flex row with 8px gaps.
   var btnBase = 'flex:1;min-width:0;padding:13px 10px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-  var noteBtn = '<button onclick="openMobileNote(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="' + btnBase + ';border:1px solid #e5e7eb;background:#fff;color:#374151">+ Note</button>';
+  var schedBtn = '<button onclick="openMobileSchedule(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="' + btnBase + ';border:1px solid #e5e7eb;background:#fff;color:#374151">+ Schedule</button>';
   var rows = [];
   if (entityType === 'lead') {
     var canEdit = typeof canEditLead === 'function' && canEditLead(entity);
-    var actions = [noteBtn];
+    var actions = [schedBtn];
     if (!entity.owner && !entity.converted && canEdit) {
       actions.push('<button onclick="claimLead(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#c41230;color:#fff">+ Claim this lead</button>');
     } else if (!entity.converted) {
@@ -3160,7 +3653,7 @@ function _renderEntityDetailMobile(opts) {
   } else {
     // Deal: three-button row.
     //   - Mark Lost (red)        — opens existing reason+note modal
-    //   - + Note (white)         — typed note sheet
+    //   - + Schedule (white)     — opens the mobile schedule modal (Phase 2)
     //   - Advance / Won / Reopen (green) — depends on deal state
     var pl2 = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === entity.pid; });
     var stages2 = pl2 ? pl2.stages.slice().sort(function(a,b){ return a.ord - b.ord; }).filter(function(s){ return !s.isLost; }) : [];
@@ -3187,7 +3680,7 @@ function _renderEntityDetailMobile(opts) {
     var lostBtn = (!entity.won && !entity.lost)
       ? '<button onclick="markDealLost(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';background:#fef2f2;color:#b91c1c;border:1px solid #fecaca">✗ Mark Lost</button>'
       : '';
-    var dealRow = [lostBtn, noteBtn, greenBtn].filter(Boolean);
+    var dealRow = [lostBtn, schedBtn, greenBtn].filter(Boolean);
     if (dealRow.length) rows.push(dealRow);
   }
   if (rows.length) {

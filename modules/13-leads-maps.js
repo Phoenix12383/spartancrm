@@ -94,7 +94,12 @@ function renderLeadsMobile() {
     var fullName = ((l.fn || '') + ' ' + (l.ln || '')).trim() || '—';
     var addr = (l.suburb || '') + (l.state ? ' · ' + l.state : '') + (l.postcode ? ' ' + l.postcode : '');
     var sent = emailSent.filter(function(m){ return m.leadId === l.id || (l.email && m.to === l.email); });
-    return '<button onclick="setState({leadDetailId:\'' + _esc(l.id) + '\',page:\'leads\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px">' +
+    // Pipedrive-replacement Phase 3 + 8: chip row with next-activity chip on
+    // the left, inline call/SMS icons on the right. Wrapped in <div> rather
+    // than <button> so the action icons can stopPropagation cleanly.
+    var chipFn = (typeof renderNextActivityChip === 'function') ? renderNextActivityChip : function(){ return ''; };
+    var actFn  = (typeof _renderInlineRowActions === 'function') ? _renderInlineRowActions : function(){ return ''; };
+    return '<div onclick="setState({leadDetailId:\'' + _esc(l.id) + '\',page:\'leads\'})" style="background:#fff;border-radius:12px;padding:12px;cursor:pointer;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px">' +
       // Top row — avatar / name+addr / value+status
       '<div style="display:flex;align-items:center;gap:10px">' +
         '<div style="width:36px;height:36px;border-radius:50%;background:#c41230;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;flex-shrink:0">' + _initials(fullName) + '</div>' +
@@ -106,6 +111,12 @@ function renderLeadsMobile() {
           (l.val ? '<div style="font-size:13px;font-weight:800;font-family:Syne,sans-serif;color:#0a0a0a">' + fmtK(l.val) + '</div>' : '') +
           '<span style="display:inline-block;font-size:9px;font-weight:700;padding:2px 8px;border-radius:10px;background:' + col + '20;color:' + col + ';border:1px solid ' + col + '40;margin-top:3px">' + (l.status || '—') + '</span>' +
         '</div>' +
+      '</div>' +
+      // Chip + inline actions row (Phase 3 + 8)
+      '<div style="display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap">' +
+        chipFn(l, 'lead', { size: 'sm' }) +
+        '<div style="flex:1"></div>' +
+        actFn(l.phone || '', l.id, 'lead', fullName) +
       '</div>' +
       // Bottom row — owner / source / email count
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:10px;color:#6b7280;border-top:1px solid #f3f4f6;padding-top:8px;margin-top:8px">' +
@@ -120,7 +131,7 @@ function renderLeadsMobile() {
           (l.converted ? '<span style="color:#15803d;font-weight:700">✓ Converted</span>' : '') +
         '</div>' +
       '</div>' +
-    '</button>';
+    '</div>';
   }
 
   return '' +

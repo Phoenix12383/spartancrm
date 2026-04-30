@@ -17,7 +17,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { getTwilioClient } from '../_lib/twilioClient.js';
-import { verifyGoogleAndLookupUser } from '../_lib/auth.js';
+import { verifyGoogleAndLookupUser, verifyGoogleIdTokenAndLookupUser } from '../_lib/auth.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -26,8 +26,16 @@ export default async function handler(req, res) {
     return;
   }
 
-  // Auth — same Google access token pattern as /token, /sms, /recording-stream
-  const auth = await verifyGoogleAndLookupUser(req);
+  // Auth — desktop sends a Google access token (the existing /token flow);
+  // the Capacitor wrapper sends a Google idToken (3-section JWT starting
+  // "eyJ"). Detect which by structure and route to the right verifier so
+  // both call-end paths work without requiring the caller to know which.
+  const authHeader = req.headers.authorization || req.headers.Authorization || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const looksLikeJwt = token.split('.').length === 3 && token.startsWith('eyJ');
+  const auth = looksLikeJwt
+    ? await verifyGoogleIdTokenAndLookupUser(req)
+    : await verifyGoogleAndLookupUser(req);
   if (auth.error) {
     res.status(auth.status).json({ error: auth.error });
     return;
