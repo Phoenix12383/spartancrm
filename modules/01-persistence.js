@@ -218,6 +218,7 @@ function installerToDb(i) {
     colour: i.colour || '#3b82f6',
     notes: i.notes || null,
     active: i.active !== false,
+    efficiency_pct: i.efficiencyPct != null ? +i.efficiencyPct : 100,
     tools: i.tools || [], licenses: i.licenses || []
   };
 }
@@ -242,6 +243,7 @@ function dbToInstaller(r) {
     colour: r.colour || '#3b82f6',
     notes: r.notes || '',
     active: r.active !== false,
+    efficiencyPct: r.efficiency_pct != null ? Number(r.efficiency_pct) : 100,
     tools: r.tools || [], licenses: r.licenses || []
   };
 }
@@ -304,6 +306,25 @@ function dbToTool(r) {
     assignedTo: r.assigned_to || '',
     notes: r.notes || '',
     active: r.active !== false
+  };
+}
+// ── Installer availability exceptions — mirrors saveAvailability() in 17-install-schedule.js
+function availabilityToDb(a) {
+  return {
+    id: a.id,
+    installer_id: a.installerId || '',
+    date: a.date || null,
+    type: a.type || 'unavailable',
+    reason: a.reason || null
+  };
+}
+function dbToAvailability(r) {
+  return {
+    id: r.id,
+    installerId: r.installer_id || '',
+    date: r.date || '',
+    type: r.type || 'unavailable',
+    reason: r.reason || ''
   };
 }
 function emailToDb(e) {
@@ -581,6 +602,7 @@ async function dbLoadAll() {
       _sb.from('entity_files').select('*'),                                                                // index 19
       _sb.from('vehicles').select('*'),                                                                    // index 20
       _sb.from('tools').select('*'),                                                                       // index 21
+      _sb.from('installer_availability').select('*'),                                                      // index 22
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -771,6 +793,11 @@ async function dbLoadAll() {
       var tools = toolRows.map(dbToTool);
       localStorage.setItem('spartan_tools', JSON.stringify(tools));
     }
+    // Installer availability exceptions. Always overwrite (full list is small
+    // and represents the source of truth — no merge logic needed).
+    var availRows = (results[22] && results[22].data) || [];
+    var availability = availRows.map(dbToAvailability);
+    localStorage.setItem('spartan_installer_availability', JSON.stringify(availability));
     // entity_files (deals/leads/contacts file uploads — written by
     // 08-sales-crm.js addEntityFile and the mobile camera capture). Mirrors
     // the job_files pattern: bucket by entity_type+entity_id, keep the
@@ -963,6 +990,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'installers'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'vehicles'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'tools'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'installer_availability'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'email_sent'}, function(){ dbLoadAll(); })

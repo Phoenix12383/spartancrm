@@ -58,16 +58,31 @@ function isPublicHoliday(dateStr, branch) {
 window.isPublicHoliday = isPublicHoliday;
 window.AU_PUBLIC_HOLIDAYS = AU_PUBLIC_HOLIDAYS;
 
-// Per-installer efficiency % — stored client-side until Supabase has column.
-// Lead installer's efficiency multiplies install duration: 80% → +25% time, 110% → -9% time.
+// Per-installer efficiency %. Lead installer's efficiency multiplies install
+// duration: 80% → +25% time, 110% → -9% time. Persisted on the installer row
+// (installers.efficiency_pct). The legacy spartan_installer_eff localStorage
+// map is still read as a fallback for installers that pre-date the column.
 function getInstallerEfficiency(id) {
+  if (!id) return 100;
+  var inst = (getInstallers() || []).find(function(i){ return i.id === id; });
+  if (inst && inst.efficiencyPct != null) return Number(inst.efficiencyPct) || 100;
   try { var m = JSON.parse(localStorage.getItem('spartan_installer_eff') || '{}'); return Number(m[id]) || 100; }
   catch(e) { return 100; }
 }
 function setInstallerEfficiency(id, pct) {
+  if (!id) return;
+  var n = Number(pct) || 100;
+  // Primary path: persist to the installer record (syncs to Supabase via
+  // saveInstallers → installerToDb).
+  var list = (getInstallers() || []).map(function(i){
+    return i.id === id ? Object.assign({}, i, { efficiencyPct: n }) : i;
+  });
+  if (typeof saveInstallers === 'function') saveInstallers(list);
+  // Mirror to the legacy side-store too — kept only so old code paths that
+  // may still read directly from localStorage stay consistent during transition.
   try {
     var m = JSON.parse(localStorage.getItem('spartan_installer_eff') || '{}');
-    m[id] = Number(pct) || 100;
+    m[id] = n;
     localStorage.setItem('spartan_installer_eff', JSON.stringify(m));
   } catch(e) {}
 }
@@ -472,6 +487,11 @@ function getAvailability() {
 function saveAvailability(list) {
   try { localStorage.setItem('spartan_installer_availability', JSON.stringify(list || [])); }
   catch(e) { console.warn('[availability] save failed', e); }
+  if (typeof _sb !== 'undefined' && _sb && typeof availabilityToDb === 'function') {
+    (list || []).forEach(function(a) {
+      try { dbUpsert('installer_availability', availabilityToDb(a)); } catch(e) { console.warn('Availability sync failed', a.id, e); }
+    });
+  }
 }
 function getInstallerAvailability(installerId) {
   return getAvailability().filter(function(a){ return a.installerId === installerId; });
@@ -488,7 +508,10 @@ function addAvailabilityEntry(entry) {
 }
 function removeAvailabilityEntry(id) {
   var list = getAvailability().filter(function(a){ return a.id !== id; });
-  saveAvailability(list);
+  try { localStorage.setItem('spartan_installer_availability', JSON.stringify(list)); } catch(e) {}
+  if (typeof _sb !== 'undefined' && _sb) {
+    try { _sb.from('installer_availability').delete().eq('id', id); } catch(e) { console.warn('Availability delete failed', id, e); }
+  }
   addToast('Availability entry removed', 'warning');
 }
 // Returns 0..1 — fraction of the day the installer is available.
