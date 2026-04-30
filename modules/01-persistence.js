@@ -65,7 +65,8 @@ function jobToDb(j) {
     variation_sent_at:j.variationSentAt||null,
     variation_signed_at:j.variationSignedAt||null,
     variation_resolved_at:j.variationResolvedAt||null,
-    final_envelope_sent_at:j.finalEnvelopeSentAt||null};
+    final_envelope_sent_at:j.finalEnvelopeSentAt||null,
+    tools_required:Array.isArray(j.toolsRequired)?j.toolsRequired:[]};
 }
 function dbToJob(r) {
   return {id:r.id, jobNumber:r.job_number, dealId:r.deal_id, contactId:r.contact_id,
@@ -106,6 +107,7 @@ function dbToJob(r) {
     variationSignedAt:r.variation_signed_at||null,
     variationResolvedAt:r.variation_resolved_at||null,
     finalEnvelopeSentAt:r.final_envelope_sent_at||null,
+    toolsRequired:Array.isArray(r.tools_required)?r.tools_required:[],
     created:r.created_at};
 }
 

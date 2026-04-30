@@ -256,15 +256,35 @@ function removeTool(id) {
 }
 window.getTools = getTools; window.saveTools = saveTools; window.addTool = addTool; window.updateTool = updateTool; window.removeTool = removeTool;
 
-// Per-job required-tool list (side store — until Supabase has tools_required column on jobs)
+// Per-job required-tool list. Primary store is the jobs.tools_required JSONB
+// column (round-tripped via jobToDb / dbToJob). The legacy spartan_job_tools
+// localStorage map is still read as a fallback for any job whose row predates
+// the column being populated.
 function getJobTools(jobId) {
+  if (!jobId) return [];
+  var job = ((typeof getState === 'function' && getState().jobs) || []).find(function(j){ return j.id === jobId; });
+  if (job && Array.isArray(job.toolsRequired)) return job.toolsRequired;
   try { var m = JSON.parse(localStorage.getItem('spartan_job_tools') || '{}'); return m[jobId] || []; }
   catch(e) { return []; }
 }
 function setJobTools(jobId, toolIds) {
+  if (!jobId) return;
+  var ids = Array.isArray(toolIds) ? toolIds : [];
+  // Primary path: persist on the job row (state + Supabase via dbUpdate's
+  // camelCase→snake_case mapping).
+  if (typeof setState === 'function' && typeof getState === 'function') {
+    setState({ jobs: (getState().jobs || []).map(function(j){
+      return j.id === jobId ? Object.assign({}, j, { toolsRequired: ids }) : j;
+    })});
+  }
+  if (typeof dbUpdate === 'function' && typeof _sb !== 'undefined' && _sb) {
+    try { dbUpdate('jobs', jobId, { toolsRequired: ids }); }
+    catch(e) { console.warn('Job tools sync failed', jobId, e); }
+  }
+  // Mirror to the legacy side-store too — kept only for the transition.
   try {
     var m = JSON.parse(localStorage.getItem('spartan_job_tools') || '{}');
-    m[jobId] = toolIds;
+    m[jobId] = ids;
     localStorage.setItem('spartan_job_tools', JSON.stringify(m));
   } catch(e) {}
 }
