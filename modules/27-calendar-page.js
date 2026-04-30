@@ -417,6 +417,54 @@ function renderCalEventModal() {
     +'</div></div></div>';
 }
 
+// ── MOBILE: push appointment to the device's native calendar ─────────────────
+// Uses @ebarooni/capacitor-calendar (installed in the wrapper). Calls
+// createEventWithPrompt, which opens the system calendar's "create event"
+// UI prefilled with the data — the user explicitly confirms to save. This
+// avoids needing WRITE_CALENDAR permission (the system app handles it) and
+// avoids surprising silent writes.
+async function addToDeviceCalendar(opts) {
+  if (!window.Capacitor || !window.Capacitor.Plugins) {
+    if (typeof addToast === 'function') addToast('Calendar requires the mobile wrapper', 'error');
+    return;
+  }
+  // Plugin name registers as 'CapacitorCalendar' for @ebarooni's plugin;
+  // fall back to 'Calendar' in case a different community plugin is wired
+  // up in the future.
+  var Cal = window.Capacitor.Plugins.CapacitorCalendar
+         || window.Capacitor.Plugins.Calendar;
+  if (!Cal) {
+    if (typeof addToast === 'function') addToast('Calendar plugin not installed in the wrapper', 'error');
+    return;
+  }
+  var start = new Date(opts.startIso);
+  if (isNaN(start.getTime())) start = new Date();
+  var end = new Date(start.getTime() + (Number(opts.durationMinutes) || 60) * 60000);
+  var payload = {
+    title: opts.title || 'Spartan appointment',
+    location: opts.location || '',
+    notes: opts.notes || '',
+    startDate: start.getTime(),
+    endDate: end.getTime(),
+  };
+  try {
+    if (typeof Cal.createEventWithPrompt === 'function') {
+      await Cal.createEventWithPrompt(payload);
+    } else if (typeof Cal.createEvent === 'function') {
+      await Cal.createEvent(payload);
+    } else {
+      if (typeof addToast === 'function') addToast('Calendar plugin missing createEvent method', 'error');
+      return;
+    }
+    if (typeof addToast === 'function') addToast('Added to your phone calendar ✓', 'success');
+  } catch (e) {
+    var msg = (e && e.message) || String(e);
+    if (msg.toLowerCase().indexOf('cancel') >= 0) return;   // user dismissed
+    console.warn('[Spartan] calendar plugin error:', e);
+    if (typeof addToast === 'function') addToast('Add failed: ' + msg, 'error');
+  }
+}
+
 // ── MOBILE: CALENDAR — week scroller with day cards ───────────────────────────
 var _mobileCalendarWeekOffset = 0;
 // Walk every deal/lead and emit normalised appointment objects from any
@@ -545,14 +593,29 @@ function renderCalendarMobile() {
         : dayApts.map(function(a, idx){
             var name = a.client || a.subject || 'Appointment';
             var click = a.dealId ? "setState({dealDetailId:'" + _esc(a.dealId) + "'})" : '';
-            return '<button ' + (click ? 'onclick="' + click + '"' : '') + ' style="width:100%;text-align:left;padding:10px 12px;border:none;background:none;cursor:' + (click ? 'pointer' : 'default') + ';font-family:inherit;' + (idx > 0 ? 'border-top:1px solid #f3f4f6;' : '') + 'display:flex;align-items:center;gap:10px">' +
-              '<div style="font-size:11px;font-weight:800;color:#c41230;width:50px;flex-shrink:0">' + (fmtTime12(a.time) || '—') + '</div>' +
-              '<div style="flex:1;min-width:0">' +
-                '<div style="font-size:13px;font-weight:600;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
-                (a.suburb ? '<div style="font-size:10px;color:#6b7280;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📍 ' + a.suburb + (a.type ? ' · ' + a.type : '') + '</div>' : (a.type ? '<div style="font-size:10px;color:#6b7280;margin-top:1px">' + a.type + '</div>' : '')) +
+            // ISO start (date + time, defaulting to 09:00). Used by both the
+            // "Add to phone calendar" button below and any future round-trip
+            // sync. If the activity carries a duration we honour it.
+            var startIso = String(a.date || '').slice(0,10) + 'T' + (a.time || '09:00') + ':00';
+            var dur = Number(a.duration) || 60;
+            var notesText = ((a.type || '') + (a.subject && a.subject !== name ? ' · ' + a.subject : '')).trim();
+            var addCalArgs = "{title:'" + _esc(name) + "',location:'" + _esc(a.suburb || '') + "',notes:'" + _esc(notesText) + "',startIso:'" + startIso + "',durationMinutes:" + dur + "}";
+            // Row is now a flex container with two children: a tappable info
+            // area (cursor:pointer if dealId opens the deal) + a small
+            // "+📅" button on the right for adding to the phone calendar.
+            // Native HTML doesn't allow nesting <button>, so we use a <div>
+            // with an onclick handler for the main click area.
+            return '<div style="display:flex;align-items:center;' + (idx > 0 ? 'border-top:1px solid #f3f4f6;' : '') + '">' +
+              '<div ' + (click ? 'onclick="' + click + '"' : '') + ' style="flex:1;min-width:0;padding:10px 0 10px 12px;cursor:' + (click ? 'pointer' : 'default') + ';display:flex;align-items:center;gap:10px">' +
+                '<div style="font-size:11px;font-weight:800;color:#c41230;width:50px;flex-shrink:0">' + (fmtTime12(a.time) || '—') + '</div>' +
+                '<div style="flex:1;min-width:0">' +
+                  '<div style="font-size:13px;font-weight:600;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
+                  (a.suburb ? '<div style="font-size:10px;color:#6b7280;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📍 ' + a.suburb + (a.type ? ' · ' + a.type : '') + '</div>' : (a.type ? '<div style="font-size:10px;color:#6b7280;margin-top:1px">' + a.type + '</div>' : '')) +
+                '</div>' +
+                (a.dealId ? '<span style="color:#9ca3af;font-size:14px;flex-shrink:0">↗</span>' : '') +
               '</div>' +
-              (a.dealId ? '<span style="color:#9ca3af;font-size:14px;flex-shrink:0">↗</span>' : '') +
-            '</button>';
+              '<button onclick="addToDeviceCalendar(' + addCalArgs + ')" title="Add to phone calendar" style="flex-shrink:0;margin:0 8px 0 4px;padding:5px 9px;border:1px solid #e5e7eb;background:#f9fafb;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:700;color:#374151">+📅</button>' +
+            '</div>';
           }).join('')) +
     '</div>';
   }

@@ -76,6 +76,14 @@ function googleSignInForLoginNative() {
     .then(function(res){
       var profile = res && res.result && res.result.profile;
       if (!profile || !profile.email) { alert('Google Sign-In returned no profile.'); return; }
+      // Capture the Google idToken if the plugin returned one — used as the
+      // Bearer credential for backend endpoints (e.g. /api/email/send) so the
+      // server can verify the requesting rep before sending email on their
+      // behalf via the service-account/domain-wide-delegation flow.
+      var idToken = res && res.result && (res.result.idToken || res.result.id_token);
+      if (idToken) {
+        try { localStorage.setItem('spartan_native_id_token', String(idToken)); } catch(e){}
+      }
       // Hydrate users from Supabase before the local lookup. Cold-start in the
       // Capacitor WebView has empty localStorage, so getUsers() would only see
       // DEFAULT_USERS (the bootstrap admin) and reject every other email.

@@ -91,6 +91,10 @@ function renderTodayMobile() {
     var nameLine = a.client || a.subject || 'Appointment';
     var navUrl = addr ? 'https://maps.google.com/?q=' + encodeURIComponent(addr) : '';
     var phone = a.phone || '';
+    var startIso = String(a.date || todayStr).slice(0,10) + 'T' + (a.time || '09:00') + ':00';
+    var dur = Number(a.duration) || 60;
+    var notesText = ((a.type || '') + (a.subject && a.subject !== nameLine ? ' · ' + a.subject : '')).trim();
+    var addCalArgs = "{title:'" + _esc(nameLine) + "',location:'" + _esc(addr) + "',notes:'" + _esc(notesText) + "',startIso:'" + startIso + "',durationMinutes:" + dur + "}";
     return '<div style="background:#fff;border-radius:12px;overflow:hidden;margin-bottom:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);display:flex">' +
       '<div style="width:5px;background:#c41230;flex-shrink:0"></div>' +
       '<div style="flex:1;padding:12px">' +
@@ -100,10 +104,11 @@ function renderTodayMobile() {
         '</div>' +
         '<div style="font-size:14px;font-weight:700;color:#1a1a1a;margin-bottom:2px">' + nameLine + '</div>' +
         (addr ? '<div style="font-size:11px;color:#6b7280;margin-bottom:8px;display:flex;align-items:center;gap:4px">📍 ' + addr + '</div>' : '<div style="margin-bottom:8px"></div>') +
-        '<div style="display:flex;gap:6px">' +
-          (navUrl ? '<a href="' + navUrl + '" target="_blank" rel="noopener" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#0a0a0a;color:#fff;font-size:11px;font-weight:700;text-decoration:none">↗ Navigate</a>' : '') +
-          (phone ? '<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#22c55e;color:#fff;font-size:11px;font-weight:700;text-decoration:none">☎ Call</a>' : '') +
-          (phone ? '<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;text-align:center;padding:7px;border-radius:8px;background:#3b82f6;color:#fff;font-size:11px;font-weight:700;text-decoration:none">💬 SMS</a>' : '') +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+          (navUrl ? '<a href="' + navUrl + '" target="_blank" rel="noopener" style="flex:1;min-width:62px;text-align:center;padding:7px;border-radius:8px;background:#0a0a0a;color:#fff;font-size:11px;font-weight:700;text-decoration:none">↗ Navigate</a>' : '') +
+          (phone ? '<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;min-width:55px;text-align:center;padding:7px;border-radius:8px;background:#22c55e;color:#fff;font-size:11px;font-weight:700;text-decoration:none">☎ Call</a>' : '') +
+          (phone ? '<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="flex:1;min-width:55px;text-align:center;padding:7px;border-radius:8px;background:#3b82f6;color:#fff;font-size:11px;font-weight:700;text-decoration:none">💬 SMS</a>' : '') +
+          '<button onclick="addToDeviceCalendar(' + addCalArgs + ')" title="Add to phone calendar" style="flex:1;min-width:55px;text-align:center;padding:7px;border-radius:8px;background:#ede9fe;color:#6d28d9;font-size:11px;font-weight:700;border:none;cursor:pointer;font-family:inherit">+📅 Sync</button>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -2764,6 +2769,124 @@ async function takeMobilePhoto(entityId, entityType) {
   }
 }
 
+// ── MOBILE: email compose modal ──────────────────────────────────────────────
+// Compose-on-mobile via /api/email/send. Sends via Workspace service account
+// with domain-wide delegation — recipient sees From:<rep@domain> as if the
+// rep had sent from desktop. Body is plain text in the textarea; the server
+// converts newlines→<br> and appends the open-tracking pixel before handing
+// off to Gmail. State held in module scope so realtime echoes don't drop the
+// in-progress draft.
+var _pendingMobileEmail = null;          // { entityId, entityType, to, subject, body, sending }
+function openMobileEmail(entityId, entityType, prefilledTo) {
+  _pendingMobileEmail = {
+    entityId: entityId, entityType: entityType,
+    to: prefilledTo || '', subject: '', body: '', sending: false,
+  };
+  renderPage();
+  setTimeout(function(){
+    var el = document.getElementById('mobEmailSubject');
+    if (el) el.focus();
+  }, 60);
+}
+function cancelMobileEmail() { _pendingMobileEmail = null; renderPage(); }
+function setMobileEmailField(field, value) {
+  if (_pendingMobileEmail) _pendingMobileEmail[field] = value;
+}
+async function sendMobileEmail() {
+  if (!_pendingMobileEmail || _pendingMobileEmail.sending) return;
+  var p = _pendingMobileEmail;
+  if (!p.to.trim() || !p.subject.trim() || !p.body.trim()) {
+    addToast('To, subject and body are required', 'warning'); return;
+  }
+  // The wrapper persists the Google ID token at sign-in time
+  // (10-integrations.js googleSignInForLoginNative). Without it, the
+  // backend can't authenticate — fall back to a clear message.
+  var idToken = '';
+  try { idToken = localStorage.getItem('spartan_native_id_token') || ''; } catch(e){}
+  if (!idToken) {
+    addToast('Sign in again to send email — token missing', 'error');
+    return;
+  }
+  p.sending = true; renderPage();
+  try {
+    var resp = await fetch('https://spaartan.tech/api/email/send', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + idToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        to: p.to.trim(),
+        subject: p.subject.trim(),
+        body: p.body,
+        entityId: p.entityId,
+        entityType: p.entityType,
+      }),
+    });
+    var data = {};
+    try { data = await resp.json(); } catch(e){}
+    if (!resp.ok) {
+      var raw = (data && data.error) || ('HTTP ' + resp.status);
+      // Translate the most common backend errors into something a sales rep
+      // can actually act on. Pre-launch the env var won't be set; sessions
+      // expire in an hour so token errors crop up after a long break.
+      var friendly;
+      if (/SERVICE_ACCOUNT_BASE64|env var not set/i.test(raw)) {
+        friendly = 'Email isn\'t set up yet — admin is plugging in credentials.';
+      } else if (/expired|empty bearer|invalid.*id token/i.test(raw)) {
+        friendly = 'Sign out and back in to refresh your session, then retry.';
+      } else if (/not registered/i.test(raw)) {
+        friendly = 'Your email isn\'t in the user list — contact admin.';
+      } else if (/domain.wide|delegation|unauthorized_client/i.test(raw)) {
+        friendly = 'Email permissions not authorised yet — admin needs to finish Workspace setup.';
+      } else {
+        friendly = raw;
+      }
+      addToast('Send failed: ' + friendly, 'error');
+      p.sending = false; renderPage();
+      return;
+    }
+    _pendingMobileEmail = null;
+    addToast('Email sent ✓', 'success');
+    renderPage();
+  } catch (e) {
+    addToast('Send failed: ' + (e.message || e), 'error');
+    if (_pendingMobileEmail) { _pendingMobileEmail.sending = false; renderPage(); }
+  }
+}
+function renderMobileEmailModal() {
+  if (!_pendingMobileEmail) return '';
+  var p = _pendingMobileEmail;
+  var safeTo = (p.to || '').replace(/"/g, '&quot;');
+  var safeSubj = (p.subject || '').replace(/"/g, '&quot;');
+  var safeBody = (p.body || '').replace(/</g, '&lt;');
+  var sending = !!p.sending;
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)cancelMobileEmail()" style="z-index:300">'
+    +   '<div class="modal" style="max-width:520px;width:calc(100% - 24px);max-height:90vh;display:flex;flex-direction:column">'
+    +     '<div class="modal-header" style="padding:14px 18px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">'
+    +       '<h3 style="margin:0;font-size:15px;font-weight:700;font-family:Syne,sans-serif">Compose email</h3>'
+    +       '<button onclick="cancelMobileEmail()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1;padding:0">×</button>'
+    +     '</div>'
+    +     '<div class="modal-body" style="padding:14px 18px;display:flex;flex-direction:column;gap:10px;overflow-y:auto">'
+    +       '<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">To</label>'
+    +         '<input type="email" value="' + safeTo + '" oninput="setMobileEmailField(\'to\', this.value)" placeholder="recipient@example.com" style="width:100%;padding:9px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:13px;outline:none;box-sizing:border-box" />' +
+    +       '</div>'
+    +       '<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">Subject</label>'
+    +         '<input id="mobEmailSubject" value="' + safeSubj + '" oninput="setMobileEmailField(\'subject\', this.value)" placeholder="Subject line" style="width:100%;padding:9px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:13px;outline:none;box-sizing:border-box" />' +
+    +       '</div>'
+    +       '<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">Message</label>'
+    +         '<textarea rows="8" oninput="setMobileEmailField(\'body\', this.value)" placeholder="Write your message…" style="width:100%;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:14px;resize:vertical;outline:none;box-sizing:border-box;line-height:1.5">' + safeBody + '</textarea>' +
+    +       '</div>'
+    +     '</div>'
+    +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px;justify-content:flex-end;flex-shrink:0">'
+    +       '<button onclick="cancelMobileEmail()" ' + (sending ? 'disabled' : '') + ' style="padding:9px 14px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:600;color:#374151;cursor:' + (sending ? 'not-allowed' : 'pointer') + ';font-family:inherit;opacity:' + (sending ? '.5' : '1') + '">Cancel</button>'
+    +       '<button onclick="sendMobileEmail()" ' + (sending ? 'disabled' : '') + ' style="padding:9px 18px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:' + (sending ? 'not-allowed' : 'pointer') + ';font-family:inherit;opacity:' + (sending ? '.7' : '1') + '">' + (sending ? 'Sending…' : '✈ Send') + '</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+}
+
 // ── MOBILE: typed-note modal ─────────────────────────────────────────────────
 // Lightweight bottom-sheet replacement for the desktop notes-tab inline form.
 // Lives in module state so a renderPage triggered by setState (e.g. realtime
@@ -2891,14 +3014,23 @@ function _renderEntityDetailMobile(opts) {
     valHtml = '<div style="font-size:24px;font-weight:800;margin-top:8px;font-family:Syne,sans-serif;color:#fbbf24">' + prefix + fmt$$(entity.val) + suffix + '</div>';
   }
 
+  // Display name for the Twilio prompt + tappable rows. Leads carry fn/ln
+  // on the entity itself; deals look up the linked contact, falling back to
+  // the deal title (which is usually the customer's site address).
+  var contactName = entityType === 'lead'
+    ? ((entity.fn || '') + ' ' + (entity.ln || '')).trim()
+    : (contact && ((contact.fn || '') + ' ' + (contact.ln || '')).trim()) || (entity.title || '');
+
   // Quick action bar — Call / SMS / Email / Photo. Shows whatever's available
   // (phone-less leads still get the photo button; email-less leads still get
   // call/sms). Photo always renders since every entity supports photos.
+  // CALL goes through the Twilio PSTN-bridge (twilioCall → dialViaTwilioBridge
+  // on native) so we get recording + call_logs + activity timeline.
   var actionBar = '';
   var cells = [];
-  if (phone) cells.push('<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></a>');
+  if (phone) cells.push('<button onclick="twilioCall(\'' + _esc(phone) + '\',\'' + _esc(entity.id) + '\',\'' + entityType + '\',\'' + _esc(contactName) + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></button>');
   if (phone) cells.push('<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#3b82f6;text-decoration:none"><span style="font-size:18px">💬</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">SMS</span></a>');
-  if (email) cells.push('<a href="mailto:' + email + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></a>');
+  if (email) cells.push('<button onclick="openMobileEmail(\'' + _esc(entity.id) + '\',\'' + entityType + '\',\'' + _esc(email) + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></button>');
   cells.push('<button onclick="takeMobilePhoto(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#0a0a0a;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">📸</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">PHOTO</span></button>');
   if (cells.length) {
     var sepStyle = ';border-right:1px solid #f3f4f6';
@@ -2945,8 +3077,28 @@ function _renderEntityDetailMobile(opts) {
   }
 
   // Details rows (skip empties so the card never has dashes).
-  function row(label, val) {
+  // row(label, val)            — static row
+  // row(label, val, { tap })  — tappable row. `tap` is either a URL
+  //   (tel:/mailto:/sms:/http(s):) which renders as <a>, or a JS
+  //   expression which renders as <div onclick=...>. Tappable rows get
+  //   blue value text + a › chevron to signal they're actionable, and a
+  //   slightly bigger 13px tap target.
+  function row(label, val, opts) {
     if (!val || val === '—') return '';
+    if (opts && opts.tap) {
+      var isUrl = /^(tel:|mailto:|sms:|https?:)/.test(opts.tap);
+      var openAttr = isUrl
+        ? 'href="' + String(opts.tap).replace(/"/g,'&quot;') + '"' + (opts.tap.indexOf('http') === 0 ? ' target="_blank" rel="noopener"' : '')
+        : 'onclick="' + opts.tap + '"';
+      var tag = isUrl ? 'a' : 'div';
+      return '<' + tag + ' ' + openAttr + ' style="display:flex;justify-content:space-between;align-items:center;padding:13px 14px;border-bottom:1px solid #f3f4f6;gap:12px;text-decoration:none;color:inherit;cursor:pointer">' +
+        '<span style="font-size:11px;color:#9ca3af;flex-shrink:0">' + label + '</span>' +
+        '<span style="display:flex;align-items:center;gap:6px;min-width:0">' +
+          '<span style="font-size:13px;font-weight:600;color:#3b82f6;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">' + val + '</span>' +
+          '<span style="color:#9ca3af;font-size:14px;flex-shrink:0;line-height:1">›</span>' +
+        '</span>' +
+      '</' + tag + '>';
+    }
     return '<div style="display:flex;justify-content:space-between;align-items:center;padding:11px 14px;border-bottom:1px solid #f3f4f6;gap:12px">' +
       '<span style="font-size:11px;color:#9ca3af;flex-shrink:0">' + label + '</span>' +
       '<span style="font-size:13px;font-weight:600;color:#374151;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">' + val + '</span>' +
@@ -2956,10 +3108,19 @@ function _renderEntityDetailMobile(opts) {
   var ownerVal = owner || (entityType === 'lead'
     ? '<span style="display:inline-block;font-size:10px;font-weight:700;padding:3px 9px;border-radius:10px;background:#fef3c7;color:#92400e;border:1px solid #fde68a">Unassigned</span>'
     : '—');
+  // Phone row tap routes through twilioCall (Twilio PSTN-bridge on native,
+  // existing WebRTC desktop flow elsewhere) — same path as the CALL button
+  // in the quick-action bar above so behaviour is consistent.
+  var phoneTap = phone ? "twilioCall('" + _esc(phone) + "','" + _esc(entity.id) + "','" + entityType + "','" + _esc(contactName) + "')" : null;
+  // Email row opens the in-app composer (matches the EMAIL quick-action
+  // button at the top of the page). Falls back to mailto: if openMobileEmail
+  // isn't defined yet (during very early load).
+  var emailTap = email ? "openMobileEmail('" + _esc(entity.id) + "','" + entityType + "','" + _esc(email) + "')" : null;
+  var addrTap = addr ? 'https://maps.google.com/?q=' + encodeURIComponent(addr) : null;
   var detailsCard = '<div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)">' +
-    row('Phone', phone) +
-    row('Email', email) +
-    row('Address', addr) +
+    row('Phone', phone, { tap: phoneTap }) +
+    row('Email', email, { tap: emailTap }) +
+    row('Address', addr, { tap: addrTap }) +
     row(entityType === 'deal' ? 'Stage' : 'Status', statusBadge) +
     row(entityType === 'deal' ? 'Rep' : 'Owner', ownerVal) +
     row('Source', source) +
@@ -2980,15 +3141,20 @@ function _renderEntityDetailMobile(opts) {
   // notes. Editing is desktop-only — sales reps on mobile log activity, they
   // don't tweak deal fields.
   var bottomActions = '';
-  var noteBtn = '<button onclick="openMobileNote(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="flex:1;padding:11px;border-radius:10px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:700;color:#374151;cursor:pointer;font-family:inherit">+ Note</button>';
+  // Tap-target sizing: padding:13px + font-size:14px + line-height:1.2 ≈
+  // 44px button height, the iOS HIG / Material minimum. Long labels
+  // (e.g. "→ Quote Sent") get nowrap+ellipsis so the row stays balanced
+  // on narrow screens — three buttons in a flex row with 8px gaps.
+  var btnBase = 'flex:1;min-width:0;padding:13px 10px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+  var noteBtn = '<button onclick="openMobileNote(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="' + btnBase + ';border:1px solid #e5e7eb;background:#fff;color:#374151">+ Note</button>';
   var rows = [];
   if (entityType === 'lead') {
     var canEdit = typeof canEditLead === 'function' && canEditLead(entity);
     var actions = [noteBtn];
     if (!entity.owner && !entity.converted && canEdit) {
-      actions.push('<button onclick="claimLead(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">+ Claim this lead</button>');
+      actions.push('<button onclick="claimLead(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#c41230;color:#fff">+ Claim this lead</button>');
     } else if (!entity.converted) {
-      actions.push('<button onclick="openConvertLeadModal(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Convert to Deal →</button>');
+      actions.push('<button onclick="openConvertLeadModal(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#c41230;color:#fff">Convert to Deal →</button>');
     }
     rows.push(actions);
   } else {
@@ -3005,21 +3171,21 @@ function _renderEntityDetailMobile(opts) {
       // Reopen — admin-only per existing unwindDealWon policy. Hide for non-admins.
       var cu = getCurrentUser() || {};
       if (cu.role === 'admin') {
-        greenBtn = '<button onclick="unwindDealWon(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#0a0a0a;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">↺ Reopen Deal</button>';
+        greenBtn = '<button onclick="unwindDealWon(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#0a0a0a;color:#fff">↺ Reopen Deal</button>';
       } else {
         greenBtn = '';
       }
     } else if (entity.lost) {
       greenBtn = '';   // Lost is terminal at the moment; reopening lost is desktop-only.
     } else if (nextStage && nextStage.isWon) {
-      greenBtn = '<button onclick="markDealWon(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#22c55e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">✓ Mark Won</button>';
+      greenBtn = '<button onclick="markDealWon(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#22c55e;color:#fff">✓ Mark Won</button>';
     } else if (nextStage) {
-      greenBtn = '<button onclick="advanceDealStageMobile(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#22c55e;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">→ ' + nextStage.name + '</button>';
+      greenBtn = '<button onclick="advanceDealStageMobile(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#22c55e;color:#fff" title="Move to ' + nextStage.name + '">→ ' + nextStage.name + '</button>';
     } else {
       greenBtn = '';
     }
     var lostBtn = (!entity.won && !entity.lost)
-      ? '<button onclick="markDealLost(\'' + _esc(entity.id) + '\')" style="flex:1;padding:11px;border-radius:10px;border:none;background:#fef2f2;color:#b91c1c;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;border:1px solid #fecaca">✗ Mark Lost</button>'
+      ? '<button onclick="markDealLost(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';background:#fef2f2;color:#b91c1c;border:1px solid #fecaca">✗ Mark Lost</button>'
       : '';
     var dealRow = [lostBtn, noteBtn, greenBtn].filter(Boolean);
     if (dealRow.length) rows.push(dealRow);

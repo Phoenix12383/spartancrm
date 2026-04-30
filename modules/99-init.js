@@ -186,6 +186,7 @@ function renderPage(){
     ${typeof _addInstToolForId !== 'undefined' && _addInstToolForId ? renderAddInstToolModal() : ''}
     ${typeof _variationModalForJobId !== 'undefined' && _variationModalForJobId ? renderVariationModal() : ''}
     ${typeof _pendingMobileNote !== 'undefined' && _pendingMobileNote ? renderMobileNoteModal() : ''}
+    ${typeof _pendingMobileEmail !== 'undefined' && _pendingMobileEmail ? renderMobileEmailModal() : ''}
   `;
   _restoreFocus(_focusSnap);
   // Restore the Gantt's horizontal scroll position after innerHTML rebuilds

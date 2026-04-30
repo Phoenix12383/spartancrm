@@ -150,7 +150,67 @@ var _twilioCallTimerId = null;
 // Place an outbound call. `phone` should be in any AU format (we trust Twilio
 // to handle the dialing); entityId/entityType attach the call to a specific
 // CRM record so the activity timeline gets the right entry.
-async function twilioCall(phone, entityId, entityType) {
+// ── Mobile wrapper: PSTN bridge ──────────────────────────────────────────────
+// Capacitor WebView can't reliably do WebRTC, so we route mobile calls through
+// the /api/twilio/dial endpoint. Twilio rings the rep's phone first; on
+// answer, plays the "Connecting you to {customer}" prompt and dials the
+// customer with dual-channel recording. Recording lands via the existing
+// /recording webhook; activity row is written by /status on call completion.
+async function dialViaTwilioBridge(phone, entityId, entityType, contactName) {
+  if (!phone) {
+    if (typeof addToast === 'function') addToast('No phone number to dial', 'error');
+    return;
+  }
+  var idToken = '';
+  try { idToken = localStorage.getItem('spartan_native_id_token') || ''; } catch(e){}
+  if (!idToken) {
+    if (typeof addToast === 'function') addToast('Sign out and back in to enable calling', 'error');
+    return;
+  }
+  if (typeof addToast === 'function') addToast('📞 Calling…', 'info');
+  try {
+    var resp = await fetch('https://spaartan.tech/api/twilio/dial', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + idToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to: phone,
+        contactName: contactName || '',
+        entityId: entityId || null,
+        entityType: entityType || null,
+      }),
+    });
+    var data = {};
+    try { data = await resp.json(); } catch(e){}
+    if (resp.ok) {
+      if (typeof addToast === 'function') addToast('Your phone will ring shortly ✓', 'success');
+      return;
+    }
+    // Translate the most common backend errors into actionable rep-friendly
+    // text. NO_REP_PHONE is the C1 hard-error case — surfaced verbatim.
+    var raw = (data && (data.message || data.error)) || ('HTTP ' + resp.status);
+    var friendly;
+    if (data && data.error === 'NO_REP_PHONE') {
+      friendly = data.message;
+    } else if (/expired|empty bearer|invalid.*id token/i.test(raw)) {
+      friendly = 'Sign out and back in to refresh your session';
+    } else if (/TWILIO_PHONE_NUMBER not configured/i.test(raw)) {
+      friendly = 'Twilio not configured — check with admin';
+    } else {
+      friendly = raw;
+    }
+    if (typeof addToast === 'function') addToast('Call failed: ' + friendly, 'error');
+  } catch (e) {
+    if (typeof addToast === 'function') addToast('Network error: ' + (e.message || e), 'error');
+  }
+}
+
+async function twilioCall(phone, entityId, entityType, contactName) {
+  // Capacitor wrapper: bypass the WebRTC SDK and bridge through PSTN.
+  // The desktop's _twilioDevice is never connected on the wrapper, so the
+  // native check has to come BEFORE the connectivity guard below.
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) {
+    return dialViaTwilioBridge(phone, entityId, entityType, contactName);
+  }
   if (!window._twilioReady || !_twilioDevice) {
     if (typeof addToast === 'function') addToast('Phone not connected — check Settings', 'warning');
     return;
