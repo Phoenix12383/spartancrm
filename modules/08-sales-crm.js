@@ -2941,6 +2941,226 @@ function renderMobileNoteModal() {
     + '</div>';
 }
 
+// ── MOBILE: schedule-activity modal ──────────────────────────────────────────
+// Pipedrive-replacement Phase 2. Bottom-sheet equivalent of the desktop
+// schedule modal (openScheduleModal / saveScheduledActivity) but stripped to
+// what fits on a phone — type chip row + quick-date chips + time + 1-line note.
+//
+// Save side does TWO writes:
+//   1. activities timeline row (type=picked, scheduled:true, dueDate=picked
+//      date) via the existing saveActivityToEntity. Same shape the desktop
+//      modal writes, so the timeline reads it identically on both surfaces.
+//   2. The Phase 1 next_activity_* triple on the deal/lead row — both
+//      in-memory (so Phase 3's chip / Today view picks it up immediately on
+//      this device) and via dbUpdate (so the other device picks it up via
+//      realtime). This is the denormalized read path Phases 3/5/6/7 use.
+//
+// Lives in module state so a renderPage triggered by realtime echo doesn't
+// drop the user's typing — same pattern as _pendingMobileNote.
+var _pendingMobileSchedule = null;
+// shape: { entityId, entityType, type, dateISO, time, note, hint }
+
+function _mobileScheduleDefaults(hint) {
+  // Default: type = hint || 'call', date = today, time = next round hour.
+  // hint biases the type chip after a logged action — Phase 4's post-action
+  // prompt will pass 'followUp' after a call, 'call' after an SMS, etc.
+  var dt = new Date();
+  dt.setHours(dt.getHours() + 1);
+  dt.setMinutes(0, 0, 0);
+  return {
+    type: hint || 'call',
+    dateISO: dt.toISOString().slice(0, 10),
+    time: String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0'),
+  };
+}
+
+function openMobileSchedule(entityId, entityType, hint) {
+  var def = _mobileScheduleDefaults(hint);
+  _pendingMobileSchedule = {
+    entityId: entityId, entityType: entityType,
+    type: def.type, dateISO: def.dateISO, time: def.time, note: '', hint: hint || null,
+  };
+  renderPage();
+}
+function cancelMobileSchedule() { _pendingMobileSchedule = null; renderPage(); }
+function setMobileScheduleType(t) {
+  if (!_pendingMobileSchedule) return;
+  _pendingMobileSchedule.type = t;
+  renderPage();
+}
+function setMobileScheduleQuickDate(slotKey) {
+  if (!_pendingMobileSchedule) return;
+  var dt = new Date();
+  if (slotKey === 'tomorrow') dt.setDate(dt.getDate() + 1);
+  else if (slotKey === '3d')  dt.setDate(dt.getDate() + 3);
+  else if (slotKey === '7d')  dt.setDate(dt.getDate() + 7);
+  // 'today' = no offset.
+  _pendingMobileSchedule.dateISO = dt.toISOString().slice(0, 10);
+  renderPage();
+}
+function setMobileScheduleDate(v) { if (_pendingMobileSchedule) _pendingMobileSchedule.dateISO = v; }
+function setMobileScheduleTime(v) { if (_pendingMobileSchedule) _pendingMobileSchedule.time = v; }
+function setMobileScheduleNote(v) { if (_pendingMobileSchedule) _pendingMobileSchedule.note = v; }
+
+function saveMobileSchedule() {
+  if (!_pendingMobileSchedule) return;
+  var p = _pendingMobileSchedule;
+  if (!p.dateISO || !p.time) { addToast('Pick a date and time', 'error'); return; }
+
+  // Build the Phase 1 next-activity ISO timestamp. Browser local TZ; Supabase
+  // stores TIMESTAMPTZ which round-trips cleanly through dbToDeal/dbToLead.
+  var nextAt;
+  try {
+    nextAt = new Date(p.dateISO + 'T' + p.time + ':00').toISOString();
+  } catch (e) {
+    addToast('Invalid date/time', 'error'); return;
+  }
+
+  var typeMeta = (typeof getActivityType === 'function') ? getActivityType(p.type) : null;
+  var typeLabel = (typeMeta && typeMeta.label) || (p.type.charAt(0).toUpperCase() + p.type.slice(1));
+  var noteText = (p.note || '').trim();
+  var actText = typeLabel + (noteText ? ' — ' + noteText : '');
+
+  // Write #1: activities timeline row. Same shape as desktop's
+  // saveScheduledActivity (08-sales-crm.js ~2319) — type, text, date, time,
+  // scheduled:true, dueDate, by — so the desktop activity tab renders it
+  // identically.
+  if (typeof saveActivityToEntity === 'function') {
+    saveActivityToEntity(p.entityId, p.entityType, {
+      id: 'a' + Date.now(),
+      type: p.type,
+      text: actText,
+      date: p.dateISO,
+      time: p.time,
+      duration: 30,
+      by: (getCurrentUser() || { name: 'Admin' }).name,
+      done: false,
+      dueDate: p.dateISO,
+      scheduled: true,
+    });
+  }
+
+  // Write #2: Phase 1 next_activity_* triple. setState first so the chip /
+  // Today view picks it up on this device immediately, then dbUpdate so the
+  // other device picks it up via realtime (the deals/leads tables are on the
+  // entities channel — see 01-persistence.js setupRealtime).
+  var st = getState();
+  if (p.entityType === 'deal') {
+    setState({
+      deals: (st.deals || []).map(function(d) {
+        return d.id === p.entityId
+          ? Object.assign({}, d, {
+              nextActivityAt: nextAt, nextActivityType: p.type, nextActivityNote: noteText,
+            })
+          : d;
+      })
+    });
+    if (typeof dbUpdate === 'function') {
+      dbUpdate('deals', p.entityId, {
+        nextActivityAt: nextAt, nextActivityType: p.type, nextActivityNote: noteText,
+      });
+    }
+  } else if (p.entityType === 'lead') {
+    setState({
+      leads: (st.leads || []).map(function(l) {
+        return l.id === p.entityId
+          ? Object.assign({}, l, {
+              nextActivityAt: nextAt, nextActivityType: p.type, nextActivityNote: noteText,
+            })
+          : l;
+      })
+    });
+    if (typeof dbUpdate === 'function') {
+      dbUpdate('leads', p.entityId, {
+        nextActivityAt: nextAt, nextActivityType: p.type, nextActivityNote: noteText,
+      });
+    }
+  }
+
+  _pendingMobileSchedule = null;
+  addToast('✓ ' + typeLabel + ' scheduled for ' + p.dateISO + ' at ' + p.time, 'success');
+  renderPage();
+}
+
+function renderMobileScheduleModal() {
+  if (!_pendingMobileSchedule) return '';
+  var p = _pendingMobileSchedule;
+
+  // 5 picker types, all from ACTIVITY_TYPES so we don't need to extend the
+  // type whitelist or risk an activities-table CHECK-constraint failure.
+  // SMS deliberately omitted — reps log "Follow-up" with a note like
+  // "Texted re measure" instead, which keeps the type vocabulary small.
+  // Boss can promote SMS to its own type later if dogfood demands it.
+  var pickIds = ['call', 'email', 'meeting', 'task', 'followUp'];
+  var allTypes = (typeof getPickableActivityTypes === 'function') ? getPickableActivityTypes() : [];
+  var types = pickIds
+    .map(function(id) { return allTypes.find(function(t){ return t.id === id; }); })
+    .filter(Boolean);
+
+  // Quick-date offsets — same shape as desktop's quickSlots, minus the
+  // "In 1h / In 3h" entries (those are time-only and the time input handles it).
+  function fmtQD(off) {
+    var dt = new Date();
+    dt.setDate(dt.getDate() + off);
+    return dt.toISOString().slice(0, 10);
+  }
+  var quick = [
+    { key: 'today',    label: 'Today',    iso: fmtQD(0) },
+    { key: 'tomorrow', label: 'Tomorrow', iso: fmtQD(1) },
+    { key: '3d',       label: '+3 days',  iso: fmtQD(3) },
+    { key: '7d',       label: '+7 days',  iso: fmtQD(7) },
+  ];
+
+  function chip(active, label, onclick) {
+    var bg = active ? '#fff5f6' : '#fff';
+    var col = active ? '#c41230' : '#6b7280';
+    var bd = active ? '#c41230' : '#e5e7eb';
+    return '<button onclick="' + onclick + '" style="padding:8px 14px;border:1px solid ' + bd + ';border-radius:20px;font-size:13px;cursor:pointer;font-family:inherit;background:' + bg + ';color:' + col + ';font-weight:600">' + label + '</button>';
+  }
+
+  var typeChips = types.map(function(t) {
+    return chip(p.type === t.id, t.icon + ' ' + t.label, "setMobileScheduleType('" + t.id + "')");
+  }).join('');
+
+  var quickChips = quick.map(function(q) {
+    return chip(p.dateISO === q.iso, q.label, "setMobileScheduleQuickDate('" + q.key + "')");
+  }).join('');
+
+  var safeNote = (p.note || '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)cancelMobileSchedule()" style="z-index:300">'
+    +   '<div class="modal" style="max-width:480px;width:calc(100% - 24px)">'
+    +     '<div class="modal-header" style="padding:14px 18px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
+    +       '<h3 style="margin:0;font-size:15px;font-weight:700;font-family:Syne,sans-serif">Schedule next activity</h3>'
+    +       '<button onclick="cancelMobileSchedule()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1;padding:0">×</button>'
+    +     '</div>'
+    +     '<div class="modal-body" style="padding:14px 18px;display:flex;flex-direction:column;gap:14px">'
+    +       '<div>'
+    +         '<label style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:8px">Type</label>'
+    +         '<div style="display:flex;flex-wrap:wrap;gap:6px">' + typeChips + '</div>'
+    +       '</div>'
+    +       '<div>'
+    +         '<label style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:8px">When</label>'
+    +         '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">' + quickChips + '</div>'
+    +         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">'
+    +           '<input type="date" value="' + p.dateISO + '" oninput="setMobileScheduleDate(this.value)" style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box">'
+    +           '<input type="time" value="' + p.time + '" oninput="setMobileScheduleTime(this.value)" style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box">'
+    +         '</div>'
+    +       '</div>'
+    +       '<div>'
+    +         '<label style="font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;display:block;margin-bottom:8px">Note (optional)</label>'
+    +         '<input id="mobSchedNoteInput" oninput="setMobileScheduleNote(this.value)" placeholder="One-line reminder…" value="' + safeNote + '" style="width:100%;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font-size:14px;font-family:inherit;outline:none;box-sizing:border-box">'
+    +       '</div>'
+    +     '</div>'
+    +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px;justify-content:flex-end">'
+    +       '<button onclick="cancelMobileSchedule()" style="padding:9px 14px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;font-size:13px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit">Cancel</button>'
+    +       '<button onclick="saveMobileSchedule()" style="padding:9px 18px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">Schedule</button>'
+    +     '</div>'
+    +   '</div>'
+    + '</div>';
+}
+
 // ── MOBILE: Deal/Lead detail — boss's reference layout ───────────────────────
 // Closely follows SpartanSalesMobile.jsx LeadDetail/DealDetail: black hero,
 // quick action bar (Call/SMS/Email), flat key-value Details card, optional
@@ -3137,20 +3357,22 @@ function _renderEntityDetailMobile(opts) {
     ? sec('Notes') + '<div style="background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);font-size:13px;color:#374151;white-space:pre-wrap;line-height:1.6">' + entity.notes + '</div>'
     : '';
 
-  // Bottom actions (per type). Common across both: a + Note button for typed
-  // notes. Editing is desktop-only — sales reps on mobile log activity, they
-  // don't tweak deal fields.
+  // Bottom actions (per type). Common across both: a + Schedule button for
+  // booking the next activity (Pipedrive-replacement Phase 2 — replaces the
+  // earlier + Note button; the schedule modal's optional note field covers
+  // the same use case). Editing is desktop-only — sales reps on mobile log
+  // activity, they don't tweak deal fields.
   var bottomActions = '';
   // Tap-target sizing: padding:13px + font-size:14px + line-height:1.2 ≈
   // 44px button height, the iOS HIG / Material minimum. Long labels
   // (e.g. "→ Quote Sent") get nowrap+ellipsis so the row stays balanced
   // on narrow screens — three buttons in a flex row with 8px gaps.
   var btnBase = 'flex:1;min-width:0;padding:13px 10px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-  var noteBtn = '<button onclick="openMobileNote(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="' + btnBase + ';border:1px solid #e5e7eb;background:#fff;color:#374151">+ Note</button>';
+  var schedBtn = '<button onclick="openMobileSchedule(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="' + btnBase + ';border:1px solid #e5e7eb;background:#fff;color:#374151">+ Schedule</button>';
   var rows = [];
   if (entityType === 'lead') {
     var canEdit = typeof canEditLead === 'function' && canEditLead(entity);
-    var actions = [noteBtn];
+    var actions = [schedBtn];
     if (!entity.owner && !entity.converted && canEdit) {
       actions.push('<button onclick="claimLead(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';border:none;background:#c41230;color:#fff">+ Claim this lead</button>');
     } else if (!entity.converted) {
@@ -3160,7 +3382,7 @@ function _renderEntityDetailMobile(opts) {
   } else {
     // Deal: three-button row.
     //   - Mark Lost (red)        — opens existing reason+note modal
-    //   - + Note (white)         — typed note sheet
+    //   - + Schedule (white)     — opens the mobile schedule modal (Phase 2)
     //   - Advance / Won / Reopen (green) — depends on deal state
     var pl2 = (typeof PIPELINES !== 'undefined' ? PIPELINES : []).find(function(p){ return p.id === entity.pid; });
     var stages2 = pl2 ? pl2.stages.slice().sort(function(a,b){ return a.ord - b.ord; }).filter(function(s){ return !s.isLost; }) : [];
@@ -3187,7 +3409,7 @@ function _renderEntityDetailMobile(opts) {
     var lostBtn = (!entity.won && !entity.lost)
       ? '<button onclick="markDealLost(\'' + _esc(entity.id) + '\')" style="' + btnBase + ';background:#fef2f2;color:#b91c1c;border:1px solid #fecaca">✗ Mark Lost</button>'
       : '';
-    var dealRow = [lostBtn, noteBtn, greenBtn].filter(Boolean);
+    var dealRow = [lostBtn, schedBtn, greenBtn].filter(Boolean);
     if (dealRow.length) rows.push(dealRow);
   }
   if (rows.length) {
