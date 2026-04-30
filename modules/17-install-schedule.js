@@ -661,7 +661,13 @@ function getJobCosts(jobId) {
   try { return JSON.parse(localStorage.getItem('spartan_job_costs_'+jobId)||'{"labour":[],"materials":[],"additional":[]}'); }
   catch(e) { return {labour:[],materials:[],additional:[]}; }
 }
-function saveJobCosts(jobId, costs) { localStorage.setItem('spartan_job_costs_'+jobId, JSON.stringify(costs)); }
+function saveJobCosts(jobId, costs) {
+  localStorage.setItem('spartan_job_costs_'+jobId, JSON.stringify(costs));
+  if (typeof _sb !== 'undefined' && _sb && typeof jobCostsToDb === 'function') {
+    try { dbUpsert('job_costs', jobCostsToDb(jobId, costs)); }
+    catch(e) { console.warn('Job costs sync failed', jobId, e); }
+  }
+}
 
 function addLabourLog(jobId, installerId, date, startTime, endTime, regularH, overtimeH, travelH, notes) {
   var costs = getJobCosts(jobId);

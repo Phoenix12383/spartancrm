@@ -345,6 +345,24 @@ function dbToProgress(r) {
     frameStages: Array.isArray(r.frame_stages) ? r.frame_stages : []
   };
 }
+// ── Per-job cost tracking — labour / materials / additional charges
+// Note: jobCostsToDb takes (jobId, costs) — there's no costs.id; job_id is PK.
+function jobCostsToDb(jobId, c) {
+  c = c || {};
+  return {
+    job_id: jobId,
+    labour: Array.isArray(c.labour) ? c.labour : [],
+    materials: Array.isArray(c.materials) ? c.materials : [],
+    additional: Array.isArray(c.additional) ? c.additional : []
+  };
+}
+function dbToJobCosts(r) {
+  return {
+    labour: Array.isArray(r.labour) ? r.labour : [],
+    materials: Array.isArray(r.materials) ? r.materials : [],
+    additional: Array.isArray(r.additional) ? r.additional : []
+  };
+}
 function emailToDb(e) {
   return {id:e.id, to_addr:e.to||'', to_name:e.toName||'', subject:e.subject||'',
     body:e.body||'', date:e.date||'', time:e.time||'', by_user:e.by||'',
@@ -622,6 +640,7 @@ async function dbLoadAll() {
       _sb.from('tools').select('*'),                                                                       // index 21
       _sb.from('installer_availability').select('*'),                                                      // index 22
       _sb.from('install_progress').select('*'),                                                            // index 23
+      _sb.from('job_costs').select('*'),                                                                   // index 24
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -825,6 +844,14 @@ async function dbLoadAll() {
       progRows.forEach(function(r) { if (r.job_id) progressMap[r.job_id] = dbToProgress(r); });
       localStorage.setItem('spartan_install_progress', JSON.stringify(progressMap));
     }
+    // Per-job costs. Each job gets its own localStorage key so the existing
+    // getJobCosts() helper (which reads spartan_job_costs_<jobId>) keeps working.
+    var costRows = (results[24] && results[24].data) || [];
+    costRows.forEach(function(r) {
+      if (!r.job_id) return;
+      try { localStorage.setItem('spartan_job_costs_' + r.job_id, JSON.stringify(dbToJobCosts(r))); }
+      catch(e) { console.warn('[Spartan] Failed to cache job_costs for', r.job_id, e); }
+    });
     // entity_files (deals/leads/contacts file uploads — written by
     // 08-sales-crm.js addEntityFile and the mobile camera capture). Mirrors
     // the job_files pattern: bucket by entity_type+entity_id, keep the
@@ -1019,6 +1046,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'tools'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'installer_availability'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'install_progress'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'job_costs'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'email_sent'}, function(){ dbLoadAll(); })
