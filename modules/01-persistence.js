@@ -283,6 +283,29 @@ function dbToVehicle(r) {
     active: r.active !== false
   };
 }
+// ── Tools (Jobs CRM tool registry) — mirrors saveTools() in 17-install-schedule.js
+function toolToDb(t) {
+  return {
+    id: t.id,
+    name: t.name || '',
+    category: t.category || 'lifting',
+    shared: t.shared !== false,
+    assigned_to: t.assignedTo || null,
+    notes: t.notes || null,
+    active: t.active !== false
+  };
+}
+function dbToTool(r) {
+  return {
+    id: r.id,
+    name: r.name || '',
+    category: r.category || 'lifting',
+    shared: r.shared !== false,
+    assignedTo: r.assigned_to || '',
+    notes: r.notes || '',
+    active: r.active !== false
+  };
+}
 function emailToDb(e) {
   return {id:e.id, to_addr:e.to||'', to_name:e.toName||'', subject:e.subject||'',
     body:e.body||'', date:e.date||'', time:e.time||'', by_user:e.by||'',
@@ -557,6 +580,7 @@ async function dbLoadAll() {
       _sb.from('installers').select('*'),                                                                  // index 18
       _sb.from('entity_files').select('*'),                                                                // index 19
       _sb.from('vehicles').select('*'),                                                                    // index 20
+      _sb.from('tools').select('*'),                                                                       // index 21
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -739,6 +763,13 @@ async function dbLoadAll() {
     if (vehicleRows.length > 0) {
       var vehicles = vehicleRows.map(dbToVehicle);
       localStorage.setItem('spartan_vehicles', JSON.stringify(vehicles));
+    }
+    // Tools (Jobs CRM tool registry). Same pattern as vehicles. saveTools()
+    // writes back via dbUpsert (17-install-schedule.js).
+    var toolRows = (results[21] && results[21].data) || [];
+    if (toolRows.length > 0) {
+      var tools = toolRows.map(dbToTool);
+      localStorage.setItem('spartan_tools', JSON.stringify(tools));
     }
     // entity_files (deals/leads/contacts file uploads — written by
     // 08-sales-crm.js addEntityFile and the mobile camera capture). Mirrors
@@ -931,6 +962,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'phone_settings'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'installers'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'vehicles'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'tools'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'email_sent'}, function(){ dbLoadAll(); })

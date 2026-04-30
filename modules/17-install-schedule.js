@@ -221,10 +221,24 @@ function removeVehicle(id) {
 // Jobs declare toolsRequired[] (array of tool ids); the Smart Recommendations
 // flag scheduled jobs whose crew lacks any required tool.
 function getTools() { try { return JSON.parse(localStorage.getItem('spartan_tools') || '[]'); } catch(e) { return []; } }
-function saveTools(list) { localStorage.setItem('spartan_tools', JSON.stringify(list)); }
+function saveTools(list) {
+  localStorage.setItem('spartan_tools', JSON.stringify(list));
+  if (typeof _sb !== 'undefined' && _sb && typeof toolToDb === 'function') {
+    list.forEach(function(t) {
+      try { dbUpsert('tools', toolToDb(t)); } catch(e) { console.warn('Tool sync failed', t.id, e); }
+    });
+  }
+}
 function addTool(data) { var list = getTools(); data.id = 'tool_' + Date.now(); data.active = true; list.push(data); saveTools(list); renderPage(); }
 function updateTool(id, changes) { saveTools(getTools().map(function(t){ return t.id === id ? Object.assign({}, t, changes) : t; })); renderPage(); }
-function removeTool(id) { saveTools(getTools().filter(function(t){ return t.id !== id; })); addToast('Tool removed', 'warning'); renderPage(); }
+function removeTool(id) {
+  localStorage.setItem('spartan_tools', JSON.stringify(getTools().filter(function(t){ return t.id !== id; })));
+  if (typeof _sb !== 'undefined' && _sb) {
+    try { _sb.from('tools').delete().eq('id', id); } catch(e) { console.warn('Tool delete failed', id, e); }
+  }
+  addToast('Tool removed', 'warning');
+  renderPage();
+}
 window.getTools = getTools; window.saveTools = saveTools; window.addTool = addTool; window.updateTool = updateTool; window.removeTool = removeTool;
 
 // Per-job required-tool list (side store — until Supabase has tools_required column on jobs)
