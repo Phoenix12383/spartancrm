@@ -79,9 +79,17 @@ function getKpiThresholds() {
 }
 function saveKpiThresholds(thresholds) {
   try { localStorage.setItem('spartan_kpi_thresholds', JSON.stringify(thresholds)); } catch(e) {}
+  if (typeof _sb !== 'undefined' && _sb && typeof kpiThresholdsToDb === 'function') {
+    try { dbUpsert('kpi_thresholds', kpiThresholdsToDb(thresholds)); }
+    catch(e) { console.warn('KPI thresholds sync failed', e); }
+  }
 }
 function resetKpiThresholds() {
   try { localStorage.removeItem('spartan_kpi_thresholds'); } catch(e) {}
+  if (typeof _sb !== 'undefined' && _sb) {
+    try { _sb.from('kpi_thresholds').delete().eq('id', 'singleton'); }
+    catch(e) { console.warn('KPI thresholds delete failed', e); }
+  }
 }
 window.getKpiThresholds = getKpiThresholds;
 window.saveKpiThresholds = saveKpiThresholds;

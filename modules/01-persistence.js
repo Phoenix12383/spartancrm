@@ -388,6 +388,13 @@ function dbToJobAuditEntry(r) {
     timestamp: r.created_at || null
   };
 }
+// ── KPI thresholds (singleton row) — modules/03-jobs-workflow.js
+function kpiThresholdsToDb(thresholds) {
+  return { id: 'singleton', thresholds: thresholds || {} };
+}
+function dbToKpiThresholds(r) {
+  return (r && r.thresholds && typeof r.thresholds === 'object') ? r.thresholds : {};
+}
 function emailToDb(e) {
   return {id:e.id, to_addr:e.to||'', to_name:e.toName||'', subject:e.subject||'',
     body:e.body||'', date:e.date||'', time:e.time||'', by_user:e.by||'',
@@ -668,6 +675,7 @@ async function dbLoadAll() {
       _sb.from('job_costs').select('*'),                                                                   // index 24
       _sb.from('job_claims').select('*'),                                                                  // index 25
       _sb.from('job_audit').select('*').order('created_at', { ascending: false }).limit(5000),             // index 26
+      _sb.from('kpi_thresholds').select('*').eq('id', 'singleton').maybeSingle(),                          // index 27
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -902,6 +910,13 @@ async function dbLoadAll() {
         catch(e) { console.warn('[Spartan] Failed to cache job_audit for', jid, e); }
       });
     }
+    // KPI thresholds (singleton). Only overwrite localStorage when a row
+    // exists; otherwise leave alone so DEFAULT_KPI_THRESHOLDS still apply.
+    var kpiRow = (results[27] && results[27].data) || null;
+    if (kpiRow) {
+      try { localStorage.setItem('spartan_kpi_thresholds', JSON.stringify(dbToKpiThresholds(kpiRow))); }
+      catch(e) { console.warn('[Spartan] Failed to cache kpi_thresholds', e); }
+    }
     // entity_files (deals/leads/contacts file uploads — written by
     // 08-sales-crm.js addEntityFile and the mobile camera capture). Mirrors
     // the job_files pattern: bucket by entity_type+entity_id, keep the
@@ -1099,6 +1114,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'job_costs'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'job_claims'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'job_audit'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'kpi_thresholds'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'email_sent'}, function(){ dbLoadAll(); })
