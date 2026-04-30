@@ -10,6 +10,20 @@
 // isNativeWrapper() is true. Layout follows SpartanSalesMobile.jsx's TodayScreen
 // pattern but uses our brand red (#c41230) and existing data shapes.
 // ─────────────────────────────────────────────────────────────────────────────
+// PIPEDRIVE-REPLACEMENT PHASE 9: mobile detail tab state
+// ─────────────────────────────────────────────────────────────────────────────
+// Single global tab id, persists across renders within the session. Survives
+// renderPage triggered by a realtime echo. Reset to 'activity' is a manual
+// thing the user does — bouncing between deals keeps the last tab.
+//
+// Six tabs: activity / notes / email / sms / files / person.
+var _mobileEntityTab = 'activity';
+function setMobileEntityTab(tab) {
+  _mobileEntityTab = tab;
+  if (typeof renderPage === 'function') renderPage();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PIPEDRIVE-REPLACEMENT PHASES 3–8: shared helpers
 // ─────────────────────────────────────────────────────────────────────────────
 // Used by:
@@ -3517,17 +3531,16 @@ function _renderEntityDetailMobile(opts) {
   // call/sms). Photo always renders since every entity supports photos.
   // CALL goes through the Twilio PSTN-bridge (twilioCall → dialViaTwilioBridge
   // on native) so we get recording + call_logs + activity timeline.
-  var actionBar = '';
-  var cells = [];
-  if (phone) cells.push('<button onclick="twilioCall(\'' + _esc(phone) + '\',\'' + _esc(entity.id) + '\',\'' + entityType + '\',\'' + _esc(contactName) + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></button>');
-  if (phone) cells.push('<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#3b82f6;text-decoration:none"><span style="font-size:18px">💬</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">SMS</span></a>');
-  if (email) cells.push('<button onclick="openMobileEmail(\'' + _esc(entity.id) + '\',\'' + entityType + '\',\'' + _esc(email) + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></button>');
-  cells.push('<button onclick="takeMobilePhoto(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#0a0a0a;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">📸</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">PHOTO</span></button>');
-  if (cells.length) {
-    var sepStyle = ';border-right:1px solid #f3f4f6';
-    cells = cells.map(function(c, i){ return c.replace(';color:', (i < cells.length - 1 ? sepStyle : '') + ';color:'); });
-    actionBar = '<div style="margin-top:-10px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);display:grid;grid-template-columns:repeat(' + cells.length + ',1fr);margin-bottom:14px">' + cells.join('') + '</div>';
-  }
+  // Top action bar — Call/SMS/Email moved to the floating FAB above the
+  // bottom nav (renderMobileFAB in 07-shared-ui.js, Pipedrive-replacement).
+  // Photo stays here because it doesn't fit on the FAB and isn't a contact
+  // action — it's an on-site capture that belongs near the deal context.
+  var actionBar = '<div style="margin-top:-10px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);display:grid;grid-template-columns:1fr;margin-bottom:14px">' +
+    '<button onclick="takeMobilePhoto(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="display:flex;flex-direction:row;align-items:center;justify-content:center;padding:14px 4px;gap:8px;color:#0a0a0a;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit">' +
+      '<span style="font-size:18px">📸</span>' +
+      '<span style="font-size:11px;font-weight:700;letter-spacing:.04em">TAKE PHOTO</span>' +
+    '</button>' +
+  '</div>';
 
   // Files section — reads from the same getEntityFiles() store the desktop
   // Files tab uses. Image-extension entries render as 84px thumbnails (tap
@@ -3689,7 +3702,298 @@ function _renderEntityDetailMobile(opts) {
     }).join('');
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // PHASE 9 — Tab strip + per-tab content
+  // ─────────────────────────────────────────────────────────────────────────
+  // Six tabs across the top of the detail content. Hero stays above, bottom
+  // actions stay below. Each tab is a self-contained content block; the tab
+  // strip is sticky just under the hero so it stays visible while scrolling.
+
+  var st = getState();
+  var TABS = [
+    { id: 'activity', label: 'Activity' },
+    { id: 'notes',    label: 'Notes' },
+    { id: 'email',    label: 'Email' },
+    { id: 'sms',      label: 'SMS' },
+    { id: 'files',    label: 'Files' },
+    { id: 'person',   label: 'Person' },
+  ];
+  var activeTab = (typeof _mobileEntityTab === 'string' && TABS.some(function(t){ return t.id === _mobileEntityTab; }))
+    ? _mobileEntityTab : 'activity';
+
+  // Tab strip — horizontal scroller so all 6 fit on a 320px screen, with
+  // the active tab indicated by a 2px red underline. Tap → setMobileEntityTab.
+  var tabStrip = '<div style="background:#fff;border-bottom:1px solid #e5e7eb;overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -12px 12px;border-radius:0">' +
+    '<div style="display:flex;min-width:max-content">' +
+      TABS.map(function(t){
+        var on = t.id === activeTab;
+        return '<button onclick="setMobileEntityTab(\'' + t.id + '\')" style="flex-shrink:0;padding:11px 16px;border:none;background:none;cursor:pointer;border-bottom:2px solid ' + (on ? '#c41230' : 'transparent') + ';font-family:inherit;font-size:12px;font-weight:700;color:' + (on ? '#0a0a0a' : '#6b7280') + ';letter-spacing:.02em">' + t.label + '</button>';
+      }).join('') +
+    '</div>' +
+  '</div>';
+
+  // Helper for empty-state cards on tabs that have no content yet.
+  function emptyCard(emoji, title, body) {
+    return '<div style="padding:30px 20px;text-align:center;background:#fff;border-radius:12px;color:#6b7280;font-size:13px;line-height:1.5;box-shadow:0 1px 3px rgba(0,0,0,.06)">' +
+      (emoji ? '<div style="font-size:32px;margin-bottom:8px">' + emoji + '</div>' : '') +
+      (title ? '<div style="font-weight:600;color:#0a0a0a;margin-bottom:4px">' + title + '</div>' : '') +
+      (body ? '<div style="font-size:12px">' + body + '</div>' : '') +
+    '</div>';
+  }
+  function tabHeader(label, count, ctaLabel, ctaOnclick) {
+    var countSpan = (count !== undefined) ? '<span style="font-size:11px;font-weight:700;color:#9ca3af;margin-left:6px">' + count + '</span>' : '';
+    var cta = ctaOnclick
+      ? '<button onclick="' + ctaOnclick + '" style="padding:6px 12px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">' + ctaLabel + '</button>'
+      : '';
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:0 4px;margin-bottom:8px">' +
+      '<h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;color:#6b7280;margin:0">' + label + countSpan + '</h2>' +
+      cta +
+    '</div>';
+  }
+
+  // ── Phase 10: ACTIVITY tab ──────────────────────────────────────────────
+  // Reverse-chrono feed of all activities on the entity, with future
+  // scheduled activities pinned to the top in a "Scheduled" section, and
+  // completed/logged below in a "History" section. Each row: type icon +
+  // type label + relative time + by-user + one-line preview.
+  function tabActivity() {
+    var acts = (entity.activities || []).slice();
+    // Split into future-scheduled vs everything-else (logged + past-due).
+    var nowMs = Date.now();
+    function actMs(a) {
+      try { return new Date((a.dueDate || a.date || '') + 'T' + (a.time || '00:00') + ':00').getTime(); }
+      catch(e) { return 0; }
+    }
+    var scheduled = acts.filter(function(a){ return a && a.scheduled && !a.done && actMs(a) > nowMs; });
+    var history   = acts.filter(function(a){ return !(a && a.scheduled && !a.done && actMs(a) > nowMs); });
+    // Sort scheduled ascending (soonest first), history descending (newest first).
+    scheduled.sort(function(a,b){ return actMs(a) - actMs(b); });
+    history.sort(function(a,b){ return actMs(b) - actMs(a); });
+
+    var ICON = { call:'📞', email:'✉', meeting:'📅', task:'☑️', followUp:'🔁', note:'📝', file:'📎', stage:'🔀', created:'⭐', edit:'✏️', sms:'💬', deadline:'⏰' };
+    var COL  = { call:'#3b82f6', email:'#7c3aed', meeting:'#0ea5e9', task:'#22c55e', followUp:'#f97316', note:'#f59e0b', file:'#6366f1', stage:'#9ca3af', created:'#ef4444', edit:'#64748b', sms:'#14b8a6', deadline:'#eab308' };
+
+    function actRow(a, isScheduled) {
+      var icon = ICON[a.type] || '📌';
+      var col = COL[a.type] || '#9ca3af';
+      var when = '';
+      if (isScheduled) {
+        var dt;
+        try { dt = new Date((a.dueDate || a.date) + 'T' + (a.time || '00:00') + ':00'); } catch(e){}
+        if (dt) {
+          var sameDay = dt.toDateString() === new Date().toDateString();
+          var tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+          if (sameDay) when = 'Today ' + (a.time || '');
+          else if (dt.toDateString() === tomorrow.toDateString()) when = 'Tomorrow ' + (a.time || '');
+          else when = dt.toLocaleDateString('en-AU', { day:'numeric', month:'short' }) + (a.time ? ' ' + a.time : '');
+        }
+      } else {
+        when = a.date ? fmtRel(a.date) : '';
+      }
+      var by = a.by ? '<span style="font-size:10px;color:#9ca3af">· ' + a.by + '</span>' : '';
+      var preview = (a.subject || a.text || '').slice(0, 80).replace(/</g, '&lt;');
+      var preview2 = a.text && a.subject ? '<div style="font-size:11px;color:#6b7280;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + a.text.slice(0, 80).replace(/</g, '&lt;') + '</div>' : '';
+      var typeLabel = (a.type === 'followUp' ? 'Follow-up' : a.type === 'checkMeasure' ? 'Check Measure' : (a.type || 'note').charAt(0).toUpperCase() + (a.type || 'note').slice(1));
+      var leftBorder = isScheduled ? '3px solid ' + col : '3px solid #f3f4f6';
+      return '<div style="display:flex;gap:10px;background:#fff;border-radius:10px;padding:10px 12px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:' + leftBorder + '">' +
+        '<div style="width:32px;height:32px;border-radius:50%;background:' + col + '18;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">' + icon + '</div>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">' +
+            '<span style="font-size:13px;font-weight:700;color:#0a0a0a">' + typeLabel + '</span>' +
+            (when ? '<span style="font-size:11px;color:#6b7280">· ' + when + '</span>' : '') +
+            by +
+          '</div>' +
+          (preview ? '<div style="font-size:12px;color:#374151;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + preview + '</div>' : '') +
+          preview2 +
+        '</div>' +
+      '</div>';
+    }
+
+    var out = tabHeader('Activity', acts.length, '+ Schedule', "openMobileSchedule('" + _esc(entity.id) + "','" + entityType + "')");
+    if (scheduled.length) {
+      out += '<div style="margin-bottom:14px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin:0 4px 6px">Scheduled (' + scheduled.length + ')</div>' +
+        scheduled.map(function(a){ return actRow(a, true); }).join('') +
+      '</div>';
+    }
+    if (history.length) {
+      out += '<div><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin:0 4px 6px">History (' + history.length + ')</div>' +
+        history.map(function(a){ return actRow(a, false); }).join('') +
+      '</div>';
+    }
+    if (acts.length === 0) {
+      out += emptyCard('📋', 'No activity yet', 'Tap + Schedule to plan your next action.');
+    }
+    return out;
+  }
+
+  // ── Phase 11: NOTES tab ──────────────────────────────────────────────────
+  // Type='note' activities + entity.notes (legacy free-text on the row),
+  // newest first. + Note CTA opens the existing mobile note modal.
+  function tabNotes() {
+    var notes = (entity.activities || []).filter(function(a){ return a && a.type === 'note' && (a.text || '').trim(); });
+    notes.sort(function(a,b){
+      try { return new Date((b.date||'') + 'T' + (b.time||'00:00')).getTime() - new Date((a.date||'') + 'T' + (a.time||'00:00')).getTime(); }
+      catch(e){ return 0; }
+    });
+    var legacyBlock = '';
+    if (entity.notes && entity.notes.trim()) {
+      legacyBlock = '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:12px;margin-bottom:8px"><div style="font-size:10px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Notes (legacy)</div><div style="font-size:13px;color:#374151;white-space:pre-wrap;line-height:1.5">' + String(entity.notes).replace(/</g, '&lt;') + '</div></div>';
+    }
+    var out = tabHeader('Notes', notes.length + (legacyBlock ? 1 : 0), '+ Note', "openMobileNote('" + _esc(entity.id) + "','" + entityType + "')");
+    out += legacyBlock;
+    if (notes.length === 0 && !legacyBlock) {
+      out += emptyCard('📝', 'No notes yet', 'Quick recaps go here. Tap + Note above.');
+    } else {
+      out += notes.map(function(n){
+        var when = n.date ? fmtRel(n.date) : '';
+        var by = n.by || '';
+        var safe = String(n.text || '').replace(/</g, '&lt;');
+        return '<div style="background:#fff;border-radius:10px;padding:12px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:3px solid #f59e0b">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;font-size:10px;color:#9ca3af">' +
+            '<span>' + by + '</span>' +
+            '<span>' + when + '</span>' +
+          '</div>' +
+          '<div style="font-size:13px;color:#374151;white-space:pre-wrap;line-height:1.5">' + safe + '</div>' +
+        '</div>';
+      }).join('');
+    }
+    return out;
+  }
+
+  // ── Phase 12: EMAIL tab ──────────────────────────────────────────────────
+  // emailSent rows where entity_id matches OR (we own this contact's email).
+  // Per-row: subject + to + by + date + open status pill. + Compose CTA
+  // opens the existing mobile email modal.
+  function tabEmail() {
+    var sent = (st.emailSent || []).filter(function(m){
+      if (!m) return false;
+      if (m.entityId === entity.id || m.dealId === entity.id || m.leadId === entity.id) return true;
+      if (email && m.to && String(m.to).toLowerCase() === String(email).toLowerCase()) return true;
+      return false;
+    });
+    sent.sort(function(a,b){
+      try { return new Date(b.date + ' ' + (b.time||'')).getTime() - new Date(a.date + ' ' + (a.time||'')).getTime(); }
+      catch(e){ return 0; }
+    });
+    var cta = email ? "openMobileEmail('" + _esc(entity.id) + "','" + entityType + "','" + _esc(email) + "')" : '';
+    var ctaLabel = email ? '+ Compose' : '';
+    var out = tabHeader('Email', sent.length, ctaLabel, cta);
+    if (!email) {
+      out += emptyCard('✉', 'No email on file', 'Add the contact\'s email on the Person tab to send and receive.');
+      return out;
+    }
+    if (sent.length === 0) {
+      out += emptyCard('✉', 'No email yet', 'Tap + Compose to send your first email — opens, clicks, and replies are tracked.');
+    } else {
+      out += sent.map(function(m){
+        var subject = String(m.subject || '(no subject)').replace(/</g, '&lt;');
+        var to = String(m.to || '').replace(/</g, '&lt;');
+        var when = m.date ? fmtRel(m.date) : '';
+        var openedPill = m.opens > 0
+          ? '<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:#dcfce7;color:#15803d">👁 ' + m.opens + '× opened</span>'
+          : '<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:#f3f4f6;color:#9ca3af">Not opened yet</span>';
+        return '<div style="background:#fff;border-radius:10px;padding:12px;margin-bottom:6px;box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:3px solid #7c3aed">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:4px">' +
+            '<div style="font-size:13px;font-weight:700;color:#0a0a0a;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + subject + '</div>' +
+            '<span style="font-size:10px;color:#9ca3af;flex-shrink:0">' + when + '</span>' +
+          '</div>' +
+          '<div style="font-size:11px;color:#6b7280;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">To: ' + to + (m.by ? ' · ' + m.by : '') + '</div>' +
+          openedPill +
+        '</div>';
+      }).join('');
+    }
+    return out;
+  }
+
+  // ── Phase 13: SMS tab ────────────────────────────────────────────────────
+  // smsLogs filtered by phone (we don't have a per-entity column on sms_logs
+  // yet — phone match is the join). Each message rendered as a chat bubble:
+  // outbound right-aligned (red), inbound left-aligned (white). + Compose
+  // opens the device's native sms: handler.
+  function tabSms() {
+    var logs = (st.smsLogs || []).filter(function(m){
+      if (!m || !phone) return false;
+      var p = String(phone).replace(/[^\d+]/g, '');
+      var to = String(m.to || '').replace(/[^\d+]/g, '');
+      var from = String(m.from || '').replace(/[^\d+]/g, '');
+      // Match the trailing 8 digits — handles +614 vs 04 prefix variations.
+      var pTail = p.slice(-8);
+      return (to.endsWith(pTail) || from.endsWith(pTail));
+    });
+    logs.sort(function(a,b){
+      try { return new Date(a.sent_at || a.sentAt || 0).getTime() - new Date(b.sent_at || b.sentAt || 0).getTime(); }
+      catch(e){ return 0; }
+    });
+    var cta = phone ? "window.location.href='sms:" + String(phone).replace(/[^\d+]/g, '') + "'" : '';
+    var ctaLabel = phone ? '+ SMS' : '';
+    var out = tabHeader('SMS', logs.length, ctaLabel, cta);
+    if (!phone) {
+      out += emptyCard('💬', 'No phone on file', 'Add the contact\'s phone on the Person tab to send and receive SMS.');
+      return out;
+    }
+    if (logs.length === 0) {
+      out += emptyCard('💬', 'No SMS yet', 'Tap + SMS to start a thread via your phone\'s composer.');
+    } else {
+      out += '<div style="background:#fff;border-radius:12px;padding:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);display:flex;flex-direction:column;gap:8px">' +
+        logs.map(function(m){
+          var direction = m.direction || (m.from && phone && String(m.from).replace(/[^\d+]/g,'').endsWith(String(phone).replace(/[^\d+]/g,'').slice(-8)) ? 'inbound' : 'outbound');
+          var isOut = direction === 'outbound';
+          var body = String(m.body || m.text || '').replace(/</g, '&lt;');
+          var when = m.sent_at || m.sentAt;
+          var whenStr = '';
+          try { whenStr = when ? new Date(when).toLocaleString('en-AU', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : ''; } catch(e){}
+          return '<div style="display:flex;justify-content:' + (isOut ? 'flex-end' : 'flex-start') + '">' +
+            '<div style="max-width:78%;background:' + (isOut ? '#c41230' : '#f3f4f6') + ';color:' + (isOut ? '#fff' : '#0a0a0a') + ';border-radius:14px;padding:8px 12px">' +
+              '<div style="font-size:13px;line-height:1.4;white-space:pre-wrap">' + body + '</div>' +
+              (whenStr ? '<div style="font-size:9px;opacity:.7;margin-top:3px;text-align:right">' + whenStr + '</div>' : '') +
+            '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>';
+    }
+    return out;
+  }
+
+  // ── Phase 15: FILES tab ──────────────────────────────────────────────────
+  // Existing entity_files render plus the Take Photo CTA at top. Reuses the
+  // already-computed photosHtml block (if non-empty) and the takeMobilePhoto
+  // pipeline unchanged.
+  function tabFiles() {
+    var fileCount = (entFiles || []).length;
+    var out = tabHeader('Files', fileCount, '+ Take Photo', "takeMobilePhoto('" + _esc(entity.id) + "','" + entityType + "')");
+    if (fileCount === 0) {
+      out += emptyCard('📎', 'No files yet', 'Tap + Take Photo to capture a measure or site shot — uploads to Storage and shows on desktop too.');
+    } else {
+      // Reuse the already-built photosHtml — it has the heading line we don't
+      // want, so strip the leading <h2>...</h2>.
+      var stripped = (photosHtml || '').replace(/^<h2[^>]*>[^<]*<\/h2>/, '');
+      out += stripped;
+    }
+    return out;
+  }
+
+  // ── Phase 16: PERSON tab ─────────────────────────────────────────────────
+  // The current detailsCard repurposed as a per-tab Person view. Tap-to-call
+  // / tap-to-email / tap-to-map already wired via the row({tap}) helper.
+  function tabPerson() {
+    var out = tabHeader('Person', undefined, null, null);
+    out += detailsCard;
+    return out;
+  }
+
+  var tabContent;
+  if (activeTab === 'activity')      tabContent = tabActivity();
+  else if (activeTab === 'notes')    tabContent = tabNotes();
+  else if (activeTab === 'email')    tabContent = tabEmail();
+  else if (activeTab === 'sms')      tabContent = tabSms();
+  else if (activeTab === 'files')    tabContent = tabFiles();
+  else if (activeTab === 'person')   tabContent = tabPerson();
+  else                                tabContent = tabActivity();
+
   // Compose. Hero pulls -12px to extend edge-to-edge over main's padding.
+  // Layout: hero → (Take Photo action bar, only on Activity tab) → tab strip
+  // → tab content → bottom actions.
+  var actionBarOnActivity = activeTab === 'activity' ? actionBar : '';
   return '' +
     '<div style="margin:-12px -12px 0;padding:14px 16px 28px;background:#0a0a0a;color:#fff">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px">' +
@@ -3700,11 +4004,9 @@ function _renderEntityDetailMobile(opts) {
       (subtitle ? '<div style="font-size:11px;opacity:.7;margin-top:4px">' + subtitle + '</div>' : '') +
       valHtml +
     '</div>' +
-    actionBar +
-    sec('Details') +
-    detailsCard +
-    photosHtml +
-    notesHtml +
+    actionBarOnActivity +
+    tabStrip +
+    tabContent +
     bottomActions;
 }
 

@@ -193,6 +193,112 @@ function renderBottomNav(){
   </nav>`;
 }
 
+// ── Mobile FAB (Schedule / Call · Hangup / SMS) ──────────────────────────────
+// Pipedrive-replacement: floating pill above the bottom nav, mirrors
+// Pipedrive's mobile UX.
+//
+// Visibility (always something rendered on native):
+//   • Deal/lead detail, idle           → full pill: Schedule + Call + SMS
+//   • Deal/lead detail, active call    → full pill, Call swaps for Hangup
+//                                        with mm:ss timer
+//   • Off-detail, idle                 → single round green Call button
+//                                        (opens dialer modal — ad-hoc Twilio)
+//   • Off-detail (or detail-less),
+//     active call                      → minimal Hangup-only pill so the rep
+//                                        can end the call from anywhere
+//
+// All actions reuse existing Twilio + schedule plumbing — no new endpoints,
+// no new state aside from the call timer + dialer (in 28-twilio.js).
+function renderMobileFAB() {
+  if (typeof isNativeWrapper !== 'function' || !isNativeWrapper()) return '';
+
+  var st = getState();
+  var hasActiveCall = !!(typeof _activeCallSidMobile !== 'undefined' && _activeCallSidMobile);
+
+  // Resolve entity context (deal or lead detail) if any.
+  var entityType = null, entityId = null, entity = null, phone = '', contactName = '';
+  if (st.dealDetailId) {
+    entity = (st.deals || []).find(function(d){ return d.id === st.dealDetailId; });
+    if (entity) {
+      entityType = 'deal'; entityId = entity.id;
+      var c = entity.cid ? (st.contacts || []).find(function(x){ return x.id === entity.cid; }) : null;
+      phone = (c && c.phone) || entity.phone || '';
+      contactName = c ? ((c.fn || '') + ' ' + (c.ln || '')).trim() : (entity.title || '');
+    }
+  } else if (st.leadDetailId) {
+    entity = (st.leads || []).find(function(l){ return l.id === st.leadDetailId; });
+    if (entity) {
+      entityType = 'lead'; entityId = entity.id;
+      phone = entity.phone || '';
+      contactName = ((entity.fn || '') + ' ' + (entity.ln || '')).trim();
+    }
+  }
+
+  var bottomGap = (typeof BOTTOMNAV_HEIGHT === 'number' ? BOTTOMNAV_HEIGHT : 56) + 12;
+  var idEsc = entityId ? String(entityId).replace(/'/g, "\\'") : '';
+  var nameEsc = String(contactName || '').replace(/'/g, "\\'");
+  var phoneEsc = String(phone || '').replace(/'/g, "\\'");
+  var safeContactForActive = String(_activeCallContactMobile || contactName || 'customer').replace(/</g, '&lt;');
+
+  // Per-button styling helpers.
+  var btn = 'width:48px;height:48px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;border:none;cursor:pointer;font-size:20px;text-decoration:none;flex-shrink:0;color:#fff;font-family:inherit';
+  var pillBase = 'position:fixed;left:50%;transform:translateX(-50%);bottom:' + bottomGap + 'px;z-index:50;display:inline-flex;align-items:center;gap:8px;padding:6px;background:#0a0a0a;border-radius:32px;box-shadow:0 6px 20px rgba(0,0,0,.35)';
+
+  // Hangup-only pill — off-detail (or detail-less) during an active call.
+  // Compact label + red button so it doesn't intrude on whatever else
+  // is showing on the list/screen.
+  if (!entity && hasActiveCall) {
+    return '<div style="' + pillBase + ';padding:8px 8px 8px 14px">' +
+      '<div style="color:#fff;display:flex;flex-direction:column;align-items:flex-start;line-height:1.1;margin-right:4px">' +
+        '<span style="font-size:10px;font-weight:700;opacity:.85">On call · ' + safeContactForActive + '</span>' +
+        '<span id="mobFABCallTimer" style="font-size:13px;font-weight:800;font-family:Syne,sans-serif">' + (typeof _renderActiveCallElapsed === 'function' ? _renderActiveCallElapsed() : '00:00') + '</span>' +
+      '</div>' +
+      '<button onclick="hangUpActiveCallMobile()" title="End call" style="' + btn + ';background:#dc2626" aria-label="End call">📵</button>' +
+    '</div>';
+  }
+
+  // Off-detail, idle — full 3-button pill mirroring the on-detail shape:
+  //   • + (red)       → Contacts page (so the rep can pick someone to act on)
+  //   • Phone (green) → number-pad dialer modal
+  //   • Envelope (blue) → same dialer modal (its bottom row has both Call and
+  //     SMS actions; the rep types a number and picks which one to fire)
+  if (!entity) {
+    var contactsBtn = '<button onclick="setState({page:\'contacts\',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null})" title="Contacts" aria-label="Open contacts" style="' + btn + ';background:#c41230">+</button>';
+    var dialBtn     = '<button onclick="openMobileDialer()" title="Dial" aria-label="Dial a number" style="' + btn + ';background:#22c55e">📞</button>';
+    var smsBtnOff   = '<button onclick="openMobileDialer()" title="SMS" aria-label="Send SMS" style="' + btn + ';background:#3b82f6">✉</button>';
+    return '<div style="' + pillBase + '">' + contactsBtn + dialBtn + smsBtnOff + '</div>';
+  }
+
+  // Full pill — Schedule / Call·Hangup / SMS.
+  var scheduleBtn = '<button onclick="openMobileSchedule(\'' + idEsc + '\',\'' + entityType + '\')" title="Schedule" style="' + btn + ';background:#c41230" aria-label="Schedule next activity">+</button>';
+
+  var callBtn;
+  if (hasActiveCall) {
+    // Red hangup with timer rendered to the right of the pill so it doesn't
+    // crush the icon. Updates via _tickActiveCallTimer textContent.
+    callBtn = '<button onclick="hangUpActiveCallMobile()" title="End call" style="' + btn + ';background:#dc2626;position:relative" aria-label="End call">' +
+      '<span style="font-size:20px;line-height:1">📵</span>' +
+      '<span id="mobFABCallTimer" style="position:absolute;top:-6px;right:-30px;background:#0a0a0a;color:#fff;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:800;font-family:Syne,sans-serif;border:1px solid rgba(255,255,255,.2);white-space:nowrap">' + (typeof _renderActiveCallElapsed === 'function' ? _renderActiveCallElapsed() : '00:00') + '</span>' +
+    '</button>';
+  } else if (phone) {
+    callBtn = '<button onclick="twilioCall(\'' + phoneEsc + '\',\'' + idEsc + '\',\'' + entityType + '\',\'' + nameEsc + '\')" title="Call" style="' + btn + ';background:#22c55e" aria-label="Call">📞</button>';
+  } else {
+    // No phone on the contact — render a disabled-look button rather than
+    // hide the cell, so the pill width stays consistent across screens.
+    callBtn = '<button disabled title="No phone number" style="' + btn + ';background:#374151;opacity:.5;cursor:not-allowed" aria-label="No phone number">📞</button>';
+  }
+
+  var smsBtn;
+  if (phone) {
+    var smsHref = 'sms:' + String(phone).replace(/[^\d+]/g, '');
+    smsBtn = '<a href="' + smsHref + '" title="SMS" style="' + btn + ';background:#3b82f6" aria-label="SMS">✉</a>';
+  } else {
+    smsBtn = '<button disabled title="No phone number" style="' + btn + ';background:#374151;opacity:.5;cursor:not-allowed" aria-label="No phone number">✉</button>';
+  }
+
+  return '<div style="' + pillBase + '">' + scheduleBtn + callBtn + smsBtn + '</div>';
+}
+
 function renderTopBar(){
   const {sidebarOpen,branch,notifs}=getState();
   const native = typeof isNativeWrapper === 'function' && isNativeWrapper();

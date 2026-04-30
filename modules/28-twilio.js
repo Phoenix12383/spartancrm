@@ -157,18 +157,24 @@ var _twilioCallTimerId = null;
 // End button.
 var _activeCallSidMobile = null;
 var _activeCallContactMobile = '';
+// Timestamp when the call was placed — used by the FAB to render an mm:ss
+// timer next to the Hangup button. Persisted alongside sid+contact so a
+// wrapper restart mid-call still shows the right elapsed time.
+var _activeCallStartMs = 0;
 try {
   var _persistedCall = JSON.parse(localStorage.getItem('spartan_active_call_mobile') || 'null');
   if (_persistedCall && _persistedCall.sid) {
     _activeCallSidMobile = _persistedCall.sid;
     _activeCallContactMobile = _persistedCall.contact || '';
+    _activeCallStartMs = Number(_persistedCall.startMs || _persistedCall.ts || 0) || 0;
   }
 } catch(e) {}
 function _saveActiveCallMobile() {
   try {
     if (_activeCallSidMobile) {
       localStorage.setItem('spartan_active_call_mobile', JSON.stringify({
-        sid: _activeCallSidMobile, contact: _activeCallContactMobile, ts: Date.now(),
+        sid: _activeCallSidMobile, contact: _activeCallContactMobile,
+        startMs: _activeCallStartMs, ts: Date.now(),
       }));
     } else {
       localStorage.removeItem('spartan_active_call_mobile');
@@ -176,37 +182,57 @@ function _saveActiveCallMobile() {
   } catch(e) {}
 }
 
-// Floating banner pinned above the bottom nav while a call is active. Two
-// buttons: ✕ to dismiss locally (use when the call already ended naturally
-// and you just want the banner gone) and End (red) to actually terminate
-// the call via /api/twilio/hangup.
-function renderActiveCallBannerMobile() {
-  if (!_activeCallSidMobile) return '';
-  if (typeof isNativeWrapper !== 'function' || !isNativeWrapper()) return '';
-  var safeName = String(_activeCallContactMobile || 'customer').replace(/</g, '&lt;');
-  var bottomGap = (typeof BOTTOMNAV_HEIGHT === 'number' ? BOTTOMNAV_HEIGHT : 56) + 12;
-  return '<div style="position:fixed;left:12px;right:12px;bottom:' + bottomGap + 'px;background:#0a0a0a;color:#fff;border-radius:12px;padding:10px 12px;display:flex;align-items:center;gap:10px;box-shadow:0 6px 20px rgba(0,0,0,.35);z-index:150">' +
-    '<span style="font-size:20px">📞</span>' +
-    '<div style="flex:1;min-width:0">' +
-      '<div style="font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">On call with ' + safeName + '</div>' +
-      '<div style="font-size:10px;opacity:.6">Twilio bridge — recording</div>' +
-    '</div>' +
-    '<button onclick="dismissActiveCallBannerMobile()" title="Hide" style="background:none;border:none;color:rgba(255,255,255,.5);font-size:16px;cursor:pointer;padding:4px 6px;font-family:inherit;line-height:1;flex-shrink:0">✕</button>' +
-    '<button onclick="hangUpActiveCallMobile()" style="background:#dc2626;border:none;color:#fff;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;flex-shrink:0">End</button>' +
-  '</div>';
+// Active-call timer tick. Once a second, find #mobFABCallTimer in the DOM
+// and update its textContent. Lighter than re-rendering the page — won't
+// disrupt focus on any active input. Started when a call is placed,
+// stopped when it ends or is dismissed.
+var _activeCallTickInterval = null;
+function _renderActiveCallElapsed() {
+  if (!_activeCallStartMs) return '00:00';
+  var sec = Math.max(0, Math.floor((Date.now() - _activeCallStartMs) / 1000));
+  var mm = Math.floor(sec / 60);
+  var ss = sec % 60;
+  return String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
 }
+function _tickActiveCallTimer() {
+  if (!_activeCallSidMobile) { _stopActiveCallTick(); return; }
+  var el = document.getElementById('mobFABCallTimer');
+  if (el) el.textContent = _renderActiveCallElapsed();
+}
+function _startActiveCallTick() {
+  if (_activeCallTickInterval) return;
+  _activeCallTickInterval = setInterval(_tickActiveCallTimer, 1000);
+}
+function _stopActiveCallTick() {
+  if (_activeCallTickInterval) {
+    clearInterval(_activeCallTickInterval);
+    _activeCallTickInterval = null;
+  }
+}
+// Restart the tick on script load if there's a persisted active call (the
+// rep backgrounded the wrapper mid-call and came back). The DOM check
+// inside _tickActiveCallTimer is a no-op until renderPage paints the FAB.
+if (_activeCallSidMobile) { try { _startActiveCallTick(); } catch(e){} }
+
+// renderActiveCallBannerMobile — kept as a no-op stub for backward compat
+// with any cached/stale callers. The Pipedrive-replacement FAB
+// (renderMobileFAB in 07-shared-ui.js) now owns the active-call surface
+// and shows a timer + Hangup button itself.
+function renderActiveCallBannerMobile() { return ''; }
 
 // "Just hide" — for when the rep knows the call already ended (their phone
-// hung up) and just wants the banner gone without calling /hangup.
+// hung up) and just wants the FAB to clear without calling /hangup.
 function dismissActiveCallBannerMobile() {
   _activeCallSidMobile = null;
   _activeCallContactMobile = '';
+  _activeCallStartMs = 0;
   _saveActiveCallMobile();
+  _stopActiveCallTick();
   if (typeof renderPage === 'function') renderPage();
 }
 
 // "End the call" — calls /api/twilio/hangup which forces both legs down at
-// the Twilio gateway. Optimistically clears local state so the banner
+// the Twilio gateway. Optimistically clears local state so the FAB
 // disappears before the network round-trip; the existing hangup endpoint
 // is idempotent so no harm if the call already ended on its own.
 async function hangUpActiveCallMobile() {
@@ -220,7 +246,9 @@ async function hangUpActiveCallMobile() {
   }
   _activeCallSidMobile = null;
   _activeCallContactMobile = '';
+  _activeCallStartMs = 0;
   _saveActiveCallMobile();
+  _stopActiveCallTick();
   if (typeof renderPage === 'function') renderPage();
   try {
     var resp = await fetch('https://spaartan.tech/api/twilio/hangup?sid=' + encodeURIComponent(sid), {
@@ -278,7 +306,9 @@ async function dialViaTwilioBridge(phone, entityId, entityType, contactName) {
       if (data && data.callSid) {
         _activeCallSidMobile = data.callSid;
         _activeCallContactMobile = contactName || '';
+        _activeCallStartMs = Date.now();
         _saveActiveCallMobile();
+        _startActiveCallTick();
       }
       if (typeof addToast === 'function') addToast('Your phone will ring shortly ✓', 'success');
       if (typeof renderPage === 'function') renderPage();
@@ -1324,6 +1354,156 @@ function renderPhonePage() {
             : voicemails.map(function(c){ return renderCallHistoryRow(c, { voicemail: true }); }).join(''))
     +     '</div>'
 
+    +   '</div>'
+    + '</div>';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MOBILE DIALER (Pipedrive-replacement)
+// ─────────────────────────────────────────────────────────────────────────────
+// Number-pad modal triggered from the mobile FAB when no deal/lead is in
+// focus. Lets the rep place an ad-hoc Twilio call to any number — same
+// PSTN-bridge plumbing as deal/lead calls, just with null entityId/entityType
+// (which the /api/twilio/dial endpoint already handles — see api/twilio/dial.js
+// lines 66 and 122). The call still records and still creates a call_logs
+// row; it just isn't attached to a CRM entity.
+//
+// Lives in module state so a renderPage triggered by realtime echo doesn't
+// drop the in-progress digits — same pattern as _pendingMobileNote /
+// _pendingMobileSchedule.
+
+var _pendingMobileDialer = null;   // { digits } | null
+
+function openMobileDialer() {
+  _pendingMobileDialer = { digits: '' };
+  if (typeof renderPage === 'function') renderPage();
+}
+function cancelMobileDialer() {
+  _pendingMobileDialer = null;
+  if (typeof renderPage === 'function') renderPage();
+}
+function mobileDialerPress(d) {
+  if (!_pendingMobileDialer) return;
+  // Cap at 16 chars so the display never overflows on narrow screens.
+  if (_pendingMobileDialer.digits.length >= 16) return;
+  _pendingMobileDialer.digits += String(d);
+  if (typeof renderPage === 'function') renderPage();
+}
+function mobileDialerBackspace() {
+  if (!_pendingMobileDialer) return;
+  _pendingMobileDialer.digits = _pendingMobileDialer.digits.slice(0, -1);
+  if (typeof renderPage === 'function') renderPage();
+}
+function mobileDialerCall() {
+  if (!_pendingMobileDialer) return;
+  var digits = (_pendingMobileDialer.digits || '').trim();
+  if (!digits) {
+    if (typeof addToast === 'function') addToast('Enter a number first', 'warning');
+    return;
+  }
+  // Format the digits for display in the active-call FAB. AU shapes:
+  //   04XX XXX XXX, 0X XXXX XXXX, +614XX XXX XXX. Falls through to digits
+  //   as-typed if it doesn't match a known shape.
+  var formatted = _formatPhoneForDisplay(digits);
+  // Close the dialer FIRST — dialViaTwilioBridge will renderPage and we
+  // want the active-call FAB to appear cleanly.
+  _pendingMobileDialer = null;
+  if (typeof dialViaTwilioBridge === 'function') {
+    // Pass the formatted display string as contactName so the active-call
+    // FAB shows "On call · 0412 345 678" rather than "On call · customer".
+    dialViaTwilioBridge(digits, null, null, formatted);
+  } else if (typeof addToast === 'function') {
+    addToast('Calling not available', 'error');
+  }
+}
+
+// mobileDialerSms — close the dialer and hand off to the device's native SMS
+// composer with the typed digits prefilled. No Twilio involvement: the user's
+// phone sends the SMS the same way it would from the OS dialer's "send
+// message" action. Future Phase 13 (SMS via Twilio API) will replace this
+// with an in-app composer; the FAB entry point doesn't change.
+function mobileDialerSms() {
+  if (!_pendingMobileDialer) return;
+  var digits = (_pendingMobileDialer.digits || '').trim();
+  if (!digits) {
+    if (typeof addToast === 'function') addToast('Enter a number first', 'warning');
+    return;
+  }
+  var smsHref = 'sms:' + digits.replace(/[^\d+]/g, '');
+  _pendingMobileDialer = null;
+  if (typeof renderPage === 'function') renderPage();
+  // window.location is the most reliable way to fire sms: in a Capacitor
+  // WebView — <a href> needs a real click, and programmatic clicks on a
+  // dynamically-created anchor get blocked on some Android builds.
+  try { window.location.href = smsHref; } catch (e) {
+    if (typeof addToast === 'function') addToast('Could not open SMS composer', 'error');
+  }
+}
+function _formatPhoneForDisplay(raw) {
+  if (!raw) return '';
+  var s = String(raw).replace(/\s+/g, '');
+  // +61 4XX XXX XXX (AU mobile in international shape)
+  if (/^\+614\d{8}$/.test(s)) return '+61 ' + s.slice(3, 4) + s.slice(4, 7) + ' ' + s.slice(7, 10) + ' ' + s.slice(10);
+  // 04XX XXX XXX (AU mobile)
+  if (/^04\d{8}$/.test(s))    return s.slice(0, 4) + ' ' + s.slice(4, 7) + ' ' + s.slice(7);
+  // 0X XXXX XXXX (AU landline)
+  if (/^0\d{9}$/.test(s) && !/^04/.test(s)) return s.slice(0, 2) + ' ' + s.slice(2, 6) + ' ' + s.slice(6);
+  return s;
+}
+
+function renderMobileDialerModal() {
+  if (!_pendingMobileDialer) return '';
+  if (typeof isNativeWrapper !== 'function' || !isNativeWrapper()) return '';
+  var digits = _pendingMobileDialer.digits || '';
+  var displayText = digits ? _formatPhoneForDisplay(digits) : 'Enter number';
+  var displayCol = digits ? '#0a0a0a' : '#9ca3af';
+
+  // Number pad layout — 3 columns, 4 rows. Bottom row: + / 0 / ⌫ so the
+  // backspace lives where the right thumb naturally falls. Each cell is
+  // 64px tall — well past the HIG/Material 44px minimum.
+  var rows = [
+    ['1', '2', '3'],
+    ['4', '5', '6'],
+    ['7', '8', '9'],
+    ['+', '0', '⌫'],
+  ];
+  var cellBase = 'height:56px;border:none;border-radius:14px;background:#f3f4f6;font-size:22px;font-weight:600;color:#0a0a0a;cursor:pointer;font-family:Syne,sans-serif;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:rgba(196,18,48,.2)';
+
+  var pad = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">' +
+    rows.map(function(row) {
+      return row.map(function(d) {
+        if (d === '⌫') {
+          return '<button onclick="mobileDialerBackspace()" style="' + cellBase + ';font-size:18px;color:#6b7280" aria-label="Backspace">⌫</button>';
+        }
+        return '<button onclick="mobileDialerPress(\'' + d + '\')" style="' + cellBase + '" aria-label="' + d + '">' + d + '</button>';
+      }).join('');
+    }).join('') +
+  '</div>';
+
+  // Disable the action buttons when no digits — visually muted, cursor
+  // blocked, onclick a no-op. Both the green CALL and blue SMS share the
+  // same disabled state (you need a number for either).
+  var actionDisabled = digits.length === 0;
+  var actionBase = 'flex:1;padding:14px;border-radius:12px;border:none;color:#fff;font-size:14px;font-weight:800;cursor:' + (actionDisabled ? 'not-allowed' : 'pointer') + ';font-family:inherit;display:flex;align-items:center;justify-content:center;gap:6px;letter-spacing:.04em';
+  var callBg = actionDisabled ? '#9ca3af' : '#22c55e';
+  var smsBg  = actionDisabled ? '#9ca3af' : '#3b82f6';
+
+  return ''
+    + '<div class="modal-bg" onclick="if(event.target===this)cancelMobileDialer()" style="z-index:300;align-items:flex-end">'
+    +   '<div class="modal" style="max-width:480px;width:100%;border-radius:18px 18px 0 0;margin:0">'
+    +     '<div class="modal-header" style="padding:14px 18px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
+    +       '<h3 style="margin:0;font-size:15px;font-weight:700;font-family:Syne,sans-serif">Dial a number</h3>'
+    +       '<button onclick="cancelMobileDialer()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1;padding:0">×</button>'
+    +     '</div>'
+    +     '<div class="modal-body" style="padding:14px 18px;display:flex;flex-direction:column;gap:14px">'
+    +       '<div style="text-align:center;padding:10px;background:#f9fafb;border-radius:12px;font-size:24px;font-weight:700;color:' + displayCol + ';font-family:Syne,sans-serif;letter-spacing:.02em;min-height:36px;line-height:36px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + displayText + '</div>'
+    +       pad
+    +     '</div>'
+    +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px;flex-wrap:wrap">'
+    +       '<button onclick="cancelMobileDialer()" style="padding:14px 16px;border-radius:12px;border:1px solid #e5e7eb;background:#fff;font-size:14px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit">Cancel</button>'
+    +       '<button onclick="' + (actionDisabled ? '' : 'mobileDialerSms()')  + '" ' + (actionDisabled ? 'disabled' : '') + ' style="' + actionBase + ';background:' + smsBg  + '" aria-label="Send SMS"><span style="font-size:16px">✉</span><span>SMS</span></button>'
+    +       '<button onclick="' + (actionDisabled ? '' : 'mobileDialerCall()') + '" ' + (actionDisabled ? 'disabled' : '') + ' style="' + actionBase + ';background:' + callBg + '" aria-label="Call"><span style="font-size:16px">📞</span><span>CALL</span></button>'
+    +     '</div>'
     +   '</div>'
     + '</div>';
 }
