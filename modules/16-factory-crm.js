@@ -894,8 +894,8 @@ function renderFinalSignOff() {
         +'<td class="td"><span style="font-weight:700;color:'+waitCol+'">'+waitDays+'d</span></td>'
         +'<td class="td" style="text-align:center">'+frames+'</td>'
         +'<td class="td"><div style="display:flex;gap:4px;justify-content:flex-end">'
-        +'<button onclick="openCadDesigner(\'job\',\''+j.id+'\',\'survey\')" class="btn-w" style="font-size:10px;padding:3px 8px">\ud83d\udc41 View</button>'
-        +'<button onclick="markFinalDesignSigned(\''+j.id+'\')" class="btn-r" style="font-size:10px;padding:3px 10px">\u270d\ufe0f Sign Off</button>'
+        +'<button onclick="openCadDesigner(\'job\',\''+j.id+'\',\'survey\')" class="btn-w" style="font-size:10px;padding:3px 8px">\ud83d\udc41 View CAD</button>'
+        +'<button onclick="setState({page:\'jobs\',jobDetailId:\''+j.id+'\',jobDetailTab:\'final_design\'})" class="btn-r" style="font-size:10px;padding:3px 10px">\u2192 Open Job</button>'
         +'</div></td></tr>';
     });
     h += '</tbody></table>';
