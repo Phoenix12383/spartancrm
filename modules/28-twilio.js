@@ -157,18 +157,24 @@ var _twilioCallTimerId = null;
 // End button.
 var _activeCallSidMobile = null;
 var _activeCallContactMobile = '';
+// Timestamp when the call was placed — used by the FAB to render an mm:ss
+// timer next to the Hangup button. Persisted alongside sid+contact so a
+// wrapper restart mid-call still shows the right elapsed time.
+var _activeCallStartMs = 0;
 try {
   var _persistedCall = JSON.parse(localStorage.getItem('spartan_active_call_mobile') || 'null');
   if (_persistedCall && _persistedCall.sid) {
     _activeCallSidMobile = _persistedCall.sid;
     _activeCallContactMobile = _persistedCall.contact || '';
+    _activeCallStartMs = Number(_persistedCall.startMs || _persistedCall.ts || 0) || 0;
   }
 } catch(e) {}
 function _saveActiveCallMobile() {
   try {
     if (_activeCallSidMobile) {
       localStorage.setItem('spartan_active_call_mobile', JSON.stringify({
-        sid: _activeCallSidMobile, contact: _activeCallContactMobile, ts: Date.now(),
+        sid: _activeCallSidMobile, contact: _activeCallContactMobile,
+        startMs: _activeCallStartMs, ts: Date.now(),
       }));
     } else {
       localStorage.removeItem('spartan_active_call_mobile');
@@ -176,37 +182,57 @@ function _saveActiveCallMobile() {
   } catch(e) {}
 }
 
-// Floating banner pinned above the bottom nav while a call is active. Two
-// buttons: ✕ to dismiss locally (use when the call already ended naturally
-// and you just want the banner gone) and End (red) to actually terminate
-// the call via /api/twilio/hangup.
-function renderActiveCallBannerMobile() {
-  if (!_activeCallSidMobile) return '';
-  if (typeof isNativeWrapper !== 'function' || !isNativeWrapper()) return '';
-  var safeName = String(_activeCallContactMobile || 'customer').replace(/</g, '&lt;');
-  var bottomGap = (typeof BOTTOMNAV_HEIGHT === 'number' ? BOTTOMNAV_HEIGHT : 56) + 12;
-  return '<div style="position:fixed;left:12px;right:12px;bottom:' + bottomGap + 'px;background:#0a0a0a;color:#fff;border-radius:12px;padding:10px 12px;display:flex;align-items:center;gap:10px;box-shadow:0 6px 20px rgba(0,0,0,.35);z-index:150">' +
-    '<span style="font-size:20px">📞</span>' +
-    '<div style="flex:1;min-width:0">' +
-      '<div style="font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">On call with ' + safeName + '</div>' +
-      '<div style="font-size:10px;opacity:.6">Twilio bridge — recording</div>' +
-    '</div>' +
-    '<button onclick="dismissActiveCallBannerMobile()" title="Hide" style="background:none;border:none;color:rgba(255,255,255,.5);font-size:16px;cursor:pointer;padding:4px 6px;font-family:inherit;line-height:1;flex-shrink:0">✕</button>' +
-    '<button onclick="hangUpActiveCallMobile()" style="background:#dc2626;border:none;color:#fff;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;flex-shrink:0">End</button>' +
-  '</div>';
+// Active-call timer tick. Once a second, find #mobFABCallTimer in the DOM
+// and update its textContent. Lighter than re-rendering the page — won't
+// disrupt focus on any active input. Started when a call is placed,
+// stopped when it ends or is dismissed.
+var _activeCallTickInterval = null;
+function _renderActiveCallElapsed() {
+  if (!_activeCallStartMs) return '00:00';
+  var sec = Math.max(0, Math.floor((Date.now() - _activeCallStartMs) / 1000));
+  var mm = Math.floor(sec / 60);
+  var ss = sec % 60;
+  return String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
 }
+function _tickActiveCallTimer() {
+  if (!_activeCallSidMobile) { _stopActiveCallTick(); return; }
+  var el = document.getElementById('mobFABCallTimer');
+  if (el) el.textContent = _renderActiveCallElapsed();
+}
+function _startActiveCallTick() {
+  if (_activeCallTickInterval) return;
+  _activeCallTickInterval = setInterval(_tickActiveCallTimer, 1000);
+}
+function _stopActiveCallTick() {
+  if (_activeCallTickInterval) {
+    clearInterval(_activeCallTickInterval);
+    _activeCallTickInterval = null;
+  }
+}
+// Restart the tick on script load if there's a persisted active call (the
+// rep backgrounded the wrapper mid-call and came back). The DOM check
+// inside _tickActiveCallTimer is a no-op until renderPage paints the FAB.
+if (_activeCallSidMobile) { try { _startActiveCallTick(); } catch(e){} }
+
+// renderActiveCallBannerMobile — kept as a no-op stub for backward compat
+// with any cached/stale callers. The Pipedrive-replacement FAB
+// (renderMobileFAB in 07-shared-ui.js) now owns the active-call surface
+// and shows a timer + Hangup button itself.
+function renderActiveCallBannerMobile() { return ''; }
 
 // "Just hide" — for when the rep knows the call already ended (their phone
-// hung up) and just wants the banner gone without calling /hangup.
+// hung up) and just wants the FAB to clear without calling /hangup.
 function dismissActiveCallBannerMobile() {
   _activeCallSidMobile = null;
   _activeCallContactMobile = '';
+  _activeCallStartMs = 0;
   _saveActiveCallMobile();
+  _stopActiveCallTick();
   if (typeof renderPage === 'function') renderPage();
 }
 
 // "End the call" — calls /api/twilio/hangup which forces both legs down at
-// the Twilio gateway. Optimistically clears local state so the banner
+// the Twilio gateway. Optimistically clears local state so the FAB
 // disappears before the network round-trip; the existing hangup endpoint
 // is idempotent so no harm if the call already ended on its own.
 async function hangUpActiveCallMobile() {
@@ -220,7 +246,9 @@ async function hangUpActiveCallMobile() {
   }
   _activeCallSidMobile = null;
   _activeCallContactMobile = '';
+  _activeCallStartMs = 0;
   _saveActiveCallMobile();
+  _stopActiveCallTick();
   if (typeof renderPage === 'function') renderPage();
   try {
     var resp = await fetch('https://spaartan.tech/api/twilio/hangup?sid=' + encodeURIComponent(sid), {
@@ -278,7 +306,9 @@ async function dialViaTwilioBridge(phone, entityId, entityType, contactName) {
       if (data && data.callSid) {
         _activeCallSidMobile = data.callSid;
         _activeCallContactMobile = contactName || '';
+        _activeCallStartMs = Date.now();
         _saveActiveCallMobile();
+        _startActiveCallTick();
       }
       if (typeof addToast === 'function') addToast('Your phone will ring shortly ✓', 'success');
       if (typeof renderPage === 'function') renderPage();

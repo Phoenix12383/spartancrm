@@ -152,6 +152,15 @@ function renderPage(){
   const _native = typeof isNativeWrapper === 'function' && isNativeWrapper();
   const offset = _native ? 0 : (sidebarOpen?220:64);
   const _mainPad = _native ? 12 : 24;
+  // Pipedrive-replacement: when the mobile FAB is rendering on a detail
+  // screen (or during an active call) we need extra bottom padding so the
+  // last row of page content doesn't sit behind the floating pill. 60px
+  // FAB height + 12px gap + 12px breathing room = ~84px.
+  const _fabShowing = _native && (
+    (typeof _activeCallSidMobile !== 'undefined' && _activeCallSidMobile) ||
+    !!dealDetailId || !!leadDetailId
+  );
+  const _fabPad = _fabShowing ? 84 : 0;
   const pageRenderers={
     dashboard:renderDashboard,contacts:renderContacts,leads:renderLeads,deals:renderDeals,won:renderWonPage,jobs:renderJobsPage,jobdashboard:renderJobDashboard,weeklyrev:renderWeeklyRevenue,finalsignoff:renderFinalSignOff,schedule:renderInstallSchedule,capacity:renderCapacityPlanning,capplan:(typeof renderCapacityPlanner==='function'?renderCapacityPlanner:renderCapacityPlanning),fleet:(typeof renderFleetPage==='function'?renderFleetPage:renderInstallSchedule),cmmap:renderCMMapPage,jobsettings:renderJobSettings,factorydash:renderFactoryDash,prodqueue:renderProdQueue,prodboard:renderProdBoard,factorybom:renderFactoryBOM,factorycap:renderFactoryCapacity,factorydispatch:renderFactoryDispatch,accdash:renderAccDash,accoutstanding:renderAccOutstanding,acccashflow:renderAccCashFlow,accrecon:renderAccRecon,accbills:renderAccBills,accweekly:renderAccWeekly,accbranch:renderAccBranch,accxero:renderAccXero,servicelist:renderServiceList,servicemap:renderServiceMap,svcschedule:renderSvcSchedule,calendar:renderCalendarPage,invoicing:renderInvoicingPage,commission:renderCommissionPage,
     email:renderEmailPage,phone:renderPhonePage,reports:renderReports,map:renderMapPage,settings:renderSettings,profile:renderProfilePage,
@@ -167,7 +176,7 @@ function renderPage(){
     ${renderModuleBar()}
     ${renderSidebar()}
     ${renderTopBar()}
-    <main style="margin-left:${offset}px;margin-top:${TOPBAR_HEIGHT + MODULE_BAR_HEIGHT}px;padding:${_mainPad}px;padding-bottom:${_mainPad + BOTTOMNAV_HEIGHT}px;min-height:calc(100vh - ${TOPBAR_HEIGHT + MODULE_BAR_HEIGHT}px);transition:margin-left .2s;background:${_native ? '#f4f5f7' : '#f2f2f2'}">
+    <main style="margin-left:${offset}px;margin-top:${TOPBAR_HEIGHT + MODULE_BAR_HEIGHT}px;padding:${_mainPad}px;padding-bottom:${_mainPad + BOTTOMNAV_HEIGHT + _fabPad}px;min-height:calc(100vh - ${TOPBAR_HEIGHT + MODULE_BAR_HEIGHT}px);transition:margin-left .2s;background:${_native ? '#f4f5f7' : '#f2f2f2'}">
       <div style="${effectivePage==='email' ? 'width:100%' : 'max-width:1400px;margin:0 auto'}">
         ${fn()}
       </div>
@@ -188,7 +197,7 @@ function renderPage(){
     ${typeof _pendingMobileNote !== 'undefined' && _pendingMobileNote ? renderMobileNoteModal() : ''}
     ${typeof _pendingMobileEmail !== 'undefined' && _pendingMobileEmail ? renderMobileEmailModal() : ''}
     ${typeof _pendingMobileSchedule !== 'undefined' && _pendingMobileSchedule ? renderMobileScheduleModal() : ''}
-    ${typeof renderActiveCallBannerMobile === 'function' ? renderActiveCallBannerMobile() : ''}
+    ${typeof renderMobileFAB === 'function' ? renderMobileFAB() : ''}
   `;
   _restoreFocus(_focusSnap);
   // Restore the Gantt's horizontal scroll position after innerHTML rebuilds

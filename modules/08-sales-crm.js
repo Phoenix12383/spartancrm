@@ -3517,17 +3517,16 @@ function _renderEntityDetailMobile(opts) {
   // call/sms). Photo always renders since every entity supports photos.
   // CALL goes through the Twilio PSTN-bridge (twilioCall → dialViaTwilioBridge
   // on native) so we get recording + call_logs + activity timeline.
-  var actionBar = '';
-  var cells = [];
-  if (phone) cells.push('<button onclick="twilioCall(\'' + _esc(phone) + '\',\'' + _esc(entity.id) + '\',\'' + entityType + '\',\'' + _esc(contactName) + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></button>');
-  if (phone) cells.push('<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#3b82f6;text-decoration:none"><span style="font-size:18px">💬</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">SMS</span></a>');
-  if (email) cells.push('<button onclick="openMobileEmail(\'' + _esc(entity.id) + '\',\'' + entityType + '\',\'' + _esc(email) + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></button>');
-  cells.push('<button onclick="takeMobilePhoto(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#0a0a0a;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">📸</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">PHOTO</span></button>');
-  if (cells.length) {
-    var sepStyle = ';border-right:1px solid #f3f4f6';
-    cells = cells.map(function(c, i){ return c.replace(';color:', (i < cells.length - 1 ? sepStyle : '') + ';color:'); });
-    actionBar = '<div style="margin-top:-10px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);display:grid;grid-template-columns:repeat(' + cells.length + ',1fr);margin-bottom:14px">' + cells.join('') + '</div>';
-  }
+  // Top action bar — Call/SMS/Email moved to the floating FAB above the
+  // bottom nav (renderMobileFAB in 07-shared-ui.js, Pipedrive-replacement).
+  // Photo stays here because it doesn't fit on the FAB and isn't a contact
+  // action — it's an on-site capture that belongs near the deal context.
+  var actionBar = '<div style="margin-top:-10px;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);display:grid;grid-template-columns:1fr;margin-bottom:14px">' +
+    '<button onclick="takeMobilePhoto(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="display:flex;flex-direction:row;align-items:center;justify-content:center;padding:14px 4px;gap:8px;color:#0a0a0a;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit">' +
+      '<span style="font-size:18px">📸</span>' +
+      '<span style="font-size:11px;font-weight:700;letter-spacing:.04em">TAKE PHOTO</span>' +
+    '</button>' +
+  '</div>';
 
   // Files section — reads from the same getEntityFiles() store the desktop
   // Files tab uses. Image-extension entries render as 84px thumbnails (tap
