@@ -245,6 +245,44 @@ function dbToInstaller(r) {
     tools: r.tools || [], licenses: r.licenses || []
   };
 }
+// ── Vehicles (Jobs CRM fleet) — mirrors saveVehicles() in 17-install-schedule.js
+function vehicleToDb(v) {
+  var i = v.internal || {};
+  return {
+    id: v.id,
+    name: v.name || '',
+    rego: v.rego || null,
+    type: v.type || 'van',
+    size: v.size || 'medium',
+    max_frames: v.maxFrames != null ? +v.maxFrames : 8,
+    max_weight_kg: v.maxWeightKg != null ? +v.maxWeightKg : 600,
+    internal_length_mm: +i.lengthMm || 0,
+    internal_width_mm: +i.widthMm || 0,
+    internal_height_mm: +i.heightMm || 0,
+    assigned_to: v.assignedTo || null,
+    notes: v.notes || null,
+    active: v.active !== false
+  };
+}
+function dbToVehicle(r) {
+  return {
+    id: r.id,
+    name: r.name || '',
+    rego: r.rego || '',
+    type: r.type || 'van',
+    size: r.size || 'medium',
+    maxFrames: r.max_frames != null ? Number(r.max_frames) : 8,
+    maxWeightKg: r.max_weight_kg != null ? Number(r.max_weight_kg) : 600,
+    internal: {
+      lengthMm: r.internal_length_mm || 0,
+      widthMm: r.internal_width_mm || 0,
+      heightMm: r.internal_height_mm || 0
+    },
+    assignedTo: r.assigned_to || '',
+    notes: r.notes || '',
+    active: r.active !== false
+  };
+}
 function emailToDb(e) {
   return {id:e.id, to_addr:e.to||'', to_name:e.toName||'', subject:e.subject||'',
     body:e.body||'', date:e.date||'', time:e.time||'', by_user:e.by||'',
@@ -518,6 +556,7 @@ async function dbLoadAll() {
       _sb.from('phone_settings').select('*').eq('id', 'singleton').maybeSingle(),                          // index 17
       _sb.from('installers').select('*'),                                                                  // index 18
       _sb.from('entity_files').select('*'),                                                                // index 19
+      _sb.from('vehicles').select('*'),                                                                    // index 20
     ]);
     var errors = results.filter(function(r){ return r.error; });
     if (errors.length > 0) { console.warn('[Spartan] DB load errors:', errors.map(function(e){return e.error.message;})); }
@@ -690,6 +729,16 @@ async function dbLoadAll() {
     if (installers.length > 0) {
       localStorage.setItem('spartan_installers', JSON.stringify(installers));
       setState({installers: installers}, {skipSync: true});
+    }
+    // Vehicles (Jobs CRM fleet). Pulled into localStorage so the Settings tab
+    // and the Fleet & Delivery / Smart Planner views see the same list across
+    // browsers. saveVehicles() writes back via dbUpsert (17-install-schedule.js).
+    // results[20] may have .error if the migration hasn't been applied yet —
+    // that errors out benignly via the existing collector above.
+    var vehicleRows = (results[20] && results[20].data) || [];
+    if (vehicleRows.length > 0) {
+      var vehicles = vehicleRows.map(dbToVehicle);
+      localStorage.setItem('spartan_vehicles', JSON.stringify(vehicles));
     }
     // entity_files (deals/leads/contacts file uploads — written by
     // 08-sales-crm.js addEntityFile and the mobile camera capture). Mirrors
@@ -881,6 +930,7 @@ function setupRealtime() {
     .on('postgres_changes', {event:'*', schema:'public', table:'sms_templates'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'phone_settings'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'installers'}, function(){ dbLoadAll(); })
+    .on('postgres_changes', {event:'*', schema:'public', table:'vehicles'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'activities'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'entity_files'}, function(){ dbLoadAll(); })
     .on('postgres_changes', {event:'*', schema:'public', table:'email_sent'}, function(){ dbLoadAll(); })
