@@ -150,6 +150,96 @@ var _twilioCallTimerId = null;
 // Place an outbound call. `phone` should be in any AU format (we trust Twilio
 // to handle the dialing); entityId/entityType attach the call to a specific
 // CRM record so the activity timeline gets the right entry.
+// ── Mobile wrapper: active-call state ────────────────────────────────────────
+// Tracked in module scope (not getState().activeCall — that one's for the
+// desktop WebRTC flow and reading it on native would crosstalk). Persisted
+// to localStorage so a wrapper restart mid-call still shows the banner +
+// End button.
+var _activeCallSidMobile = null;
+var _activeCallContactMobile = '';
+try {
+  var _persistedCall = JSON.parse(localStorage.getItem('spartan_active_call_mobile') || 'null');
+  if (_persistedCall && _persistedCall.sid) {
+    _activeCallSidMobile = _persistedCall.sid;
+    _activeCallContactMobile = _persistedCall.contact || '';
+  }
+} catch(e) {}
+function _saveActiveCallMobile() {
+  try {
+    if (_activeCallSidMobile) {
+      localStorage.setItem('spartan_active_call_mobile', JSON.stringify({
+        sid: _activeCallSidMobile, contact: _activeCallContactMobile, ts: Date.now(),
+      }));
+    } else {
+      localStorage.removeItem('spartan_active_call_mobile');
+    }
+  } catch(e) {}
+}
+
+// Floating banner pinned above the bottom nav while a call is active. Two
+// buttons: ✕ to dismiss locally (use when the call already ended naturally
+// and you just want the banner gone) and End (red) to actually terminate
+// the call via /api/twilio/hangup.
+function renderActiveCallBannerMobile() {
+  if (!_activeCallSidMobile) return '';
+  if (typeof isNativeWrapper !== 'function' || !isNativeWrapper()) return '';
+  var safeName = String(_activeCallContactMobile || 'customer').replace(/</g, '&lt;');
+  var bottomGap = (typeof BOTTOMNAV_HEIGHT === 'number' ? BOTTOMNAV_HEIGHT : 56) + 12;
+  return '<div style="position:fixed;left:12px;right:12px;bottom:' + bottomGap + 'px;background:#0a0a0a;color:#fff;border-radius:12px;padding:10px 12px;display:flex;align-items:center;gap:10px;box-shadow:0 6px 20px rgba(0,0,0,.35);z-index:150">' +
+    '<span style="font-size:20px">📞</span>' +
+    '<div style="flex:1;min-width:0">' +
+      '<div style="font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">On call with ' + safeName + '</div>' +
+      '<div style="font-size:10px;opacity:.6">Twilio bridge — recording</div>' +
+    '</div>' +
+    '<button onclick="dismissActiveCallBannerMobile()" title="Hide" style="background:none;border:none;color:rgba(255,255,255,.5);font-size:16px;cursor:pointer;padding:4px 6px;font-family:inherit;line-height:1;flex-shrink:0">✕</button>' +
+    '<button onclick="hangUpActiveCallMobile()" style="background:#dc2626;border:none;color:#fff;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;flex-shrink:0">End</button>' +
+  '</div>';
+}
+
+// "Just hide" — for when the rep knows the call already ended (their phone
+// hung up) and just wants the banner gone without calling /hangup.
+function dismissActiveCallBannerMobile() {
+  _activeCallSidMobile = null;
+  _activeCallContactMobile = '';
+  _saveActiveCallMobile();
+  if (typeof renderPage === 'function') renderPage();
+}
+
+// "End the call" — calls /api/twilio/hangup which forces both legs down at
+// the Twilio gateway. Optimistically clears local state so the banner
+// disappears before the network round-trip; the existing hangup endpoint
+// is idempotent so no harm if the call already ended on its own.
+async function hangUpActiveCallMobile() {
+  if (!_activeCallSidMobile) return;
+  var sid = _activeCallSidMobile;
+  var idToken = '';
+  try { idToken = localStorage.getItem('spartan_native_id_token') || ''; } catch(e){}
+  if (!idToken) {
+    if (typeof addToast === 'function') addToast('Sign in again to end calls', 'error');
+    return;
+  }
+  _activeCallSidMobile = null;
+  _activeCallContactMobile = '';
+  _saveActiveCallMobile();
+  if (typeof renderPage === 'function') renderPage();
+  try {
+    var resp = await fetch('https://spaartan.tech/api/twilio/hangup?sid=' + encodeURIComponent(sid), {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + idToken },
+    });
+    var data = {};
+    try { data = await resp.json(); } catch(e){}
+    if (resp.ok) {
+      if (typeof addToast === 'function') addToast(data && data.alreadyEnded ? 'Call already ended' : 'Call ended ✓', 'success');
+    } else {
+      var raw = (data && (data.message || data.error)) || ('HTTP ' + resp.status);
+      if (typeof addToast === 'function') addToast('End call failed: ' + raw, 'error');
+    }
+  } catch (e) {
+    if (typeof addToast === 'function') addToast('End call failed: ' + (e.message || e), 'error');
+  }
+}
+
 // ── Mobile wrapper: PSTN bridge ──────────────────────────────────────────────
 // Capacitor WebView can't reliably do WebRTC, so we route mobile calls through
 // the /api/twilio/dial endpoint. Twilio rings the rep's phone first; on
@@ -182,7 +272,16 @@ async function dialViaTwilioBridge(phone, entityId, entityType, contactName) {
     var data = {};
     try { data = await resp.json(); } catch(e){}
     if (resp.ok) {
+      // Track the call so the active-call banner shows + the End button has
+      // a SID to hang up. Persisted to localStorage in case the wrapper is
+      // backgrounded / killed mid-call.
+      if (data && data.callSid) {
+        _activeCallSidMobile = data.callSid;
+        _activeCallContactMobile = contactName || '';
+        _saveActiveCallMobile();
+      }
       if (typeof addToast === 'function') addToast('Your phone will ring shortly ✓', 'success');
+      if (typeof renderPage === 'function') renderPage();
       return;
     }
     // Translate the most common backend errors into actionable rep-friendly

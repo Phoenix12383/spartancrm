@@ -187,6 +187,7 @@ function renderPage(){
     ${typeof _variationModalForJobId !== 'undefined' && _variationModalForJobId ? renderVariationModal() : ''}
     ${typeof _pendingMobileNote !== 'undefined' && _pendingMobileNote ? renderMobileNoteModal() : ''}
     ${typeof _pendingMobileEmail !== 'undefined' && _pendingMobileEmail ? renderMobileEmailModal() : ''}
+    ${typeof renderActiveCallBannerMobile === 'function' ? renderActiveCallBannerMobile() : ''}
   `;
   _restoreFocus(_focusSnap);
   // Restore the Gantt's horizontal scroll position after innerHTML rebuilds
