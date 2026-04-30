@@ -3014,12 +3014,21 @@ function _renderEntityDetailMobile(opts) {
     valHtml = '<div style="font-size:24px;font-weight:800;margin-top:8px;font-family:Syne,sans-serif;color:#fbbf24">' + prefix + fmt$$(entity.val) + suffix + '</div>';
   }
 
+  // Display name for the Twilio prompt + tappable rows. Leads carry fn/ln
+  // on the entity itself; deals look up the linked contact, falling back to
+  // the deal title (which is usually the customer's site address).
+  var contactName = entityType === 'lead'
+    ? ((entity.fn || '') + ' ' + (entity.ln || '')).trim()
+    : (contact && ((contact.fn || '') + ' ' + (contact.ln || '')).trim()) || (entity.title || '');
+
   // Quick action bar — Call / SMS / Email / Photo. Shows whatever's available
   // (phone-less leads still get the photo button; email-less leads still get
   // call/sms). Photo always renders since every entity supports photos.
+  // CALL goes through the Twilio PSTN-bridge (twilioCall → dialViaTwilioBridge
+  // on native) so we get recording + call_logs + activity timeline.
   var actionBar = '';
   var cells = [];
-  if (phone) cells.push('<a href="tel:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></a>');
+  if (phone) cells.push('<button onclick="twilioCall(\'' + _esc(phone) + '\',\'' + _esc(entity.id) + '\',\'' + entityType + '\',\'' + _esc(contactName) + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#22c55e;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">📞</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">CALL</span></button>');
   if (phone) cells.push('<a href="sms:' + String(phone).replace(/[^\d+]/g,'') + '" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#3b82f6;text-decoration:none"><span style="font-size:18px">💬</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">SMS</span></a>');
   if (email) cells.push('<button onclick="openMobileEmail(\'' + _esc(entity.id) + '\',\'' + entityType + '\',\'' + _esc(email) + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#6366f1;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">✉</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">EMAIL</span></button>');
   cells.push('<button onclick="takeMobilePhoto(\'' + _esc(entity.id) + '\',\'' + entityType + '\')" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px 4px;gap:4px;color:#0a0a0a;text-decoration:none;border:none;background:none;cursor:pointer;font-family:inherit"><span style="font-size:18px">📸</span><span style="font-size:10px;font-weight:700;letter-spacing:.04em">PHOTO</span></button>');
@@ -3099,7 +3108,10 @@ function _renderEntityDetailMobile(opts) {
   var ownerVal = owner || (entityType === 'lead'
     ? '<span style="display:inline-block;font-size:10px;font-weight:700;padding:3px 9px;border-radius:10px;background:#fef3c7;color:#92400e;border:1px solid #fde68a">Unassigned</span>'
     : '—');
-  var phoneTap = phone ? 'tel:' + String(phone).replace(/[^\d+]/g,'') : null;
+  // Phone row tap routes through twilioCall (Twilio PSTN-bridge on native,
+  // existing WebRTC desktop flow elsewhere) — same path as the CALL button
+  // in the quick-action bar above so behaviour is consistent.
+  var phoneTap = phone ? "twilioCall('" + _esc(phone) + "','" + _esc(entity.id) + "','" + entityType + "','" + _esc(contactName) + "')" : null;
   // Email row opens the in-app composer (matches the EMAIL quick-action
   // button at the top of the page). Falls back to mailto: if openMobileEmail
   // isn't defined yet (during very early load).
