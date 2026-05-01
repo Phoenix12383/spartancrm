@@ -181,6 +181,11 @@ class ProductionStation {
 }
 
 // Default station roster, derived from Ch. 4 §2.2.
+// NOTE: v1.5 base diagram §4 specifies a 9-value generic WorkstationType enum
+// (defined in 30-factory-v1-workstations-tasks.js). The 12-station alignment
+// to the manual's specific tablet apps (PROFILE_SAW / STEEL_SAW / CNC_MILLING
+// / etc.) is deliberately deferred to Phase 2 per v1.5 §10. This roster keeps
+// the legacy 4-station compaction; expand only when Phase 2 lands.
 var FACTORY_STATIONS_FROM_MANUAL = [
   new ProductionStation({ id:'cutting',  name:'Cutting',                       statusKey:'d3_cutting',         cap:20, icon:'✂️', role:'Saw Operator' }),
   new ProductionStation({ id:'milling',  name:'Milling / Steel / Welding',     statusKey:'d4_milling_welding', cap:12, icon:'🔥', role:'Operator' }),
