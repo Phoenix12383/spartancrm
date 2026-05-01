@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Spartan CAD</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { height: 100%; width: 100%; overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/shaders/SSAOShader.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/math/SimplexNoise.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/postprocessing/SSAOPass.js"></script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/shaders/FXAAShader.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<script>
+const MODULE_FILES = [
+  'modules/cad_modules/00-react-prelude.js',
+  'modules/cad_modules/01-data-products.js',
+  'modules/cad_modules/02-frame-presets.js',
+  'modules/cad_modules/03-aluplast-profiles.js',
+  'modules/cad_modules/04-profile-catalog-helpers.js',
+  'modules/cad_modules/05-siegware-handle.js',
+  'modules/cad_modules/06-install-planning.js',
+  'modules/cad_modules/06a-hardware-glass-kits.js',
+  'modules/cad_modules/07-pricing-engine.js',
+  'modules/cad_modules/08-quote-html-generator.js',
+  'modules/cad_modules/09-check-measure-html-gen.js',
+  'modules/cad_modules/10-completion-html-gen.js',
+  'modules/cad_modules/11-crm-data-mapping.js',
+  'modules/cad_modules/12-crm-postmessage-bridge.js',
+  'modules/cad_modules/13-crm-time-helpers.js',
+  'modules/cad_modules/14-crm-supabase-sync.js',
+  'modules/cad_modules/15-check-measure-helpers.js',
+  'modules/cad_modules/16-finalisation-helpers.js',
+  'modules/cad_modules/17-pdf-quote.js',
+  'modules/cad_modules/18-pdf-photo-helpers.js',
+  'modules/cad_modules/19-pdf-check-measure.js',
+  'modules/cad_modules/20-pdf-final-design.js',
+  'modules/cad_modules/21-pdf-completion.js',
+  'modules/cad_modules/22-trim-cutlist.js',
+  'modules/cad_modules/22a-profile-cutlist.js',
+  'modules/cad_modules/23-cutlist-xlsx.js',
+  'modules/cad_modules/23a-milling-specs.js',
+  'modules/cad_modules/24-materials-textures.js',
+  'modules/cad_modules/25-geometry-helpers.js',
+  'modules/cad_modules/26-hardware-builders.js',
+  'modules/cad_modules/27-sash-colonial.js',
+  'modules/cad_modules/28-grid-layout.js',
+  'modules/cad_modules/29-fly-screen.js',
+  'modules/cad_modules/30-product-builders.js',
+  'modules/cad_modules/31-animations.js',
+  'modules/cad_modules/32-cross-section-2d.js',
+  'modules/cad_modules/33-dimension-badge.js',
+  'modules/cad_modules/34-signing-page.js',
+  'modules/cad_modules/35-finalise-modal.js',
+  'modules/cad_modules/36-project-info-modal.js',
+  'modules/cad_modules/37-dxf-parser.js',
+  'modules/cad_modules/38-profile-manager.js',
+  'modules/cad_modules/39-main-app.js',
+  'modules/cad_modules/40-smoke-tests-bootstrap.js',
+];
+
+function showError(title, html) {
+  document.getElementById('root').innerHTML =
+    '<div style="padding:40px;font-family:-apple-system,sans-serif;color:#ccc;background:#111;min-height:100vh;line-height:1.5">' +
+      '<div style="font-size:20px;font-weight:700;margin-bottom:16px;color:#f87171">&#9888; ' + title + '</div>' +
+      html +
+    '</div>';
+}
+
+window.addEventListener('load', async () => {
+  const deps = [
+    { name: 'React',    ref: typeof React    !== 'undefined' },
+    { name: 'ReactDOM', ref: typeof ReactDOM !== 'undefined' },
+    { name: 'Babel',    ref: typeof Babel    !== 'undefined' },
+    { name: 'THREE',    ref: typeof THREE    !== 'undefined' },
+    { name: 'supabase', ref: typeof supabase !== 'undefined' },
+    { name: 'jspdf',    ref: typeof jspdf    !== 'undefined' },
+    { name: 'XLSX',     ref: typeof XLSX     !== 'undefined' },
+  ];
+  const missing = deps.filter(d => !d.ref).map(d => d.name);
+  if (missing.length) {
+    showError('CDN dependencies failed to load',
+      '<div style="font-size:14px;color:#fca5a5;margin-bottom:12px">Missing: <code>' + missing.join(', ') + '</code></div>' +
+      '<div style="font-size:13px;color:#d1d5db">Make sure the CRM is served over HTTP (not file://). ' +
+      'Run: <code style="background:#222;padding:2px 6px">python3 -m http.server 8080</code> in the CRM root, ' +
+      'then open <strong>http://localhost:8080</strong></div>');
+    return;
+  }
+
+  try {
+    const sources = await Promise.all(
+      MODULE_FILES.map(f => fetch(f).then(r => {
+        if (!r.ok) throw new Error('Failed to load ' + f + ' (' + r.status + ')');
+        return r.text();
+      }))
+    );
+    const combined = sources.join('\n');
+    const transpiled = Babel.transform(combined, { presets: ['react'] }).code;
+    const fn = new Function('React', 'ReactDOM', transpiled);
+    fn(React, ReactDOM);
+  } catch (e) {
+    showError('Load Error',
+      '<div style="font-size:14px;color:#fca5a5;margin-bottom:12px">' + (e.message || String(e)) + '</div>' +
+      '<div style="font-size:11px;color:#888;white-space:pre-wrap;background:#0a0a0a;padding:12px;border-radius:4px;max-height:400px;overflow:auto">' +
+        ((e.stack || '').slice(0, 2000).replace(/</g, '&lt;')) +
+      '</div>');
+  }
+});
+</script>
+
+</body>
+</html>
