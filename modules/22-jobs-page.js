@@ -1320,6 +1320,11 @@ function renderJobDetail() {
     if (claims.length === 0) {
       claims = initJobClaims(job.id, job.val, job.paymentMethod||'cod');
     }
+    // Lazy-create variation claims on tab open. Idempotent — only fires when
+    // a variation is signed and no matching claim exists yet.
+    if (typeof ensureVariationClaim === 'function') {
+      if (ensureVariationClaim(job.id)) claims = getJobClaims(job.id);
+    }
     var totalPaid = claims.filter(function(c){return c.status==='paid';}).reduce(function(s,c){return s+c.amountIncGst;},0);
     var totalInvoiced = claims.filter(function(c){return c.status==='invoiced';}).reduce(function(s,c){return s+c.amountIncGst;},0);
     var totalOutstanding = valIncGst - totalPaid;
@@ -1334,18 +1339,27 @@ function renderJobDetail() {
 
     var stageIcons = {cl_dep:'\ud83d\udcb0',cl_cm:'\ud83d\udccf',cl_preinstall:'\ud83d\udee0\ufe0f',cl_final:'\u2705'};
     var stageNotes = {cl_dep:'Auto-generated when deal is won',cl_cm:'Auto-generated when check measure is complete + uploaded',cl_preinstall:'Auto-generated when install date is booked (due 7 business days before)',cl_final:'Auto-generated when job is marked complete'};
+    function _claimIcon(cl) {
+      if (cl.isVariation) return cl.amountIncGst < 0 ? '\u2796' : '\u2795'; // \u2796 / \u2795
+      return stageIcons[cl.id] || '';
+    }
+    function _claimNote(cl) {
+      if (cl.isVariation) return 'Additional claim from signed variation' + (cl.variationNotes ? ' \u2014 ' + cl.variationNotes : '') + ' (due alongside pre-install)';
+      return stageNotes[cl.id] || '';
+    }
+    var hasVariationClaims = claims.some(function(c){ return c.isVariation; });
 
     tabContent += '<div class="card" style="padding:0;overflow:hidden">'
       +'<div style="padding:14px 20px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
-      +'<h4 style="font-size:14px;font-weight:700;margin:0">Payment Schedule (4 stages)</h4></div>';
+      +'<h4 style="font-size:14px;font-weight:700;margin:0">Payment Schedule '+(hasVariationClaims ? '(4 stages + variation)' : '(4 stages)')+'</h4></div>';
     claims.forEach(function(cl,i){
       var stCol = cl.status==='paid'?'#22c55e':cl.status==='invoiced'?'#3b82f6':cl.status==='zip_pending'?'#7c3aed':cl.status==='zip_received'?'#22c55e':'#9ca3af';
       var stLabel = cl.status==='paid'?'\u2705 Paid':cl.status==='invoiced'?'\ud83d\udce8 Invoiced':cl.status==='zip_pending'?'\ud83d\udcb3 Zip Pending':cl.status==='zip_received'?'\u2705 Zip Received':'\u23f3 Pending';
       var isZipClaim = cl.isZip || cl.id === 'cl_zip';
       tabContent += '<div style="display:flex;align-items:center;gap:14px;padding:16px 20px;border-bottom:1px solid #f3f4f6">'
-        +'<div style="width:44px;height:44px;border-radius:50%;background:'+stCol+'18;color:'+stCol+';font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:2px solid '+stCol+'">'+(stageIcons[cl.id]||''+(i+1))+'</div>'
+        +'<div style="width:44px;height:44px;border-radius:50%;background:'+stCol+'18;color:'+stCol+';font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:2px solid '+stCol+'">'+(_claimIcon(cl)||''+(i+1))+'</div>'
         +'<div style="flex:1"><div style="font-size:14px;font-weight:700">'+cl.stage+'</div>'
-        +'<div style="font-size:11px;color:#6b7280;margin-top:2px">'+(stageNotes[cl.id]||'')+'</div>'
+        +'<div style="font-size:11px;color:#6b7280;margin-top:2px">'+_claimNote(cl)+'</div>'
         +(cl.invoiceNumber?'<div style="font-size:11px;color:#3b82f6;margin-top:2px">\ud83d\udcc4 Invoice: '+cl.invoiceNumber+(cl.paidDate?' \u2014 Paid '+cl.paidDate:'')+'</div>':'')
         +'</div>'
         +'<div style="text-align:right;margin-right:10px"><div style="font-size:18px;font-weight:800;font-family:Syne,sans-serif">$'+Math.round(cl.amountIncGst).toLocaleString()+'</div>'
@@ -2062,7 +2076,10 @@ window.devMockSignVariation = function(jobId) {
   })});
   if (typeof dbUpdate === 'function') { try { dbUpdate('jobs', jobId, { variation_status: 'signed', variation_signed_at: now }); } catch(e){} }
   if (typeof logJobAudit === 'function') logJobAudit(jobId, 'Variation Signed', 'Dev mock — Customer signed Variation DocuSign.');
-  addToast('✍️ Variation signed', 'success');
+  // Spawn the additional progress claim + auto-generate the invoice. Does
+  // nothing if the claim already exists (idempotent).
+  if (typeof ensureVariationClaim === 'function') ensureVariationClaim(jobId);
+  addToast('✍️ Variation signed · invoice generated', 'success');
   renderPage();
 };
 

@@ -1012,7 +1012,7 @@ function markJobClaimPaid(jobId, claimId) {
 // Keep the record shape in sync with createInvoice() in 25-invoicing.js —
 // missing fields (dealTitle, contactAddress, abn, terms, etc.) cause the
 // list row and detail panel to render broken / "undefined" text.
-function generateJobInvoice(jobId, claimId, pct, description, dueDate) {
+function generateJobInvoice(jobId, claimId, pct, description, dueDate, fixedAmountIncGst) {
   var jobs = getState().jobs || [];
   var job = jobs.find(function(j){return j.id===jobId;});
   if (!job) return null;
@@ -1020,7 +1020,11 @@ function generateJobInvoice(jobId, claimId, pct, description, dueDate) {
   var contact = (getState().contacts||[]).find(function(c){return c.id===job.contactId;});
   var branch = job.branch || 'VIC';
   var valExGst = Math.round((job.val||0) / 1.1 * 100) / 100;
-  var claimExGst = Math.round(valExGst * (pct/100) * 100) / 100;
+  // Variation claims pass a fixed inc-GST amount instead of computing from the
+  // deal's pct (the variation isn't a percentage of the original deal value).
+  var claimExGst = (typeof fixedAmountIncGst === 'number')
+    ? Math.round((fixedAmountIncGst / 1.1) * 100) / 100
+    : Math.round(valExGst * (pct/100) * 100) / 100;
   var gst = calcGST(claimExGst);
   var invoices = getInvoices();
   var nextNum = 'INV-' + branch + '-' + (invoices.length+1).toString().padStart(4,'0');
@@ -1113,6 +1117,14 @@ function generateInvoiceForClaim(jobId, claimId) {
   } else if (claimId === 'cl_final') {
     desc = cl.pct + '% Completion — Final Balance — ' + jn;
     dueOffsetDays = 7;
+  } else if (cl.isVariation) {
+    desc = 'Variation' + (cl.amountIncGst < 0 ? ' Credit' : '') + (cl.variationNotes ? ' — ' + cl.variationNotes : '') + ' — ' + jn;
+    // Due alongside the pre-install milestone if install is scheduled, else 14 days.
+    var varDue = job.installDate ? businessDaysBefore(job.installDate, 7) : new Date(Date.now() + 14*24*3600000).toISOString().slice(0,10);
+    if (!confirm('Generate '+desc+' invoice for $'+Math.round(cl.amountIncGst).toLocaleString()+' (inc GST)?')) return;
+    generateJobInvoice(jobId, claimId, 0, desc, varDue, cl.amountIncGst);
+    renderPage();
+    return;
   } else {
     desc = (cl.stage || ('Progress Claim ' + cl.pct + '%')) + ' — ' + jn;
     dueOffsetDays = 14;
@@ -1123,6 +1135,62 @@ function generateInvoiceForClaim(jobId, claimId) {
   renderPage();
 }
 window.generateInvoiceForClaim = generateInvoiceForClaim;
+
+// ── Variation → additional progress claim ───────────────────────────────────
+// Phoenix's rule (memory: project_payment_structure.md): when a variation is
+// signed, append a NEW progress claim row to job.claims — never modify the
+// 5/45/45/5 stage invoices retroactively. Auto-generates the invoice too,
+// matching the auto-flow used by the pre-install 45% claim.
+//
+// Idempotent — safe to call repeatedly; won't duplicate an existing claim.
+// Keyed by variationSignedAt so multiple variations across a job's life each
+// get their own claim row.
+function ensureVariationClaim(jobId) {
+  var jobs = getState().jobs || [];
+  var job = jobs.find(function(j){ return j.id === jobId; });
+  if (!job) return false;
+  if (!job.hasVariation || job.variationStatus !== 'signed') return false;
+  if (typeof job.variationAmount !== 'number' || job.variationAmount === 0) return false;
+
+  var signedAt = job.variationSignedAt || new Date().toISOString();
+  var idSuffix = signedAt.replace(/[^0-9]/g, '').slice(0, 14);
+  var claimId = 'cl_variation_' + idSuffix;
+  var claims = getJobClaims(jobId);
+  if (claims.some(function(c){ return c.id === claimId; })) return false;
+
+  var amt = job.variationAmount;
+  var amtExGst = Math.round((amt / 1.1) * 100) / 100;
+  var label = 'Variation' + (amt < 0 ? ' (Credit)' : '') + ' · signed ' + signedAt.slice(0, 10);
+
+  var newClaim = {
+    id: claimId,
+    stage: label,
+    pct: 0,
+    amountExGst: amtExGst,
+    amountIncGst: amt,
+    status: 'pending',
+    paidDate: '',
+    invoiceId: '',
+    invoiceNumber: '',
+    isVariation: true,
+    variationNotes: job.variationNotes || '',
+    variationSignedAt: signedAt
+  };
+  claims = claims.concat([newClaim]);
+  saveJobClaims(jobId, claims);
+  if (typeof logJobAudit === 'function') {
+    logJobAudit(jobId, 'Variation Claim Added', '$' + amt + ' added as additional progress claim' + (job.variationNotes ? ' · ' + job.variationNotes : ''));
+  }
+
+  // Auto-generate the invoice — due 7 business days before install if
+  // scheduled, else 14 days from today (matches the pre-install behaviour).
+  var dueDate = job.installDate ? businessDaysBefore(job.installDate, 7) : new Date(Date.now() + 14*24*3600000).toISOString().slice(0,10);
+  var jn = job.jobNumber || '';
+  var desc = 'Variation' + (amt < 0 ? ' Credit' : '') + (job.variationNotes ? ' — ' + job.variationNotes : '') + ' — ' + jn;
+  try { generateJobInvoice(jobId, claimId, 0, desc, dueDate, amt); } catch(e) { console.warn('variation invoice gen failed', e); }
+  return true;
+}
+window.ensureVariationClaim = ensureVariationClaim;
 
 // Calculate business days before a date
 function businessDaysBefore(dateStr, days) {
