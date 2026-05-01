@@ -555,6 +555,30 @@ function closeCadDesigner() {
 }
 
 // Listen for save data from CAD iframe
+// Stock-default signatures from the embedded CAD app's "Add Frame" templates.
+// When a frame matches one of these exactly, the user almost certainly forgot
+// to type a real dimension before saving — the template values stuck. Add a
+// new entry here whenever we identify a new frame type's default that's
+// causing real-world data quality issues. Survey/final modes are skipped (the
+// dims there come from CM measurements, not templates).
+var _CAD_STOCK_DEFAULTS = [
+  // Awning template: outer 900×900 with 75mm sash margin → glass zone 750×750.
+  { productType: 'awning_window', width: 900, height: 900, zoneWidth: 750, zoneHeight: 750 },
+];
+function _looksLikeCadStockDefault(f) {
+  if (!f) return false;
+  for (var i = 0; i < _CAD_STOCK_DEFAULTS.length; i++) {
+    var d = _CAD_STOCK_DEFAULTS[i];
+    if (f.productType !== d.productType) continue;
+    if (+f.width !== d.width || +f.height !== d.height) continue;
+    var zw = Array.isArray(f.zoneWidths) ? +f.zoneWidths[0] : NaN;
+    var zh = Array.isArray(f.zoneHeights) ? +f.zoneHeights[0] : NaN;
+    if (zw !== d.zoneWidth || zh !== d.zoneHeight) continue;
+    return true;
+  }
+  return false;
+}
+
 window.addEventListener('message', function(event) {
   var msg = event.data;
   if (!msg || msg.type !== 'spartan-cad-save' || !_cadModal) return;
@@ -562,6 +586,33 @@ window.addEventListener('message', function(event) {
     projectItems: msg.projectItems || [], projectName: msg.projectName || '',
     totalPrice: msg.totalPrice || 0, quoteNumber: msg.quoteNumber || '', savedAt: new Date().toISOString(),
   };
+
+  // Guard: warn before saving when a frame still matches the CAD app's stock
+  // template (user added the frame and clicked Save without typing real
+  // dimensions). Only runs in design mode — survey/final dims come from CM.
+  var _isDesignSave = _cadModal.entityType === 'deal'
+                   || _cadModal.entityType === 'lead'
+                   || (_cadModal.entityType === 'job' && _cadModal.mode === 'design');
+  if (_isDesignSave) {
+    var stockFrames = (cadPayload.projectItems || []).filter(_looksLikeCadStockDefault);
+    if (stockFrames.length > 0) {
+      var lines = stockFrames.map(function(f, i){
+        var label = f.name || ('Frame ' + (i+1));
+        return '   • ' + label + ' — saved as ' + f.width + '×' + f.height + ' (CAD stock template)';
+      }).join('\n');
+      var ok = window.confirm(
+        stockFrames.length + ' frame(s) saved at the CAD default size:\n\n' +
+        lines + '\n\n' +
+        'If your CAD panel showed a different size, the input value did not commit before save — press Tab or Enter in the dimension fields to commit, then save again.\n\n' +
+        '• Click OK to save these dimensions anyway.\n' +
+        '• Click Cancel to go back to CAD and re-enter the dimensions.'
+      );
+      if (!ok) {
+        addToast('Save cancelled — press Tab in CAD dim fields to commit, then save again', 'warning');
+        return;
+      }
+    }
+  }
   if (_cadModal.entityType === 'deal') {
     // Spec §3.2 save routing: msg.quoteId === null means "create a new quote";
     // a matching id means "update that quote in place"; an unknown id falls
