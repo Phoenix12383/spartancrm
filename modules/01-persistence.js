@@ -278,6 +278,7 @@ function dbToInstaller(r) {
 // ── Vehicles (Jobs CRM fleet) — mirrors saveVehicles() in 17-install-schedule.js
 function vehicleToDb(v) {
   var i = v.internal || {};
+  var ins = v.insurance || {};
   return {
     id: v.id,
     name: v.name || '',
@@ -291,7 +292,15 @@ function vehicleToDb(v) {
     internal_height_mm: +i.heightMm || 0,
     assigned_to: v.assignedTo || null,
     notes: v.notes || null,
-    active: v.active !== false
+    active: v.active !== false,
+    insurance_pdf_url: ins.pdfUrl || null,
+    insurance_pdf_path: ins.pdfPath || null,
+    insurance_insurer: ins.insurer || null,
+    insurance_policy_no: ins.policyNo || null,
+    insurance_start_date: ins.startDate || null,
+    insurance_expiry_date: ins.expiryDate || null,
+    insurance_uploaded_at: ins.uploadedAt || null,
+    insurance_extracted_text: ins.extractedText || null
   };
 }
 function dbToVehicle(r) {
@@ -310,7 +319,17 @@ function dbToVehicle(r) {
     },
     assignedTo: r.assigned_to || '',
     notes: r.notes || '',
-    active: r.active !== false
+    active: r.active !== false,
+    insurance: {
+      pdfUrl: r.insurance_pdf_url || '',
+      pdfPath: r.insurance_pdf_path || '',
+      insurer: r.insurance_insurer || '',
+      policyNo: r.insurance_policy_no || '',
+      startDate: r.insurance_start_date || '',
+      expiryDate: r.insurance_expiry_date || '',
+      uploadedAt: r.insurance_uploaded_at || '',
+      extractedText: r.insurance_extracted_text || ''
+    }
   };
 }
 // ── Tools (Jobs CRM tool registry) — mirrors saveTools() in 17-install-schedule.js

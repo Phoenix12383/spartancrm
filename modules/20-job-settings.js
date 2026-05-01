@@ -428,11 +428,29 @@ function renderJobSettings() {
         +'</select></div>'
         +'<div style="grid-column:span 2"><label style="font-size:10px;font-weight:600;color:#6b7280">Notes</label><textarea class="inp" id="veh_notes" rows="2" style="font-size:12px;resize:vertical">'+(vv.notes||'')+'</textarea></div>'
         +'</div></div>';
+
+      // ── Insurance section ────────────────────────────────────────────
+      var _ins = vv.insurance || {};
+      var _insStatus = (typeof getVehicleInsuranceStatus === 'function') ? getVehicleInsuranceStatus(vv) : null;
+      var _statusPill = _insStatus ? '<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:'+_insStatus.bg+';color:'+_insStatus.colour+'">'+_insStatus.label+'</span>' : '';
+      content += '<div class="card" style="padding:16px;max-width:600px;margin-top:14px">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+        +'<h5 style="font-size:13px;font-weight:700;margin:0">🛡️ Insurance</h5>'+_statusPill+'</div>'
+        +'<div style="font-size:11px;color:#6b7280;margin-bottom:10px">Upload the certificate of currency PDF — we\'ll auto-detect insurer, policy number, and dates. Verify before saving.</div>'
+        +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'
+        +'<input type="file" id="ins_pdf" accept="application/pdf,.pdf" onchange="handleInsurancePdfPicked(this)" style="font-size:12px">'
+        +(_ins.pdfUrl ? '<a href="'+_ins.pdfUrl+'" target="_blank" rel="noopener" style="font-size:12px;color:#3b82f6;text-decoration:underline">View current PDF</a>' : '')
+        +'</div>'
+        +'<div id="ins_parse_note" style="font-size:11px;margin-bottom:10px;min-height:14px"></div>'
+        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Insurer</label><input class="inp" id="ins_insurer" value="'+(_ins.insurer||'')+'" placeholder="e.g. NRMA, Allianz" style="font-size:13px;padding:8px"></div>'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Policy Number</label><input class="inp" id="ins_policy" value="'+(_ins.policyNo||'')+'" placeholder="e.g. ABC123456" style="font-size:13px;padding:8px"></div>'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Cover Start</label><input type="date" class="inp" id="ins_start" value="'+(_ins.startDate||'')+'" style="font-size:13px;padding:8px"></div>'
+        +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Expiry Date</label><input type="date" class="inp" id="ins_expiry" value="'+(_ins.expiryDate||'')+'" style="font-size:13px;padding:8px"></div>'
+        +'</div></div>';
+
       content += '<div style="display:flex;gap:8px;margin-top:14px">'
-        +'<button onclick="var name=document.getElementById(\'veh_name\').value.trim();if(!name){addToast(\'Vehicle name required\',\'error\');return;}'
-        +'var _L=parseInt(document.getElementById(\'veh_len\').value)||0,_W=parseInt(document.getElementById(\'veh_wid\').value)||0,_H=parseInt(document.getElementById(\'veh_hei\').value)||0;'
-        +'var d={name:name,rego:document.getElementById(\'veh_rego\').value.trim().toUpperCase(),type:document.getElementById(\'veh_type\').value,size:document.getElementById(\'veh_size\').value,maxFrames:parseInt(document.getElementById(\'veh_frames\').value)||8,maxWeightKg:parseInt(document.getElementById(\'veh_weight\').value)||600,assignedTo:document.getElementById(\'veh_inst\').value,notes:document.getElementById(\'veh_notes\').value,internal:{lengthMm:_L,widthMm:_W,heightMm:_H}};'
-        +'if(editingVehicleId&&editingVehicleId!==\'_new\'){updateVehicle(editingVehicleId,d);addToast(name+\' updated\',\'success\');}else{addVehicle(d);addToast(name+\' added\',\'success\');}editingVehicleId=null;renderPage();" class="btn-r" style="font-size:13px;padding:8px 24px">'+(editVeh?'Update Vehicle':'Add Vehicle')+'</button>'
+        +'<button onclick="saveVehicleEditForm()" class="btn-r" style="font-size:13px;padding:8px 24px">'+(editVeh?'Update Vehicle':'Add Vehicle')+'</button>'
         +'<button onclick="editingVehicleId=null;renderPage()" class="btn-w" style="font-size:13px">Cancel</button></div>';
     } else {
       content = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
@@ -456,6 +474,11 @@ function renderJobSettings() {
             +(assignedInst?'<div style="font-size:11px;color:#3b82f6;margin-top:2px">Assigned to '+assignedInst.name+'</div>':'<div style="font-size:11px;color:#9ca3af;margin-top:2px">Pool vehicle</div>')
             +'</div>'
             +'<div style="display:flex;gap:6px;align-items:center">'
+            +(function(){
+              var s = (typeof getVehicleInsuranceStatus === 'function') ? getVehicleInsuranceStatus(v) : null;
+              if (!s) return '';
+              return '<span title="Insurance" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;background:'+s.bg+';color:'+s.colour+'">🛡️ '+s.label+'</span>';
+            })()
             +(v.active?'<span style="font-size:10px;background:#dcfce7;color:#15803d;padding:2px 8px;border-radius:4px;font-weight:600">Active</span>':'<span style="font-size:10px;background:#f3f4f6;color:#9ca3af;padding:2px 8px;border-radius:4px;font-weight:600">Inactive</span>')
             +(isAdmin?'<button onclick="event.stopPropagation();updateVehicle(\''+v.id+'\',{active:'+(!v.active)+'});addToast(\''+(v.active?'Deactivated':'Activated')+'\',\'success\')" class="btn-g" style="font-size:11px;padding:4px 8px">'+(v.active?'Deactivate':'Activate')+'</button>':'')
             +(isAdmin?'<button onclick="event.stopPropagation();if(confirm(\'Remove '+v.name+'?\')){removeVehicle(\''+v.id+'\')}" class="btn-g" style="font-size:11px;padding:4px 8px;color:#ef4444">✕</button>':'')

@@ -10,6 +10,16 @@
     <!-- External scripts -->
     <script src="https://accounts.google.com/gsi/client"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
+    <!-- PDF.js — used to extract text from uploaded vehicle insurance PDFs
+         (parseInsurancePdf in 31a-vehicle-insurance.js). Worker is set on
+         the global immediately after load so it's ready before first use. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+      if (window.pdfjsLib) {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      }
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <!-- Recharts (React-based) for Reports tab bar/line/pie charts. React 17
          is used deliberately so rptRenderChart can keep calling the legacy
@@ -37,7 +47,7 @@
         console.log('Spartan CRM - Loading Logical Modules');
         console.log('========================================\n');
         
-        const BUILD_VERSION = '20260502r';
+        const BUILD_VERSION = '20260502x';
 
         // Logical loading order based on dependencies
         const modules = [
@@ -105,6 +115,8 @@
             '30-capacity-planner.js',
             // Layer 11d: Fleet & Delivery (uses recommendVehicleForJob from 17)
             '31-fleet-page.js',
+            // Layer 11e: Vehicle insurance PDF upload + parsing + alerts
+            '31a-vehicle-insurance.js',
 
             // Layer 12: Initialization (MUST BE LAST)
             '99-init.js'

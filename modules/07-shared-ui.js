@@ -652,6 +652,9 @@ function renderSidebar(){
         // expensive — this queue-depth is what the user cares about.
         const capReadyStatuses=['e_dispatch_standard','e1_dispatch_service','c2_order_schedule_standard','c3_order_schedule_service','d5_hardware_revealing'];
         const capCount=(id==='capacity'||id==='schedule')?(getState().jobs||[]).filter(j=>!j.installDate&&capReadyStatuses.indexOf(j.status)>=0).length:0;
+        // CM Schedule Map badge — unbooked check-measure jobs (mirrors
+        // renderCMMapPage filter in 21-cm-schedule.js:82).
+        const cmmapCount=id==='cmmap'?(getState().jobs||[]).filter(j=>j.status==='a_check_measure'&&!j.cmCompletedAt&&!j.cmBookedDate).length:0;
         return `<div class="nav-item${on?' on':''}" onclick="setState({page:'${id}',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null${native ? ',sidebarOpen:false' : ''}})" title="${!sidebarOpen?label:''}">
           ${Icon({n:id,size:17})}
           ${sidebarOpen?`<span style="flex:1">${label}</span>`:''}
@@ -660,6 +663,7 @@ function renderSidebar(){
           ${sidebarOpen&&wonCount>0?`<span style="background:#22c55e;color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${wonCount}</span>`:''}
           ${sidebarOpen&&jobCount>0?`<span style="background:#3b82f6;color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${jobCount}</span>`:''}
           ${sidebarOpen&&capCount>0?`<span style="background:#8b5cf6;color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${capCount}</span>`:''}
+          ${sidebarOpen&&cmmapCount>0?`<span style="background:#f59e0b;color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${cmmapCount}</span>`:''}
         </div>`;
       }).join('')}
     </nav>

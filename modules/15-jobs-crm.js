@@ -76,6 +76,40 @@ function renderJobDashboard() {
   });
   h += '</div>';
 
+  // ── Vehicle Insurance Alerts (placed before Weekly Target so expired/
+  // expiring fleet insurance can't be missed — fleet stops if these lapse). ─
+  if (typeof getVehiclesInsuranceAlerts === 'function') {
+    var insAlerts = getVehiclesInsuranceAlerts();
+    var totalIns = insAlerts.expired.length + insAlerts.soon.length;
+    if (totalIns > 0) {
+      var insBorder = insAlerts.expired.length > 0 ? '#ef4444' : '#f59e0b';
+      var insTitleCol = insAlerts.expired.length > 0 ? '#b91c1c' : '#92400e';
+      h += '<div class="card" style="padding:16px;margin-bottom:16px;border-left:4px solid '+insBorder+'">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+        +'<div style="font-size:13px;font-weight:700;font-family:Syne,sans-serif;color:'+insTitleCol+'">🛡️ Vehicle Insurance <span style="font-size:11px;font-weight:400;color:#9ca3af;margin-left:6px">'+totalIns+' vehicle'+(totalIns!==1?'s':'')+' need attention</span></div>'
+        +'<a href="#" onclick="event.preventDefault();jobSettTab=\'vehicles\';setState({crmMode:\'jobs\',page:\'jobsettings\'})" style="font-size:11px;color:#3b82f6;text-decoration:none">Manage →</a>'
+        +'</div>'
+        +'<div style="display:flex;flex-direction:column;gap:6px">';
+      insAlerts.expired.concat(insAlerts.soon).slice(0, 8).forEach(function(v){
+        var s = getVehicleInsuranceStatus(v);
+        var bg = s.state === 'expired' ? '#fef2f2' : '#fffbeb';
+        var bdr = s.state === 'expired' ? '#fecaca' : '#fde68a';
+        var col = s.state === 'expired' ? '#b91c1c' : '#92400e';
+        h += '<a href="#" onclick="event.preventDefault();editingVehicleId=\''+v.id+'\';jobSettTab=\'vehicles\';setState({crmMode:\'jobs\',page:\'jobsettings\'})" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 12px;background:'+bg+';border:1px solid '+bdr+';border-radius:6px;text-decoration:none;color:inherit">'
+          +'<div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">'
+          +'<span style="font-size:14px">🚐</span>'
+          +'<span style="font-size:12px;font-weight:700;color:#374151;flex-shrink:0">'+(v.name||'')+'</span>'
+          +(v.rego?'<span style="font-size:10px;font-family:monospace;color:#6b7280;background:#fff;padding:1px 6px;border-radius:4px">'+v.rego+'</span>':'')
+          +'<span style="font-size:11px;color:'+col+';flex-shrink:0">'+s.label+'</span>'
+          +(v.insurance && v.insurance.expiryDate?'<span style="font-size:11px;color:#6b7280">expires '+v.insurance.expiryDate+'</span>':'')
+          +'</div>'
+          +'</a>';
+      });
+      if (totalIns > 8) h += '<div style="font-size:11px;color:#9ca3af;text-align:center;padding:4px">+'+(totalIns-8)+' more vehicles</div>';
+      h += '</div></div>';
+    }
+  }
+
   // ── Weekly Target Progress ────────────────────────────────────────────────
   var pctTarget = targetVal>0?Math.round(weekRevenue/targetVal*100):0;
   h += '<div class="card" style="padding:16px;margin-bottom:16px;display:flex;align-items:center;gap:20px">'
