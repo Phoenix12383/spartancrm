@@ -91,6 +91,16 @@
             'js/modules/factory/25-factory-persistence.js',   // FactoryPersistence
             'js/modules/factory/23-factory-helpers.js',       // protocol classes + helpers
             'js/modules/factory/16-factory-crm.js',           // renderer classes + audit page
+            // Factory CRM Base v1.5 (scope-corrected) — 6 sections of pure
+            // data classes / enums / interfaces with Factory* prefix.
+            // factory-crm-base-class-diagram-v1-5-scope-corrected.md
+            'js/modules/factory/27-factory-v1-jobs-frames.js',           // §1 Jobs and frames
+            'js/modules/factory/28-factory-v1-people.js',                // §2 People — internal staff
+            'js/modules/factory/29-factory-v1-stock.js',                 // §3 Stock + locations + QR
+            'js/modules/factory/30-factory-v1-workstations-tasks.js',    // §4 Workstations + tasks + triggers
+            'js/modules/factory/31-factory-v1-suppliers.js',             // §5 Suppliers + procurement (light)
+            'js/modules/factory/32-factory-v1-audit.js',                 // §6 Audit trail + integrity watchers
+            'js/modules/factory/33-factory-v1-cad-bridge.js',            // CAD save → FactoryJob+Frame[] graph (subscribes to setState)
             // 26-cad-timing-contract.js loads LATER (Layer 11e) because it
             // decorates readJobInstallMinutes from 17-install-schedule.js.
             '17-install-schedule.js',
