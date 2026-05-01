@@ -1149,9 +1149,9 @@ function renderJobDetail() {
           +'<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">'
           +'<button onclick="openCadDesigner(\'job\',\''+job.id+'\',\'final\')" class="btn-w" style="font-size:12px;gap:4px">\ud83d\udc41 View Signed Final Design</button>';
         if (job.finalSignedPdfUrl) {
-          tabContent += '<button onclick="window.open(\''+job.finalSignedPdfUrl+'\',\'_blank\')" class="btn-w" style="font-size:12px;gap:4px">\ud83d\udcc4 View Signed PDF</button>';
+          tabContent += '<button onclick="openJobPdf(\''+job.finalSignedPdfUrl+'\',\'Final Signed.pdf\')" class="btn-w" style="font-size:12px;gap:4px">\ud83d\udcc4 View Signed PDF</button>';
         } else if (job.finalRenderedPdfUrl) {
-          tabContent += '<button onclick="window.open(\''+job.finalRenderedPdfUrl+'\',\'_blank\')" class="btn-w" style="font-size:12px;gap:4px">\ud83d\udcc4 View Final PDF</button>';
+          tabContent += '<button onclick="openJobPdf(\''+job.finalRenderedPdfUrl+'\',\'Final Design.pdf\')" class="btn-w" style="font-size:12px;gap:4px">\ud83d\udcc4 View Final PDF</button>';
         }
         tabContent += '<button onclick="setState({jobDetailTab:\'installation\'})" class="btn-w" style="font-size:13px;padding:8px 24px;gap:6px">\ud83d\udee0\ufe0f Installation Scheduling \u2192</button></div>';
         // Dev-only manual hand-off into the Factory CRM production queue.
@@ -1206,7 +1206,7 @@ function renderJobDetail() {
           tabContent += '<button onclick="openCadDesigner(\'job\',\''+job.id+'\',\'final\')" class="btn-w" style="font-size:12px;gap:4px">\ud83d\udc41 View Final Design</button>';
         }
         if (job.finalRenderedPdfUrl) {
-          tabContent += '<button onclick="window.open(\''+job.finalRenderedPdfUrl+'\',\'_blank\')" class="btn-w" style="font-size:12px;gap:4px">\ud83d\udcc4 Preview Final PDF</button>';
+          tabContent += '<button onclick="openJobPdf(\''+job.finalRenderedPdfUrl+'\',\'Final Design.pdf\')" class="btn-w" style="font-size:12px;gap:4px">\ud83d\udcc4 Preview Final PDF</button>';
         }
         tabContent += '</div>';
         // Signature sub-section (legacy markFinalDesignSigned button — DocuSign is Step 6)
@@ -1553,7 +1553,7 @@ function renderJobDetail() {
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h4 style="font-size:14px;font-weight:700;margin:0">\ud83d\udcc1 Job Files ('+files.length+')</h4></div>'
       +'<div style="display:flex;gap:8px;margin-bottom:12px;padding:12px;background:#f9fafb;border-radius:8px">'
       +'<select class="sel" id="file_cat" style="font-size:12px;padding:6px 10px">'+Object.entries(FILE_CATS).map(function(e){return '<option value="'+e[0]+'">'+e[1]+'</option>';}).join('')+'</select>'
-      +'<label class="btn-r" style="font-size:12px;padding:6px 16px;cursor:pointer;gap:6px">'+Icon({n:'plus',size:13})+' Upload File<input type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx" style="display:none" onchange="var file=this.files[0];if(!file)return;var cat=document.getElementById(\'file_cat\').value;var reader=new FileReader();reader.onload=function(e){addJobFile(\''+job.id+'\',file.name,cat,e.target.result);renderPage();};reader.readAsDataURL(file);"></label></div>';
+      +'<label class="btn-r" style="font-size:12px;padding:6px 16px;cursor:pointer;gap:6px">'+Icon({n:'plus',size:13})+' Upload File<input type="file" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx" style="display:none" onchange="var file=this.files[0];if(!file)return;var cat=document.getElementById(\'file_cat\').value;addJobFile(\''+job.id+'\',file.name,cat,file).then(function(){renderPage();});"></label></div>';
     if(files.length===0){tabContent+='<div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px">No files yet</div>';}
     else{tabContent+='<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th class="th">Name</th><th class="th">Category</th><th class="th">By</th><th class="th">Date</th><th class="th"></th></tr></thead><tbody>';
     files.forEach(function(f){tabContent+='<tr><td class="td"><a href="javascript:void(0)" onclick="viewJobFile(\''+f.id+'\',\''+(f.name||'').replace(/\'/g,"\\'")+'\')" style="color:#3b82f6;text-decoration:none;font-weight:600">\ud83d\udcce '+f.name+'</a></td><td class="td"><span class="bdg" style="font-size:10px">'+(FILE_CATS[f.category]||f.category)+'</span></td><td class="td">'+f.uploadedBy+'</td><td class="td">'+new Date(f.uploadedAt).toLocaleDateString('en-AU')+'</td><td class="td"><button onclick="removeJobFile(\''+job.id+'\',\''+f.id+'\');renderPage()" style="background:none;border:none;color:#ef4444;cursor:pointer">\u2715</button></td></tr>';});

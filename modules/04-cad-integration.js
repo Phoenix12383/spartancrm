@@ -680,12 +680,42 @@ window.addEventListener('message', function(event) {
       if (totals.stationTimes && typeof totals.stationTimes === 'object') jobUpdates.stationTimes = totals.stationTimes;
     }
 
-    // Attach PDFs if present. survey → cmDocUrl, final → finalRenderedPdfUrl.
-    var hasCmPdf = _cadModal.mode === 'survey' && msg.pdfs && msg.pdfs.checkMeasure && msg.pdfs.checkMeasure.base64;
+    // Attach PDFs if present. PDFs go to Supabase Storage (bucket: job-files);
+    // the column on the jobs row holds the storage path, NOT a base64 data URI.
+    // Older rows may still hold data: URIs — readers fall back to those via
+    // openJobPdf in 17-install-schedule.js.
+    var hasCmPdf    = _cadModal.mode === 'survey' && msg.pdfs && msg.pdfs.checkMeasure && msg.pdfs.checkMeasure.base64;
+    var hasFinalPdf = _cadModal.mode === 'final'  && msg.pdfs && msg.pdfs.finalDesign  && msg.pdfs.finalDesign.base64;
+
+    function _b64ToBlob(b64) {
+      try {
+        var bin = atob(b64);
+        var bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new Blob([bytes], { type: 'application/pdf' });
+      } catch (e) { return null; }
+    }
+
+    var cmBlob    = hasCmPdf    ? _b64ToBlob(msg.pdfs.checkMeasure.base64) : null;
+    var finalBlob = hasFinalPdf ? _b64ToBlob(msg.pdfs.finalDesign.base64)  : null;
+
+    // Pre-allocate fileIds so we can write the storage path on the jobs row
+    // BEFORE the upload completes. Upload is fired below as fire-and-forget.
+    var cmFileId    = hasCmPdf    ? ('file_' + Date.now()       + '_' + Math.random().toString(36).slice(2, 8)) : null;
+    var finalFileId = hasFinalPdf ? ('file_' + (Date.now() + 1) + '_' + Math.random().toString(36).slice(2, 8)) : null;
+
+    var cmFilename    = hasCmPdf    ? (msg.pdfs.checkMeasure.filename || ('CM_'    + (job.jobNumber || _cadModal.entityId) + '.pdf')) : null;
+    var finalFilename = hasFinalPdf ? (msg.pdfs.finalDesign.filename  || ('FINAL_' + (job.jobNumber || _cadModal.entityId) + '.pdf')) : null;
+
     if (hasCmPdf) {
-      jobUpdates.cmDocUrl = 'data:application/pdf;base64,' + msg.pdfs.checkMeasure.base64;
-    } else if (_cadModal.mode === 'final' && msg.pdfs && msg.pdfs.finalDesign && msg.pdfs.finalDesign.base64) {
-      jobUpdates.finalRenderedPdfUrl = 'data:application/pdf;base64,' + msg.pdfs.finalDesign.base64;
+      jobUpdates.cmDocUrl = (typeof buildJobFileStoragePath === 'function')
+        ? buildJobFileStoragePath(_cadModal.entityId, cmFileId, cmFilename)
+        : (_cadModal.entityId + '/' + cmFileId + '__' + (cmFilename || 'cm.pdf'));
+    }
+    if (hasFinalPdf) {
+      jobUpdates.finalRenderedPdfUrl = (typeof buildJobFileStoragePath === 'function')
+        ? buildJobFileStoragePath(_cadModal.entityId, finalFileId, finalFilename)
+        : (_cadModal.entityId + '/' + finalFileId + '__' + (finalFilename || 'final.pdf'));
     }
 
     setState({jobs: (getState().jobs||[]).map(function(j){
@@ -704,12 +734,45 @@ window.addEventListener('message', function(event) {
     if ('finalRenderedPdfUrl' in jobUpdates) dbPatch.final_rendered_pdf_url = jobUpdates.finalRenderedPdfUrl;
     dbUpdate('jobs', _cadModal.entityId, dbPatch);
 
-    // Auto-complete CM: add the CAD-generated PDF as the CM file, close the
-    // designer, then trigger completion + 45% invoice. No manual steps needed.
+    // Storage upload + job_files row insert. Fire-and-forget: failure leaves
+    // the path on the row but no object behind it; user re-saves to retry.
+    function _afterUpload(fileId, jobIdLocal, filename, blob, category, path) {
+      try { window._jobFileBlobs[fileId] = URL.createObjectURL(blob); } catch(e){}
+      var files = (typeof getJobFiles === 'function') ? getJobFiles(jobIdLocal) : [];
+      files.push({
+        id: fileId, name: filename, category: category,
+        uploadedBy: (getCurrentUser()||{name:'CAD'}).name,
+        uploadedAt: new Date().toISOString(),
+        storagePath: path
+      });
+      if (typeof saveJobFiles === 'function') saveJobFiles(jobIdLocal, files);
+      if (typeof _sb !== 'undefined' && _sb) {
+        dbInsert('job_files', {
+          id: fileId, job_id: jobIdLocal, name: filename,
+          category: category, uploaded_by: (getCurrentUser()||{name:'CAD'}).name,
+          storage_path: path
+        });
+      }
+    }
+    var _entityIdForUpload = _cadModal.entityId;
+    if (hasCmPdf && cmBlob && typeof uploadJobFileBlob === 'function') {
+      uploadJobFileBlob(_entityIdForUpload, cmFileId, cmFilename, cmBlob).then(function(path){
+        if (!path) { addToast('CM PDF saved but Storage upload failed — re-save in CAD to retry', 'warning'); return; }
+        _afterUpload(cmFileId, _entityIdForUpload, cmFilename, cmBlob, 'check_measure', path);
+      });
+    }
+    if (hasFinalPdf && finalBlob && typeof uploadJobFileBlob === 'function') {
+      uploadJobFileBlob(_entityIdForUpload, finalFileId, finalFilename, finalBlob).then(function(path){
+        if (!path) { addToast('Final PDF saved but Storage upload failed — re-save in CAD to retry', 'warning'); return; }
+        _afterUpload(finalFileId, _entityIdForUpload, finalFilename, finalBlob, 'contract', path);
+      });
+    }
+
+    // Auto-complete CM: close the designer + trigger completion + 45% invoice.
+    // The upload above writes the job_files row asynchronously; we don't wait.
     if (hasCmPdf) {
       var completingJobId = _cadModal.entityId;
-      var cmFilename = msg.pdfs.checkMeasure.filename || ('CM_' + (job.jobNumber || completingJobId) + '.pdf');
-      addJobFile(completingJobId, cmFilename, 'check_measure', jobUpdates.cmDocUrl);
+      logJobAudit(completingJobId, 'CM PDF Uploaded', cmFilename + ' → ' + jobUpdates.cmDocUrl);
       closeCadDesigner();
       completeCmAndInvoice(completingJobId);
       return;

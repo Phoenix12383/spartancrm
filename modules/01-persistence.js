@@ -893,7 +893,11 @@ async function dbLoadAll() {
           name: f.name,
           category: f.category,
           uploadedBy: f.uploaded_by,
-          uploadedAt: f.created_at || f.uploaded_at || new Date().toISOString()
+          uploadedAt: f.created_at || f.uploaded_at || new Date().toISOString(),
+          // storage_path is the new path-only pointer into the job-files bucket.
+          // data_url is the legacy base64 fallback — preferred reader is path.
+          storagePath: f.storage_path || null,
+          hasLegacyDataUrl: !!f.data_url
         });
       });
       Object.keys(byJob).forEach(function(jobId) {

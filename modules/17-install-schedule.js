@@ -857,73 +857,235 @@ function saveJobFiles(jobId, files) {
   try { localStorage.setItem('spartan_files_'+jobId, JSON.stringify(lean)); }
   catch(e) { console.warn('[job_files] localStorage write failed for '+jobId, e); }
 }
-function addJobFile(jobId, name, category, dataUrl) {
+// ── Storage-backed job files ─────────────────────────────────────────────────
+// PDFs and other job attachments live in the Supabase Storage `job-files`
+// bucket. Each row in `job_files` holds metadata + `storage_path` (preferred)
+// or legacy `data_url` (rows pre-2026-05-03 base64 migration).
+//
+// Path format: `<jobId>/<fileId>__<safe-filename>`.
+// `_jobFileBlobs` caches a Blob URL per file id for instant Open after upload.
+
+function _safeFilename(name) {
+  // Storage rejects some chars; keep it ASCII + a few safe ones.
+  return (name || 'file').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120) || 'file';
+}
+function _dataUriToBlob(dataUri) {
+  if (!dataUri || dataUri.indexOf('data:') !== 0) return null;
+  var commaIdx = dataUri.indexOf(',');
+  if (commaIdx < 0) return null;
+  var meta = dataUri.slice(5, commaIdx);
+  var mime = meta.split(';')[0] || 'application/octet-stream';
+  var isB64 = meta.indexOf(';base64') >= 0;
+  var raw  = dataUri.slice(commaIdx + 1);
+  try {
+    if (isB64) {
+      var bin = atob(raw);
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Blob([bytes], {type: mime});
+    }
+    return new Blob([decodeURIComponent(raw)], {type: mime});
+  } catch(e) { return null; }
+}
+function _normaliseToBlob(source, fallbackMime) {
+  if (!source) return null;
+  if (source instanceof Blob) return source;
+  if (typeof source === 'string') {
+    if (source.indexOf('data:') === 0) return _dataUriToBlob(source);
+    // Legacy callers may still pass raw base64 without the data: prefix.
+    try {
+      var bin = atob(source);
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Blob([bytes], {type: fallbackMime || 'application/octet-stream'});
+    } catch(e) { return null; }
+  }
+  return null;
+}
+
+// Build the storage path for a (jobId, fileId, name) tuple. Exported so the
+// CAD save handler can pre-build the path and store it on the jobs row before
+// the upload completes.
+function buildJobFileStoragePath(jobId, fileId, name) {
+  return jobId + '/' + fileId + '__' + _safeFilename(name);
+}
+window.buildJobFileStoragePath = buildJobFileStoragePath;
+
+// Upload a Blob to the job-files bucket. Returns the storage path on success,
+// null on failure. Best-effort — caller decides whether to fall back.
+async function uploadJobFileBlob(jobId, fileId, name, blob) {
+  if (typeof _sb === 'undefined' || !_sb || !blob) return null;
+  var path = buildJobFileStoragePath(jobId, fileId, name);
+  try {
+    var res = await _sb.storage.from('job-files').upload(path, blob, {
+      contentType: blob.type || 'application/octet-stream',
+      upsert: true
+    });
+    if (res && res.error) {
+      console.warn('[job_files] storage upload failed', path, res.error);
+      return null;
+    }
+    return path;
+  } catch(e) {
+    console.warn('[job_files] storage upload threw', path, e);
+    return null;
+  }
+}
+window.uploadJobFileBlob = uploadJobFileBlob;
+
+// addJobFile — async now. Accepts a Blob/File (preferred) or a legacy data
+// URI / raw base64 string. Uploads to Storage, writes metadata + storage_path
+// to job_files, caches a blob URL for instant viewing.
+async function addJobFile(jobId, name, category, source) {
   var files = getJobFiles(jobId);
   var user = getCurrentUser() || {name:'Admin'};
   var id = 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-  var fileObj = {id:id, name:name, category:category||'general', uploadedBy:user.name, uploadedAt:new Date().toISOString()};
+  var blob = _normaliseToBlob(source, 'application/pdf');
+  var storagePath = blob ? await uploadJobFileBlob(jobId, id, name, blob) : null;
+
+  var fileObj = {
+    id: id, name: name, category: category || 'general',
+    uploadedBy: user.name, uploadedAt: new Date().toISOString(),
+    storagePath: storagePath
+  };
   files.push(fileObj);
   saveJobFiles(jobId, files);
-  // Cache the dataUrl in memory so View works immediately without round-trip.
-  window._jobFileBlobs[id] = dataUrl;
-  // Send the same id to Supabase so local + remote stay aligned across reloads.
-  if (typeof _sb !== 'undefined' && _sb) {
-    dbInsert('job_files', {id:id, job_id:jobId, name:name, category:category||'general', data_url:dataUrl, uploaded_by:user.name});
+
+  // Cache a Blob URL for instant Open without round-tripping Storage.
+  if (blob) {
+    try {
+      var existing = window._jobFileBlobs[id];
+      if (existing && existing.startsWith('blob:')) URL.revokeObjectURL(existing);
+    } catch(e) {}
+    window._jobFileBlobs[id] = URL.createObjectURL(blob);
   }
-  logJobAudit(jobId, 'File Uploaded', name+' ('+category+')');
-  addToast('File uploaded: '+name, 'success');
-}
-function removeJobFile(jobId, fileId) {
-  var files = getJobFiles(jobId);
-  var file = files.find(function(f){return f.id===fileId;});
-  saveJobFiles(jobId, files.filter(function(f){return f.id!==fileId;}));
-  delete window._jobFileBlobs[fileId];
-  // Drop from Supabase so the file doesn't reappear on next dbLoadAll.
+
   if (typeof _sb !== 'undefined' && _sb) {
-    try { _sb.from('job_files').delete().eq('id', fileId); } catch(e) { console.warn('job_files delete failed', fileId, e); }
+    var row = {
+      id: id, job_id: jobId, name: name,
+      category: category || 'general',
+      uploaded_by: user.name,
+      storage_path: storagePath
+    };
+    // Only store data_url as a legacy fallback when the Storage upload itself
+    // failed and we still have the blob in memory — keeps cross-browser view
+    // working until the file can be re-uploaded later.
+    if (!storagePath && typeof source === 'string' && source.indexOf('data:') === 0) {
+      row.data_url = source;
+    }
+    dbInsert('job_files', row);
+  }
+
+  logJobAudit(jobId, 'File Uploaded', name + ' (' + (category||'general') + ')');
+  addToast('File uploaded: ' + name, 'success');
+  return id;
+}
+
+async function removeJobFile(jobId, fileId) {
+  var files = getJobFiles(jobId);
+  var file = files.find(function(f){ return f.id === fileId; });
+  saveJobFiles(jobId, files.filter(function(f){ return f.id !== fileId; }));
+
+  // Revoke cached Blob URL if present.
+  try {
+    var cached = window._jobFileBlobs[fileId];
+    if (cached && cached.startsWith && cached.startsWith('blob:')) URL.revokeObjectURL(cached);
+  } catch(e) {}
+  delete window._jobFileBlobs[fileId];
+
+  if (typeof _sb !== 'undefined' && _sb) {
+    // Storage cleanup: best-effort, don't block on failure.
+    if (file && file.storagePath) {
+      try { await _sb.storage.from('job-files').remove([file.storagePath]); }
+      catch(e) { console.warn('[job_files] storage remove failed', file.storagePath, e); }
+    }
+    try { _sb.from('job_files').delete().eq('id', fileId); }
+    catch(e) { console.warn('job_files row delete failed', fileId, e); }
   }
   if (file) logJobAudit(jobId, 'File Removed', file.name);
   addToast('File removed', 'warning');
 }
-// Fetch the base64 dataUrl for a file. Memory cache first, then Supabase.
-async function getJobFileDataUrl(fileId) {
+
+// Look up a viewable URL for a file id. Strategy:
+//   1. In-memory blob URL from the cache (fastest — set on upload).
+//   2. job_files row → if storage_path present, signed URL from Storage.
+//   3. Legacy fallback: row.data_url base64 → decoded Blob URL.
+// Returns the URL string, or null.
+async function getJobFileBlobUrl(fileId) {
   if (window._jobFileBlobs[fileId]) return window._jobFileBlobs[fileId];
   if (typeof _sb === 'undefined' || !_sb) return null;
   try {
-    var res = await _sb.from('job_files').select('data_url').eq('id', fileId).single();
-    if (res && res.data && res.data.data_url) {
-      window._jobFileBlobs[fileId] = res.data.data_url;
-      return res.data.data_url;
+    var res = await _sb.from('job_files').select('storage_path,data_url').eq('id', fileId).single();
+    if (res && res.data) {
+      if (res.data.storage_path) {
+        var su = await _sb.storage.from('job-files').createSignedUrl(res.data.storage_path, 3600);
+        if (su && su.data && su.data.signedUrl) {
+          window._jobFileBlobs[fileId] = su.data.signedUrl;
+          return su.data.signedUrl;
+        }
+      }
+      if (res.data.data_url) {
+        // Legacy row — decode to a Blob URL so a multi-MB data: URL doesn't
+        // hang Safari's address bar.
+        var blob = _dataUriToBlob(res.data.data_url);
+        if (blob) {
+          var url = URL.createObjectURL(blob);
+          window._jobFileBlobs[fileId] = url;
+          return url;
+        }
+      }
     }
-  } catch(e) { console.warn('[job_files] fetch failed for '+fileId, e); }
+  } catch(e) { console.warn('[job_files] fetch failed for ' + fileId, e); }
   return null;
 }
-// Open a job file in a new tab. Decodes base64 to a Blob so the browser
-// gets a real PDF stream instead of a multi-MB data: URL.
+// Back-compat alias (some older callsites still reference the old name).
+async function getJobFileDataUrl(fileId) { return getJobFileBlobUrl(fileId); }
+
+// Open a job file in a new tab.
 async function viewJobFile(fileId, filename) {
-  var dataUrl = await getJobFileDataUrl(fileId);
-  if (!dataUrl) { addToast('File not found — try refreshing','warning'); return; }
+  var url = await getJobFileBlobUrl(fileId);
+  if (!url) { addToast('File not found — try refreshing','warning'); return; }
   try {
-    var commaIdx = dataUrl.indexOf(',');
-    var meta = dataUrl.slice(5, commaIdx); // "application/pdf;base64"
-    var mime = meta.split(';')[0] || 'application/pdf';
-    var b64  = dataUrl.slice(commaIdx + 1);
-    var bin  = atob(b64);
-    var bytes = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    var blob = new Blob([bytes], {type: mime});
-    var url  = URL.createObjectURL(blob);
     var w = window.open(url, '_blank');
     if (!w) {
       // Popup blocked — fall back to a download link.
-      var a = document.createElement('a'); a.href = url; a.download = filename || 'file'; document.body.appendChild(a); a.click(); a.remove();
+      var a = document.createElement('a'); a.href = url; a.download = filename || 'file';
+      document.body.appendChild(a); a.click(); a.remove();
     }
-    setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
   } catch(e) {
     console.error('[job_files] viewJobFile failed', e);
-    addToast('Could not open file','error');
+    addToast('Could not open file', 'error');
   }
 }
+
+// Open a job-row PDF pointer (cmDocUrl / finalRenderedPdfUrl /
+// finalSignedPdfUrl). The pointer can be:
+//   • a Storage path (preferred, post-2026-05-03)
+//   • a fileId from job_files (when CM came in via the legacy file-upload UI)
+//   • a data: URI (oldest legacy rows)
+//   • an http(s) URL (DocuSign envelope download URL, etc.)
+async function openJobPdf(pointer, filename) {
+  if (!pointer) { addToast('No file linked', 'warning'); return; }
+  // External / data URIs: open as-is.
+  if (pointer.indexOf('http') === 0 || pointer.indexOf('data:') === 0) {
+    window.open(pointer, '_blank');
+    return;
+  }
+  // file_xxx ids route through the job_files lookup.
+  if (pointer.indexOf('file_') === 0) return viewJobFile(pointer, filename);
+  // Otherwise it's a Storage path — sign and open.
+  if (typeof _sb !== 'undefined' && _sb) {
+    try {
+      var su = await _sb.storage.from('job-files').createSignedUrl(pointer, 3600);
+      if (su && su.data && su.data.signedUrl) {
+        window.open(su.data.signedUrl, '_blank');
+        return;
+      }
+    } catch(e) { console.warn('[job_files] sign failed', pointer, e); }
+  }
+  addToast('Could not open file', 'error');
+}
+window.openJobPdf = openJobPdf;
 // One-time migration: strip dataUrl from any pre-existing spartan_files_*
 // entries on script load. Without this, users who already filled their
 // localStorage quota with base64 PDFs stay stuck — the next setItem still
@@ -981,6 +1143,23 @@ function markJobClaimPaid(jobId, claimId) {
   saveJobClaims(jobId, claims);
   if (typeof logJobAudit === 'function') {
     logJobAudit(jobId, 'Payment Received', cl.stage + ' $' + Math.round(cl.amountIncGst));
+  }
+
+  // Sync the linked invoice + drive job-status auto-advance via the same
+  // helper the Invoicing page uses. Without this, marking a claim paid here
+  // leaves the invoice at 'sent' AND the job stuck at its prior status — so
+  // gates like the Final Design DocuSign check (22-jobs-page.js:885) keep
+  // blocking even though the 45% has cleared.
+  if (cl.invoiceId && typeof getInvoices === 'function' && typeof saveInvoices === 'function') {
+    var invs = getInvoices();
+    var invIdx = invs.findIndex(function (i) { return i.id === cl.invoiceId; });
+    if (invIdx >= 0 && invs[invIdx].status !== 'paid') {
+      invs[invIdx] = Object.assign({}, invs[invIdx], { status: 'paid', paidDate: paidDate });
+      saveInvoices(invs);
+      if (typeof _autoAdvanceJobOnInvoicePaid === 'function') {
+        try { _autoAdvanceJobOnInvoicePaid(invs[invIdx]); } catch (e) { console.warn('[claims] auto-advance failed', e); }
+      }
+    }
   }
 
   // If this was the LAST unpaid claim AND the deal's gate is
