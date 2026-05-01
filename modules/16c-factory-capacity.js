@@ -65,6 +65,32 @@ function estimateOrderMinutes(order) {
   // job as job.stationTimes. If the job has them, use them verbatim — that's
   // CAD's authoritative number, not a heuristic guess. Legacy jobs (CAD v1.x,
   // or pre-Step-5 jobs) fall back to the per-frame heuristic formula below.
+  //
+  // Path A (preferred, since 26-cad-timing-contract.js): route through
+  // CadTimingContract.getJobStationTimes — it knows the 11-key contract,
+  // zero-fills missing keys, and falls back through cadFinalData/cadSurvey
+  // Data/cadData snapshots if job.stationTimes itself isn't populated.
+  // Path B: legacy direct-read (kept as a fallback for cases where the
+  // contract module hasn't loaded yet, e.g. boot ordering bugs or unit tests).
+  if (typeof CadTimingContract !== 'undefined' && crmJob) {
+    var contractTimes = CadTimingContract.getJobStationTimes(crmJob);
+    var hasAny = false;
+    Object.keys(contractTimes).forEach(function(k) { if (contractTimes[k] > 0) hasAny = true; });
+    if (hasAny) {
+      var stTotalsC = {};
+      var stBottleneckC = null; var stBottleneckMinsC = -1;
+      FACTORY_STATIONS_TIMES.forEach(function(s) {
+        var mins = Number(contractTimes[s.id]) || 0;
+        stTotalsC[s.id] = mins;
+        if (mins > stBottleneckMinsC) { stBottleneckC = s.id; stBottleneckMinsC = mins; }
+      });
+      return {
+        totals: stTotalsC,
+        frameCount: frames.length || (order.frameCount || 0),
+        bottleneck: stBottleneckC
+      };
+    }
+  }
   if (crmJob && crmJob.stationTimes && typeof crmJob.stationTimes === 'object') {
     var stTotals = {};
     var stBottleneck = null; var stBottleneckMins = -1;
