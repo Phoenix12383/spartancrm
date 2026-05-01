@@ -81,6 +81,18 @@
             '16b-factory-profile.js',     // Aluplast profile ordering subsystem (uses core)
             '16c-factory-capacity.js',    // capacity engine + planner page (uses core)
             '16d-factory-pages.js',       // factory page renderers (uses everything above)
+            // Manual-protocol layer (Operations Manual v3.1). Loads after the legacy
+            // factory split — the new files deliberately do NOT redefine any legacy
+            // global, they only ADD: FactoryState, FactoryPersistence, JobTraveler,
+            // MorningGateChecklist, DispatchChecklist, ServiceTriageJob, RedTag,
+            // HoldVariation, BOMGenerator, CapacityCalculator, KlaesOrderPair,
+            // KPI/lead-time constants, and renderFactoryAudit (Red Tag Loss Sheet).
+            'js/modules/factory/24-factory-state.js',         // FactoryState + manual enums
+            'js/modules/factory/25-factory-persistence.js',   // FactoryPersistence
+            'js/modules/factory/23-factory-helpers.js',       // protocol classes + helpers
+            'js/modules/factory/16-factory-crm.js',           // renderer classes + audit page
+            // 26-cad-timing-contract.js loads LATER (Layer 11e) because it
+            // decorates readJobInstallMinutes from 17-install-schedule.js.
             '17-install-schedule.js',
             '21-cm-schedule.js',
             
@@ -117,6 +129,13 @@
             '31-fleet-page.js',
             // Layer 11e: Vehicle insurance PDF upload + parsing + alerts
             '31a-vehicle-insurance.js',
+
+            // Layer 11e: CAD Timing Contract — codifies the 11-key station
+            // contract + supply_only schedule-side override (audit §4.4).
+            // Decorates readJobInstallMinutes (from 17), so MUST load after
+            // 17, 30, 31. CONSUMERS that want the canonical reader: just call
+            // readJobInstallMinutes(job) — it's been wrapped in place.
+            'js/modules/factory/26-cad-timing-contract.js',
 
             // Layer 12: Initialization (MUST BE LAST)
             '99-init.js'
@@ -165,7 +184,13 @@
                 return;
             }
             
-            const modulePath = 'modules/' + modules[current];
+            // Entries with a path separator are treated as relative to the project
+            // root (e.g. 'js/modules/factory/24-factory-state.js'); bare filenames
+            // default to the legacy modules/ directory.
+            const _entry = modules[current];
+            const modulePath = (_entry.indexOf('/') >= 0)
+              ? _entry.replace(/^\.\.\//, '')
+              : 'modules/' + _entry;
             const script = document.createElement('script');
             script.src = modulePath + '?v=' + BUILD_VERSION;
             script.onload = function() {

@@ -51,6 +51,7 @@ const PATHS = {
   accbranch:'M18 20V10|M12 20V4|M6 20v-6',
   accxero:'M4 4l8 8|M20 4l-8 8|M4 20l8-8|M20 20l-8-8',
   factorybom:'M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z|M14 2v6h6|M16 13H8|M16 17H8|M10 9H8',
+  factoryaudit:'M9 12l2 2 4-4|M21 12c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9 9 4.03 9 9z',
   scheduler:'M3 6a2 2 0 012-2h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6z|M8 2v4|M16 2v4|M3 10h18',
   timesheets:'M12 2a10 10 0 100 20 10 10 0 000-20z|M12 6v6l4 2',
   reports:'M18 20V10|M12 20V4|M6 20v-6',
@@ -614,7 +615,7 @@ function renderSidebar(){
     ['jobdashboard','Dashboard'],['jobs','Jobs'],['finalsignoff','Final Sign Off'],['schedule','Installation Schedule'],['capplan','Capacity Planner'],['fleet','Fleet & Delivery'],['capacity','Smart Planner'],['cmmap','CM Schedule Map'],['weeklyrev','Weekly Revenue'],['invoicing','Invoicing'],['audit','Audit'],['jobsettings','Settings'],
   ];
   const factoryNav=[
-    ['factorydash','Dashboard'],['prodqueue','Job Queue'],['prodboard','Production Board'],['factorybom','BOM & Cut Sheets'],['factorycap','Capacity Planner'],['factorydispatch','Dispatch'],['audit','Audit'],
+    ['factorydash','Dashboard'],['prodqueue','Job Queue'],['prodboard','Production Board'],['factorybom','BOM & Cut Sheets'],['factorycap','Capacity Planner'],['factorydispatch','Dispatch'],['factoryaudit','Red Tag Audit'],['audit','Audit'],
   ];
   const accountsNav=[
     ['accdash','Dashboard'],['accoutstanding','Outstanding'],['accbills','Supplier Bills'],['accweekly','Weekly In vs Out'],['acccashflow','Cash Flow'],['accrecon','Reconciliation'],['accbranch','Branch P&L'],['accxero','Xero Integration'],['audit','Audit'],
