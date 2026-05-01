@@ -84,7 +84,15 @@ function pushJobToFactory(jobId) {
   existing.push(order); saveFactoryOrders(existing);
   var prodItems=cadData.projectItems.map(function(f,i){return cadFrameToFactoryItem(f,i,order.jid,cName,job.suburb,job.installDate);});
   saveFactoryItems(getFactoryItems().concat(prodItems));
+  // Persist productionStatus + factoryOrderId both in-memory AND to Supabase
+  // so they survive a reload. setState-only meant a reload via dbLoadAll
+  // wiped these from the job, leaving the factory order orphaned and the
+  // job appearing as awaiting-production again \u2014 a re-send risk. The fields
+  // are already in dbToJob/jobToDb so dbUpdate round-trips them cleanly.
   setState({jobs:getState().jobs.map(function(j){return j.id===jobId?Object.assign({},j,{productionStatus:'received',factoryOrderId:order.id}):j;})});
+  if (typeof dbUpdate === 'function') {
+    dbUpdate('jobs', jobId, { productionStatus: 'received', factoryOrderId: order.id });
+  }
   logJobAudit(jobId,'Sent to Factory',cadData.projectItems.length+' frames');
   addToast('\ud83c\udfed '+cadData.projectItems.length+' frames sent to factory','success');renderPage();
 }
@@ -115,8 +123,17 @@ function advanceFactoryOrder(orderId) {
   }
   order.status=nextStatus; saveFactoryOrders(orders);
   var crmJob=(getState().jobs||[]).find(function(j){return j.factoryOrderId===orderId||j.id===order.crmJobId;});
-  if(crmJob){setState({jobs:getState().jobs.map(function(j){return j.id===crmJob.id?Object.assign({},j,{productionStatus:order.status}):j;})});
-    if(order.status==='dispatched')logJobAudit(crmJob.id,'Dispatched','All frames dispatched');}
+  if(crmJob){
+    // Same in-memory + Supabase persist pattern as sendJobToFactory above —
+    // without dbUpdate the productionStatus advance vanished on reload and
+    // the job's factory progress fell back to 'received' (or null), even
+    // though the factory order itself had moved on.
+    setState({jobs:getState().jobs.map(function(j){return j.id===crmJob.id?Object.assign({},j,{productionStatus:order.status}):j;})});
+    if (typeof dbUpdate === 'function') {
+      dbUpdate('jobs', crmJob.id, { productionStatus: order.status });
+    }
+    if(order.status==='dispatched')logJobAudit(crmJob.id,'Dispatched','All frames dispatched');
+  }
   renderPage();
 }
 
