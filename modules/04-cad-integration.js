@@ -649,13 +649,20 @@ window.addEventListener('message', function(event) {
       if (msg.siteChecklist && typeof msg.siteChecklist === 'object') surveyExtras.siteChecklist = msg.siteChecklist;
       if (msg.trimCutList && typeof msg.trimCutList === 'object') surveyExtras.trimCutList = msg.trimCutList;
       jobUpdates.cadSurveyData = Object.assign({}, cadPayload, surveyExtras);
-      jobUpdates.cadData = cadPayload;  // mirror
+      // Do NOT mirror to cadData — cadData is the immutable original design
+      // inherited from the won deal. Overwriting it with survey measurements
+      // breaks the Original-vs-Measured variance check (both columns end up
+      // identical and "0 delta — no variation needed" fires falsely).
+      // Factory pipeline already prefers cadFinalData → cadSurveyData → cadData,
+      // so it sees the latest signed design without us mirroring.
       logJobAudit(_cadModal.entityId, 'Survey Data Saved', cadPayload.projectItems.length + ' frames');
     } else if (_cadModal.mode === 'final') {
       // Spec §4.2: final-mode saves land on cadFinalData. Signing is a separate
       // action (Step 6 / DocuSign) — we don't stamp finalSignedAt here.
+      // Same rule as survey: do NOT mirror to cadData. The original design
+      // must stay frozen so Original-vs-Measured / Original-vs-Final
+      // comparisons still mean something.
       jobUpdates.cadFinalData = cadPayload;
-      jobUpdates.cadData = cadPayload;  // mirror so factory-pipeline reads still work
       logJobAudit(_cadModal.entityId, 'Final Design Saved', cadPayload.projectItems.length + ' frames');
     } else {
       // mode='design' — the manager-override edit path (line ~14637) or a
