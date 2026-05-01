@@ -775,6 +775,7 @@ var ALL_PERMISSIONS = [
   {key:'jobs.cmmap',label:'CM Schedule Map',module:'Job CRM',group:'jobs'},
   {key:'jobs.revenue',label:'Weekly Revenue',module:'Job CRM',group:'jobs'},
   {key:'jobs.checkmeasure',label:'Perform Check Measure',module:'Job CRM',group:'jobs'},
+  {key:'jobs.delete',label:'Delete Jobs',module:'Job CRM',group:'jobs'},
   // Factory CRM
   {key:'factory.dashboard',label:'Factory Dashboard',module:'Factory CRM',group:'factory'},
   {key:'factory.queue',label:'Production Queue',module:'Factory CRM',group:'factory'},

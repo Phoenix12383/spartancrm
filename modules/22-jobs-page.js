@@ -73,6 +73,14 @@ function renderJobsPage() {
   var visibleCols = savedCols.filter(function(s){return s.visible;}).sort(function(a,b){return a.ord-b.ord;});
   var colDefs = visibleCols.map(function(vc){return ALL_COLS.find(function(c){return c.id===vc.id;});}).filter(Boolean);
 
+  // Bulk-select state. Gated on the `jobs.delete` permission, which by default
+  // only admins have. Other roles can be granted it via Settings → Users &
+  // Roles → Custom Permission Overrides.
+  var canBulkDelete = (typeof hasPermission === 'function') && hasPermission('jobs.delete');
+  var selectedIds = canBulkDelete ? (getState().jobSelectedIds || []) : [];
+  var selectedSet = {};
+  selectedIds.forEach(function(id){ selectedSet[id] = 1; });
+
   // Branch filter
   if (branch && branch !== 'all') jobs = jobs.filter(function(j){ return j.branch === branch; });
   if (statusFilter !== 'All') jobs = jobs.filter(function(j){ return j.status === statusFilter; });
@@ -199,7 +207,15 @@ function renderJobsPage() {
     }
     var warningHtml = warnings.length > 0 ? '<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:2px">' + warnings.map(function(w){return '<span title="'+(w.tip||'').replace(/"/g,'&quot;')+'" style="font-size:8px;font-weight:700;color:#fff;background:'+(barCol==='#ef4444'?'#ef4444':barCol==='#9ca3af'?'#9ca3af':'#f59e0b')+';padding:0 4px;border-radius:3px;white-space:nowrap;cursor:help">'+w.label+'</span>';}).join('') + '</div>' : '';
 
-    return '<tr onclick="setState({jobDetailId:\''+j.id+'\'})" style="cursor:pointer;border-left:4px solid '+barCol+'" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'#fff\'">'
+    var isSelected = !!selectedSet[j.id];
+    var rowBg = isSelected ? '#fef2f2' : '#fff';
+    var checkboxCell = canBulkDelete
+      ? '<td class="td" style="width:36px;text-align:center;padding:0" onclick="event.stopPropagation()">'
+        + '<input type="checkbox" '+(isSelected?'checked':'')+' onclick="event.stopPropagation();toggleJobSelected(\''+j.id+'\',this.checked)" style="accent-color:#c41230;cursor:pointer;width:16px;height:16px"></td>'
+      : '';
+
+    return '<tr onclick="setState({jobDetailId:\''+j.id+'\'})" style="cursor:pointer;border-left:4px solid '+barCol+';background:'+rowBg+'" onmouseover="this.style.background=\''+(isSelected?'#fee2e2':'#f9fafb')+'\'" onmouseout="this.style.background=\''+rowBg+'\'">'
+      +checkboxCell
       +colDefs.map(function(col,ci){
         var val = cellVal(col,j);
         // Append warnings to the first column
@@ -207,6 +223,30 @@ function renderJobsPage() {
         return '<td class="td" style="'+(col.align?'text-align:'+col.align+';':'')+'">'+val+'</td>';
       }).join('')+'</tr>';
   }).join('');
+
+  // Master checkbox for the header — selects/deselects all CURRENTLY VISIBLE
+  // (filtered + searched) jobs, not the entire DB. That matches the user's
+  // mental model: "tick the box to select what I'm looking at right now".
+  var visibleIds = jobs.map(function(j){ return j.id; });
+  var allVisibleSelected = canBulkDelete && visibleIds.length > 0 && visibleIds.every(function(id){ return selectedSet[id]; });
+  var someVisibleSelected = canBulkDelete && visibleIds.some(function(id){ return selectedSet[id]; });
+  var headerCheckbox = canBulkDelete
+    ? '<th class="th" style="width:36px;text-align:center;padding:0">'
+      + '<input type="checkbox" '+(allVisibleSelected?'checked':'')
+      + ' onclick="toggleAllJobsSelected(this.checked)" '
+      + (someVisibleSelected && !allVisibleSelected ? 'ref="indeterminate"' : '')
+      + ' style="accent-color:#c41230;cursor:pointer;width:16px;height:16px" title="Select / deselect all visible jobs"></th>'
+    : '';
+
+  // Bulk-action bar — only renders when there's a selection.
+  var bulkBar = '';
+  if (canBulkDelete && selectedIds.length > 0) {
+    bulkBar = '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;padding:10px 16px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px">'
+      + '<span style="font-size:13px;font-weight:700;color:#c41230">'+selectedIds.length+' job'+(selectedIds.length!==1?'s':'')+' selected</span>'
+      + '<button onclick="deleteSelectedJobs()" class="btn-r" style="font-size:12px;padding:7px 14px;gap:4px">🗑 Delete selected</button>'
+      + '<button onclick="setState({jobSelectedIds:[]})" class="btn-w" style="font-size:12px;padding:7px 14px">Clear</button>'
+      + '</div>';
+  }
 
   // Column settings dropdown
   var colSettings = '<div style="position:relative;display:inline-block">'
@@ -236,9 +276,11 @@ function renderJobsPage() {
     +'<div style="margin-left:auto;display:flex;gap:8px;align-items:center">'
     +'<input id="jobSearchInput" class="inp" placeholder="Search jobs\u2026" value="'+search.replace(/"/g,'&quot;')+'" oninput="setState({jobListSearch:this.value})" style="width:220px;font-size:13px">'
     +colSettings+'</div></div>'
+    +bulkBar
     +'<div class="card" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead><tr>'
+    +headerCheckbox
     +colDefs.map(function(col){return sortTh(col);}).join('')
-    +'</tr></thead><tbody>'+(rowsHtml||'<tr><td class="td" colspan="'+colDefs.length+'" style="text-align:center;color:#9ca3af;padding:40px">No jobs found.</td></tr>')+'</tbody></table></div></div>';
+    +'</tr></thead><tbody>'+(rowsHtml||'<tr><td class="td" colspan="'+(colDefs.length+(canBulkDelete?1:0))+'" style="text-align:center;color:#9ca3af;padding:40px">No jobs found.</td></tr>')+'</tbody></table></div></div>';
 }
 
 // Column management helpers
@@ -273,6 +315,135 @@ function resetJobCols() {
   localStorage.removeItem('spartan_job_cols_'+userId);
   renderPage();
 }
+
+// ── Bulk select + delete ─────────────────────────────────────────────────────
+// Admin-only. Selection lives in state (jobSelectedIds) so it survives renders.
+window.toggleJobSelected = function(jobId, checked) {
+  if (!hasPermission('jobs.delete')) return;
+  var sel = (getState().jobSelectedIds || []).slice();
+  var idx = sel.indexOf(jobId);
+  if (checked && idx < 0) sel.push(jobId);
+  else if (!checked && idx >= 0) sel.splice(idx, 1);
+  setState({ jobSelectedIds: sel });
+};
+window.toggleAllJobsSelected = function(checked) {
+  if (!hasPermission('jobs.delete')) return;
+  // Replicate the same filter the renderer uses so "select all" only ticks
+  // what the user can actually see, not the entire DB.
+  var jobs = getState().jobs || [];
+  var contacts = getState().contacts || [];
+  var branch = getState().branch;
+  var search = (getState().jobListSearch || '').toLowerCase();
+  var statusFilter = getState().jobListFilter || 'All';
+  var heldOnly = getState().jobShowHeldOnly || false;
+  if (branch && branch !== 'all') jobs = jobs.filter(function(j){ return j.branch === branch; });
+  if (statusFilter !== 'All') jobs = jobs.filter(function(j){ return j.status === statusFilter; });
+  if (heldOnly) jobs = jobs.filter(function(j){ return j.hold || j.status === 'c4_date_change_hold'; });
+  if (search) {
+    jobs = jobs.filter(function(j){
+      var c = contacts.find(function(ct){ return ct.id === j.contactId; });
+      var cName = c ? (c.fn + ' ' + c.ln).toLowerCase() : '';
+      return (j.jobNumber||'').toLowerCase().indexOf(search) >= 0
+          || cName.indexOf(search) >= 0
+          || (j.suburb||'').toLowerCase().indexOf(search) >= 0
+          || (j.street||'').toLowerCase().indexOf(search) >= 0;
+    });
+  }
+  var visibleIds = jobs.map(function(j){ return j.id; });
+  if (checked) {
+    // Union with any existing selection (admin may have picked off-screen items).
+    var existing = getState().jobSelectedIds || [];
+    var seen = {};
+    var merged = existing.concat(visibleIds).filter(function(id){
+      if (seen[id]) return false; seen[id] = 1; return true;
+    });
+    setState({ jobSelectedIds: merged });
+  } else {
+    var visSet = {};
+    visibleIds.forEach(function(id){ visSet[id] = 1; });
+    var kept = (getState().jobSelectedIds || []).filter(function(id){ return !visSet[id]; });
+    setState({ jobSelectedIds: kept });
+  }
+};
+
+// Delete the selected jobs from state, Supabase, and any per-job localStorage
+// caches (claims, files index, tools, audit). Linked deal's jobRef is cleared
+// so the deal can be re-converted if needed.
+//
+// This is destructive and irreversible — confirm twice for >1 job.
+window.deleteSelectedJobs = function() {
+  if (!hasPermission('jobs.delete')) { addToast('You do not have permission to delete jobs', 'error'); return; }
+  var ids = (getState().jobSelectedIds || []).slice();
+  if (ids.length === 0) return;
+
+  var jobs = getState().jobs || [];
+  var contacts = getState().contacts || [];
+  var summary = ids.map(function(id){
+    var j = jobs.find(function(x){ return x.id === id; });
+    if (!j) return id;
+    var c = contacts.find(function(ct){ return ct.id === j.contactId; });
+    return (j.jobNumber || id) + (c ? ' (' + c.fn + ' ' + c.ln + ')' : '');
+  }).slice(0, 6).join('\n   • ');
+
+  var msg = 'Permanently delete ' + ids.length + ' job' + (ids.length!==1?'s':'') + '?\n\n   • ' + summary
+    + (ids.length > 6 ? '\n   • … and ' + (ids.length - 6) + ' more' : '')
+    + '\n\nThis also removes:\n   • progress claims\n   • job files index\n   • job audit entries\n   • install progress\n   • job costs\n\nThe linked deal is preserved (jobRef cleared so it can be re-converted).\n\nThis cannot be undone.';
+  if (!confirm(msg)) return;
+
+  // Extra confirmation for destructive bulk ops.
+  if (ids.length > 1) {
+    var typed = prompt('Type DELETE (capitalised) to confirm bulk deletion of ' + ids.length + ' jobs:');
+    if (typed !== 'DELETE') { addToast('Bulk delete cancelled', 'warning'); return; }
+  }
+
+  var idSet = {};
+  ids.forEach(function(id){ idSet[id] = 1; });
+
+  // Clear deal.jobRef on any linked deal so the deal isn't stuck pointing at a ghost.
+  var deals = (getState().deals || []).map(function(d){
+    var linkedJob = jobs.find(function(j){ return idSet[j.id] && j.dealId === d.id; });
+    if (!linkedJob) return d;
+    return Object.assign({}, d, { jobRef: null });
+  });
+
+  // Remove jobs from state.
+  var newJobs = jobs.filter(function(j){ return !idSet[j.id]; });
+  setState({ jobs: newJobs, deals: deals, jobSelectedIds: [], jobDetailId: null });
+
+  // Persist deletes — Supabase first (cascade-friendly tables), then localStorage caches.
+  ids.forEach(function(id){
+    if (typeof dbDelete === 'function') {
+      try { dbDelete('jobs', id); } catch(e){}
+      // Best-effort cleanup of related rows. Some tables may not exist on this
+      // project yet (factory_orders, install_progress) — _dbMissingTables in
+      // 01-persistence.js short-circuits silently after the first 404, so we
+      // don't spam the network.
+      try { _sb && _sb.from('job_files').delete().eq('job_id', id); } catch(e){}
+      try { _sb && _sb.from('job_audit').delete().eq('job_id', id); } catch(e){}
+      try { _sb && _sb.from('job_claims').delete().eq('job_id', id); } catch(e){}
+      try { _sb && _sb.from('job_costs').delete().eq('job_id', id); } catch(e){}
+      try { _sb && _sb.from('install_progress').delete().eq('job_id', id); } catch(e){}
+      try { _sb && _sb.from('activities').delete().eq('entity_type','job').eq('entity_id', id); } catch(e){}
+    }
+    // Linked deal jobRef clear (one row per linked deal).
+    var jobRow = jobs.find(function(j){ return j.id === id; });
+    if (jobRow && jobRow.dealId && typeof dbUpdate === 'function') {
+      try { dbUpdate('deals', jobRow.dealId, { jobRef: null }); } catch(e){}
+    }
+    // localStorage caches — keys defined alongside their writers.
+    try { localStorage.removeItem('spartan_claims_' + id); } catch(e){}
+    try { localStorage.removeItem('spartan_files_' + id); } catch(e){}
+    try { localStorage.removeItem('spartan_job_tools_' + id); } catch(e){}
+  });
+
+  if (typeof logJobAudit === 'function') {
+    // Audit at the user level (no specific surviving job to attach to).
+    var cu = getCurrentUser() || { id:'system', name:'System' };
+    console.log('[Spartan] Bulk-deleted ' + ids.length + ' jobs by ' + cu.name + ': ' + ids.join(', '));
+  }
+
+  addToast('Deleted ' + ids.length + ' job' + (ids.length!==1?'s':''), 'success');
+};
 
 // ── Job Detail Page (stub for Phase 3+) ─────────────────────────────────────
 function renderJobDetail() {
@@ -1895,6 +2066,7 @@ function renderJobDetail() {
             : '')
         : '<span style="font-size:11px;padding:5px 14px;background:#f0fdf4;color:#15803d;border-radius:8px;font-weight:600">\u2705 Completed</span>')
     + '<button onclick="var type=prompt(\'Service call type (warranty/callback/repair/leak):\',\'callback\');if(!type)return;var desc=prompt(\'Description:\',\'\');addServiceCall(\'' + job.id + '\',type,\'medium\',desc);setState({crmMode:\'service\',page:\'servicelist\'});" class="btn-w" style="font-size:11px;padding:5px 10px;gap:4px">' + Icon({n:'phone',size:12}) + ' Service Call</button>'
+    + (hasPermission('jobs.delete') ? '<button onclick="setState({jobSelectedIds:[\''+job.id+'\']});deleteSelectedJobs();" class="btn-w" style="font-size:11px;padding:5px 10px;gap:4px;color:#b91c1c;border-color:#fecaca" title="Permanently delete this job">🗑 Delete</button>' : '')
     + '</div>'
     + '</div>'
     + holdBanner
