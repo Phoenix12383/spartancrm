@@ -300,6 +300,43 @@ function renderMobileFAB() {
   return '<div style="' + pillBase + '">' + scheduleBtn + callBtn + smsBtn + '</div>';
 }
 
+// ── Navigation history stack ──────────────────────────────────────────────────
+var _navHistory = [];
+var _navFuture  = [];
+
+function _navSnapshot() {
+  var s = getState();
+  return { page: s.page, jobDetailId: s.jobDetailId || null, dealDetailId: s.dealDetailId || null,
+           leadDetailId: s.leadDetailId || null, contactDetailId: s.contactDetailId || null };
+}
+
+function navigateTo(page, extra) {
+  _navHistory.push(_navSnapshot());
+  _navFuture = [];
+  var patch = Object.assign({ page: page, jobDetailId: null, dealDetailId: null,
+                               leadDetailId: null, contactDetailId: null }, extra || {});
+  setState(patch);
+  renderPage();
+}
+
+function navBack() {
+  if (!_navHistory.length) return;
+  _navFuture.push(_navSnapshot());
+  setState(_navHistory.pop());
+  renderPage();
+}
+
+function navForward() {
+  if (!_navFuture.length) return;
+  _navHistory.push(_navSnapshot());
+  setState(_navFuture.pop());
+  renderPage();
+}
+
+window.navigateTo = navigateTo;
+window.navBack    = navBack;
+window.navForward = navForward;
+
 function renderTopBar(){
   const {sidebarOpen,branch,notifs}=getState();
   const native = typeof isNativeWrapper === 'function' && isNativeWrapper();
@@ -318,8 +355,16 @@ function renderTopBar(){
   // Native theme tokens — black header surface, white text/icons.
   const tbBg = native ? '#0a0a0a' : '#fff';
   const tbBorder = native ? '0' : '1px solid #f0f0f0';
+  const canBack    = _navHistory.length > 0;
+  const canForward = _navFuture.length  > 0;
+  const navBtnStyle = (on) => `display:flex;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid #e5e7eb;border-radius:7px;background:#fff;cursor:${on?'pointer':'default'};color:${on?'#374151':'#d1d5db'};transition:background .15s`;
+  const navBtns = native ? '' : `<div style="display:flex;gap:4px;flex-shrink:0">
+    <button onclick="navBack()" ${canBack?'':'disabled'} style="${navBtnStyle(canBack)}" title="Back">${Icon({n:'left',size:14})}</button>
+    <button onclick="navForward()" ${canForward?'':'disabled'} style="${navBtnStyle(canForward)}" title="Forward">${Icon({n:'right',size:14})}</button>
+  </div>`;
   return `<header id="topbar" style="position:fixed;top:${MODULE_BAR_HEIGHT}px;left:${offset}px;right:0;height:${TOPBAR_HEIGHT}px;background:${tbBg};border-bottom:${tbBorder};display:flex;align-items:center;padding:0 ${native ? '12' : '24'}px;gap:${native ? '8' : '16'}px;z-index:20;transition:left .2s">
     ${brandLeft}
+    ${navBtns}
     ${devBadge}
     ${native ? '' : `<div style="position:relative;flex:1;max-width:400px">
       <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:#9ca3af">${Icon({n:'search',size:14})}</span>

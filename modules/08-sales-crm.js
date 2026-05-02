@@ -1175,6 +1175,16 @@ function renderEditContactDrawer() {
   </div>`;
 }
 
+function deleteContact(id) {
+  var c = getState().contacts.find(function(x) { return x.id === id; });
+  if (!c) return;
+  if (!confirm('Delete ' + c.fn + ' ' + c.ln + '? This cannot be undone.')) return;
+  setState({ contacts: getState().contacts.filter(function(x) { return x.id !== id; }), contactDetailId: null });
+  if (typeof dbDelete === 'function') { try { dbDelete('contacts', id); } catch(e) {} }
+  addToast('Contact deleted', 'warning');
+  renderPage();
+}
+
 function saveContactEdit() {
   var id = getState().editingContactId;
   var c = getState().contacts.find(function (x) { return x.id === id; });
@@ -6467,7 +6477,7 @@ function renderContactDetail() {
     entityType: 'contact', entityId: c.id,
     title: c.fn + ' ' + c.ln, owner: c.rep,
     stageBarHtml: null,
-    wonLostHtml: (canEditContact(c) ? `<button onclick="openContactEditDrawer('${c.id}')" class="btn-w" style="font-size:12px;padding:6px 14px;margin-right:6px">${Icon({ n: 'edit', size: 12 })} Edit</button>` : '') + `<button onclick="setState({page:'deals',contactDetailId:null})" class="btn-r" style="font-size:12px;padding:6px 14px">+ Deal</button>`,
+    wonLostHtml: (canEditContact(c) ? `<button onclick="openContactEditDrawer('${c.id}')" class="btn-w" style="font-size:12px;padding:6px 14px;margin-right:6px">${Icon({ n: 'edit', size: 12 })} Edit</button>` : '') + `<button onclick="deleteContact('${c.id}')" style="font-size:12px;padding:6px 14px;margin-right:6px;background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;border-radius:8px;cursor:pointer;font-family:inherit;font-weight:500">Delete</button>` + `<button onclick="setState({page:'deals',contactDetailId:null})" class="btn-r" style="font-size:12px;padding:6px 14px">+ Deal</button>`,
     leftSidebarHtml: leftSidebar,
     backOnclick: "setState({contactDetailId:null})",
     backLabel: "Contacts",
