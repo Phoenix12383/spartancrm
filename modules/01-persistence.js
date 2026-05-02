@@ -1274,6 +1274,8 @@ const PIPELINES=[
 
 const DEALS=[];
 
+const LEADS_DATA=[];
+
 const NOTIFS=[];
 
 const STATUS_FLOW=[];
