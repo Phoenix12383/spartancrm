@@ -1,3 +1,4 @@
+console.log('[23-factory-helpers] START');
 // ═════════════════════════════════════════════════════════════════════════════
 // SPARTAN CRM — js/modules/factory/23-factory-helpers.js
 // Factory protocol classes and helper functions, derived directly from the
@@ -150,6 +151,7 @@ class ProductionStation {
     this.cap       = def.cap || 0;        // daily capacity
     this.icon      = def.icon || '';
     this.role      = def.role || 'Operator';
+    this.cadKeys   = def.cadKeys || [];   // CAD stationTimes keys for this station
     this.queue     = [];                  // factory item ids currently here
   }
 
@@ -572,3 +574,15 @@ function getStationQueue(stationId) {
   var src = (typeof getFactoryItems === 'function') ? getFactoryItems() : [];
   return src.filter(function(i){ return i.station === stationId; });
 }
+
+// Explicit window exports — var declarations at top level should be global,
+// but injected <script> tags can sometimes lose the binding before other
+// modules look it up. Belt-and-suspenders.
+console.log('[23-factory-helpers] DONE — exporting to window');
+window.FACTORY_STATIONS_FROM_MANUAL = FACTORY_STATIONS_FROM_MANUAL;
+window.getStationQueue   = getStationQueue;
+window.assignToStation   = assignToStation;
+window.completeStation   = completeStation;
+window.calculateCapacity = calculateCapacity;
+window.generateBOM       = generateBOM;
+window.updateFactoryOrder = updateFactoryOrder;
