@@ -116,18 +116,84 @@ function renderProdQueue() {
 }
 
 function renderProdBoard() {
-  var items=getFactoryItems();var branch=getState().branch||'all';
-  if(branch!=='all'){var brOrders=getFactoryOrders().filter(function(o){return o.branch===branch;});var brIds=brOrders.map(function(o){return o.jid;});items=items.filter(function(i){return brIds.indexOf(i.orderId)>=0;});}
-  var h='<div style="margin-bottom:16px"><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:24px;margin:0">\ud83d\udcca Production Board</h2><p style="color:#6b7280;font-size:13px;margin:4px 0 0">Kanban \u2014 move frames between stations</p></div>';
-  if(items.length===0){return '<div>'+h+'<div class="card" style="padding:40px;text-align:center;color:#9ca3af"><div style="font-size:36px;margin-bottom:8px">\ud83c\udfed</div>No frames in production.</div></div>';}
-  h+='<div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:10px">';
-  FACTORY_STATIONS.forEach(function(stn,sIdx){var stnItems=items.filter(function(i){return i.station===stn.id;});var nextStn=sIdx<FACTORY_STATIONS.length-1?FACTORY_STATIONS[sIdx+1]:null;
-    h+='<div style="min-width:200px;flex:1;background:#f9fafb;border-radius:12px;border:1px solid #e5e7eb;display:flex;flex-direction:column"><div style="padding:10px 12px;border-bottom:1px solid #e5e7eb;text-align:center"><span style="font-size:16px">'+stn.icon+'</span><div style="font-size:12px;font-weight:700;margin-top:2px">'+stn.name+'</div><div style="font-size:10px;color:#9ca3af">'+stnItems.length+'/'+stn.cap+'</div></div><div style="flex:1;padding:6px;display:flex;flex-direction:column;gap:4px;max-height:400px;overflow-y:auto">';
-    if(stnItems.length===0)h+='<div style="color:#d1d5db;font-size:10px;text-align:center;padding:12px">\u2014</div>';
-    var PL={awning_window:'AWN',casement_window:'CAS',sliding_window:'SLD',fixed_window:'FIX',tilt_turn_window:'T&T',double_hung_window:'DH',bifold_door:'BFD',sliding_door:'SLD-D',french_door:'FRN',lift_slide_door:'L&S',smart_slide_door:'SMS'};
-    stnItems.forEach(function(it){h+='<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px;font-size:10px"><div style="display:flex;justify-content:space-between;align-items:center"><span style="font-weight:700;color:#c41230">'+(it.name||'')+'</span><span style="font-size:9px;padding:1px 5px;border-radius:4px;background:#f3f4f6;color:#6b7280">'+(PL[it.productType]||'')+'</span></div><div style="color:#6b7280;margin-top:2px">'+(it.widthMm||0)+'\u00d7'+(it.heightMm||0)+'mm</div><div style="color:#9ca3af;font-size:9px">'+(it.customer||'')+' \u00b7 '+(it.suburb||'')+'</div>'+(it.rework?'<div style="color:#ef4444;font-weight:700;font-size:9px;margin-top:2px">\u26a0\ufe0f REWORK</div>':'')+(nextStn?'<button onclick="moveFactoryItem(\''+it.id+'\',\''+nextStn.id+'\')" style="margin-top:4px;width:100%;padding:3px;border:1px solid #e5e7eb;border-radius:4px;background:#fff;font-size:9px;cursor:pointer;color:#3b82f6;font-weight:600">\u2192 '+nextStn.name+'</button>':'<button onclick="moveFactoryItem(\''+it.id+'\',\'complete\')" style="margin-top:4px;width:100%;padding:3px;border:none;border-radius:4px;background:#22c55e;font-size:9px;cursor:pointer;color:#fff;font-weight:600">\u2705 Complete</button>')+'</div>';});
-    h+='</div></div>';});
-  h+='</div>';return '<div>'+h+'</div>';
+  var stations = (typeof FACTORY_STATIONS_FROM_MANUAL !== 'undefined') ? FACTORY_STATIONS_FROM_MANUAL : FACTORY_STATIONS;
+  var stnPageMap = {cutting:'stncutting',milling:'stnmilling',welding:'stnwelding',hardware:'stnhardware',reveals:'stnreveals',dispatch:'stndispatch'};
+  var PL = {awning_window:'AWN',casement_window:'CAS',sliding_window:'SLD',fixed_window:'FIX',tilt_turn_window:'T&T',double_hung_window:'DH',bifold_door:'BFD',sliding_door:'SLD-D',french_door:'FRN',lift_slide_door:'L&S',smart_slide_door:'SMS'};
+
+  var items = getFactoryItems();
+  var branch = getState().branch || 'all';
+  if (branch !== 'all') {
+    var brIds = getFactoryOrders().filter(function(o){return o.branch===branch;}).map(function(o){return o.jid;});
+    items = items.filter(function(i){return brIds.indexOf(i.orderId) >= 0;});
+  }
+
+  var h = '<div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">'
+    + '<div><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:24px;margin:0">\ud83d\udcca Production Board</h2>'
+    + '<p style="color:#6b7280;font-size:13px;margin:4px 0 0">Kanban \u2014 click a station header to drill into its queue</p></div>'
+    + '</div>';
+
+  h += '<div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:10px">';
+
+  stations.forEach(function(stn, sIdx) {
+    var stnItems = items.filter(function(i){return i.station === stn.id;});
+    var nextStn  = sIdx < stations.length - 1 ? stations[sIdx + 1] : null;
+    var loadPct  = stn.cap > 0 ? Math.round(stnItems.length / stn.cap * 100) : 0;
+    var loadCol  = loadPct > 80 ? '#ef4444' : loadPct > 50 ? '#f59e0b' : '#22c55e';
+    var stnPage  = stnPageMap[stn.id];
+
+    // Column header \u2014 clicking anywhere on it navigates to the station page
+    var headerClick = stnPage ? 'onclick="setState({page:\'' + stnPage + '\'});renderPage()" style="cursor:pointer"' : '';
+    h += '<div style="min-width:200px;flex:1;background:#f9fafb;border-radius:12px;border:1px solid #e5e7eb;display:flex;flex-direction:column">';
+    h += '<div ' + headerClick + ' style="padding:10px 12px;border-bottom:1px solid #e5e7eb;border-radius:12px 12px 0 0;text-align:center;'
+      + (stnPage ? 'background:#fff;transition:background .15s" onmouseover="this.style.background=\'#f0f9ff\'" onmouseout="this.style.background=\'#fff\'"' : '"')
+      + '>';
+    h += '<span style="font-size:18px">' + stn.icon + '</span>';
+    h += '<div style="font-size:12px;font-weight:700;margin-top:2px;color:#111">' + stn.name + '</div>';
+    h += '<div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-top:3px">';
+    h += '<span style="font-size:10px;color:' + loadCol + ';font-weight:700">' + stnItems.length + '/' + stn.cap + '</span>';
+    if (stnPage) {
+      h += '<span style="font-size:9px;color:#3b82f6;font-weight:600">View \u2192</span>';
+    }
+    h += '</div></div>';
+
+    // Cards
+    h += '<div style="flex:1;padding:6px;display:flex;flex-direction:column;gap:4px;max-height:420px;overflow-y:auto">';
+    if (stnItems.length === 0) {
+      h += '<div style="color:#d1d5db;font-size:10px;text-align:center;padding:16px">\u2014</div>';
+    }
+    stnItems.forEach(function(it) {
+      var mins = 0;
+      if (it.stationTimes && stn.cadKeys) {
+        mins = stn.cadKeys.reduce(function(s,k){return s + (Number(it.stationTimes[k])||0);}, 0);
+      }
+      var timeTag = mins > 0 ? '<span style="font-size:9px;color:' + (mins>60?'#f59e0b':'#6b7280') + ';margin-left:4px">'
+        + (mins >= 60 ? Math.floor(mins/60) + 'h' + (mins%60?Math.round(mins%60)+'m':'') : Math.round(mins) + 'm') + '</span>' : '';
+
+      h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px;font-size:10px'
+        + (it.rework ? ';border-left:3px solid #ef4444' : '') + '">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center">'
+        + '<span style="font-weight:700;color:#c41230">' + (it.name||'') + '</span>'
+        + '<span style="font-size:9px;padding:1px 5px;border-radius:4px;background:#f3f4f6;color:#6b7280">' + (PL[it.productType]||'') + timeTag + '</span>'
+        + '</div>';
+      h += '<div style="color:#6b7280;margin-top:2px">' + (it.widthMm||0) + '\u00d7' + (it.heightMm||0) + 'mm</div>';
+      h += '<div style="color:#9ca3af;font-size:9px">' + (it.customer||'') + (it.suburb ? ' \u00b7 ' + it.suburb : '') + '</div>';
+      if (it.rework) h += '<div style="color:#ef4444;font-weight:700;font-size:9px;margin-top:2px">\u26a0 REWORK</div>';
+      if (nextStn) {
+        h += '<button onclick="moveFactoryItem(\'' + it.id + '\',\'' + nextStn.id + '\')" '
+          + 'style="margin-top:4px;width:100%;padding:3px;border:1px solid #e5e7eb;border-radius:4px;background:#fff;font-size:9px;cursor:pointer;color:#3b82f6;font-weight:600">'
+          + '\u2192 ' + nextStn.name + '</button>';
+      } else {
+        h += '<button onclick="moveFactoryItem(\'' + it.id + '\',\'complete\')" '
+          + 'style="margin-top:4px;width:100%;padding:3px;border:none;border-radius:4px;background:#22c55e;font-size:9px;cursor:pointer;color:#fff;font-weight:600">'
+          + '\u2705 Complete</button>';
+      }
+      h += '</div>';
+    });
+    h += '</div></div>';
+  });
+
+  h += '</div>';
+  return '<div>' + h + '</div>';
 }
 
 // ── BOM & Cut Sheets ────────────────────────────────────────────────────────

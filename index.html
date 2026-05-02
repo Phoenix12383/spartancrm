@@ -47,7 +47,7 @@
         console.log('Spartan CRM - Loading Logical Modules');
         console.log('========================================\n');
         
-        const BUILD_VERSION = '20260503j';
+        const BUILD_VERSION = '20260503l';
 
         // Logical loading order based on dependencies
         const modules = [
@@ -55,6 +55,7 @@
             '01-persistence.js',
             //needed for DEALS
             '02-mock-data.js',
+            '02a-mock-factory-data.js',
             '04-cad-integration.js',
             
             // Layer 2: State & Auth
