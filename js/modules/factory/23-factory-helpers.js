@@ -187,10 +187,12 @@ class ProductionStation {
 // / etc.) is deliberately deferred to Phase 2 per v1.5 §10. This roster keeps
 // the legacy 4-station compaction; expand only when Phase 2 lands.
 var FACTORY_STATIONS_FROM_MANUAL = [
-  new ProductionStation({ id:'cutting',  name:'Cutting',                       statusKey:'d3_cutting',         cap:20, icon:'✂️', role:'Saw Operator' }),
-  new ProductionStation({ id:'milling',  name:'Milling / Steel / Welding',     statusKey:'d4_milling_welding', cap:12, icon:'🔥', role:'Operator' }),
-  new ProductionStation({ id:'assembly', name:'Hardware / Revealing / Screens',statusKey:'d5_hardware_reveal', cap:18, icon:'🔧', role:'Assembly Team' }),
-  new ProductionStation({ id:'dispatch', name:'Packing & Dispatch',            statusKey:'e_dispatch_standard',cap:25, icon:'📦', role:'Dispatch Team' }),
+  new ProductionStation({ id:'cutting',  name:'Cutting',                 statusKey:'d3_cutting',         cap:20, icon:'✂️', role:'Saw Operator',      cadKeys:['S1_saw','S2_steel'] }),
+  new ProductionStation({ id:'milling',  name:'Milling',                 statusKey:'d4_milling',         cap:12, icon:'⚙️', role:'CNC Operator',      cadKeys:['S4A_cnc','S4B_screw'] }),
+  new ProductionStation({ id:'welding',  name:'Welding',                 statusKey:'d4_welding',         cap:10, icon:'🔥', role:'Welder',            cadKeys:['S_weld','S_clean'] }),
+  new ProductionStation({ id:'hardware', name:'Hardware',                statusKey:'d5_hardware',        cap:18, icon:'🔧', role:'Hardware Team',     cadKeys:['S5_hw'] }),
+  new ProductionStation({ id:'reveals',  name:'Reveals / Trims / Flyscreens', statusKey:'d5_reveals',  cap:18, icon:'🪟', role:'Assembly Team',     cadKeys:['S6_reveal','S7_fly'] }),
+  new ProductionStation({ id:'dispatch', name:'Packing & Dispatch',      statusKey:'e_dispatch_standard',cap:25, icon:'📦', role:'Dispatch Team',     cadKeys:['S_qc','S_disp'] }),
 ];
 
 // ── Class: DispatchChecklist (Ch. 4 §5.1 — "Cut Tick" Protocol) ─────────────
