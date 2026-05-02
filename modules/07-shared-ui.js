@@ -6,6 +6,21 @@
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 const fmt$ = v => '$'+Number(v).toLocaleString();
+
+// Display-value helpers used in deal/lead detail sidebars
+function getDealDisplayValue(d) { return d ? (d.val || 0) : 0; }
+function getLeadDisplayValue(lead) { return lead ? (lead.val || 0) : 0; }
+
+// Returns a clickable span that navigates to the job detail page.
+// Usage: jobLink(j) — pass the full job object.
+function jobLink(j) {
+  if (!j) return '—';
+  var num = j.jobNumber || j.id || '?';
+  return '<span onclick="navigateTo(\'jobs\',{jobDetailId:\'' + j.id + '\'})" style="cursor:pointer;color:#c41230;font-weight:700;text-decoration:underline;text-underline-offset:2px">' + num + '</span>';
+}
+window.getDealDisplayValue = getDealDisplayValue;
+window.getLeadDisplayValue = getLeadDisplayValue;
+window.jobLink = jobLink;
 const contactName = cid => { const c=_state.contacts.find(x=>x.id===cid); return c?c.fn+' '+c.ln:'—'; };
 const avatar = name => name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
 const clr = {

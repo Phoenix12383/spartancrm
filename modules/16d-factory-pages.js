@@ -98,7 +98,7 @@ function renderProdQueue() {
         estComplete='<span style="color:#f59e0b;font-size:10px">\u26a0 Set materials date</span>';
       }
       h+='<tr style="'+(i%2?'background:#fafafa':'')+'">'
-        +'<td class="td" style="font-weight:700;color:#c41230">'+o.jid+'</td>'
+        +'<td class="td" style="font-weight:700;color:#c41230"><span onclick="navigateTo(\'jobs\',{jobDetailId:\''+o.crmJobId+'\'})" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px">'+o.jid+'</span></td>'
         +'<td class="td">'+o.customer+'</td>'
         +'<td class="td">'+o.frameCount+'</td>'
         +'<td class="td" style="font-weight:600">$'+Number(o.value||0).toLocaleString()+'</td>'
