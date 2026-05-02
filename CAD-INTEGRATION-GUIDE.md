@@ -352,6 +352,42 @@ var stations = (typeof FACTORY_STATIONS_FROM_MANUAL !== 'undefined')
   : FACTORY_STATIONS;
 ```
 
+### 8. Navigation History Stack (in `modules/07-shared-ui.js`)
+
+Module-level back/forward history that works across all CRM pages:
+
+```js
+var _navHistory = [];
+var _navFuture  = [];
+
+function _navSnapshot() {
+  var s = getState();
+  return { page: s.page, jobDetailId: s.jobDetailId || null,
+           dealDetailId: s.dealDetailId || null, leadDetailId: s.leadDetailId || null,
+           contactDetailId: s.contactDetailId || null };
+}
+
+function navigateTo(page, extra) {
+  _navHistory.push(_navSnapshot());
+  _navFuture = [];
+  var patch = Object.assign({ page: page, jobDetailId: null, dealDetailId: null,
+                               leadDetailId: null, contactDetailId: null }, extra || {});
+  setState(patch);
+  renderPage();
+}
+
+function navBack()    { if (!_navHistory.length) return; _navFuture.push(_navSnapshot()); setState(_navHistory.pop()); renderPage(); }
+function navForward() { if (!_navFuture.length)  return; _navHistory.push(_navSnapshot()); setState(_navFuture.pop()); renderPage(); }
+
+window.navigateTo = navigateTo;
+window.navBack    = navBack;
+window.navForward = navForward;
+```
+
+Back/forward buttons are rendered in `renderTopBar()`. They are disabled (greyed) when the stack is empty.
+
+**Usage pattern:** wherever a user clicks into a detail view, use `navigateTo('jobs', {jobDetailId: id})` instead of `setState({page:'jobs',jobDetailId:id}); renderPage()`. This populates history so Back works. The factory CRM job-number links use this.
+
 ---
 
 ## Console Verification Tests
@@ -378,6 +414,12 @@ loadMockFactoryData();
 
 // 6. Open CAD on a deal (requires a deal to exist in state)
 openCadDesigner('deal', getState().deals[0]?.id, 'design');
+
+// 7. Nav history functions present
+['navigateTo','navBack','navForward'].forEach(fn => console.log(fn + ':', typeof window[fn]))
+
+// 8. Navigate to a job from factory (replace id with real job id)
+navigateTo('jobs', { jobDetailId: getState().jobs[0]?.id });
 ```
 
 ---
