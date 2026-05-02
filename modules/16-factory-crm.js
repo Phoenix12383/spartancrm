@@ -58,11 +58,14 @@ function saveFactoryItems(i){localStorage.setItem('spartan_factory_items',JSON.s
 function cadFrameToFactoryItem(frame, idx, orderJid, customer, suburb, due) {
   return {id:'fi_'+Date.now()+'_'+idx, orderId:orderJid,
     name:frame.name||((frame.productType||'').indexOf('door')>=0?'D':'W')+String(idx+1).padStart(2,'0'),
-    productType:frame.productType||'awning_window', widthMm:frame.width||900, heightMm:frame.height||900,
+    productType:frame.productType||'awning_window', widthMm:frame.width||frame.widthMm||900, heightMm:frame.height||frame.heightMm||900,
     colour:frame.colour||'white_body', colourInt:frame.colourInt||'white_body',
     glassSpec:frame.glassSpec||'dgu_4_12_4', profileSystem:frame.profileSystem||'ideal_4000',
     panelCount:frame.panelCount||1, customer:customer||'', suburb:suburb||'', due:due||'',
-    station:'frame_cutting', rework:false, stationHistory:[{station:'frame_cutting',at:new Date().toISOString()}]};
+    installationType:frame.installationType||'retrofit',
+    stationTimes:frame.stationTimes||null,
+    installMinutes:frame.installMinutes||0, productionMinutes:frame.productionMinutes||0,
+    station:'cutting', rework:false, stationHistory:[{station:'cutting',at:new Date().toISOString()}]};
 }
 
 function pushJobToFactory(jobId) {
