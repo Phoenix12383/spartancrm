@@ -47,7 +47,7 @@
         console.log('Spartan CRM - Loading Logical Modules');
         console.log('========================================\n');
         
-        const BUILD_VERSION = '20260503n';
+        const BUILD_VERSION = '20260503o';
 
         // Logical loading order based on dependencies
         const modules = [
@@ -82,6 +82,7 @@
             '16b-factory-profile.js',     // Aluplast profile ordering subsystem (uses core)
             '16c-factory-capacity.js',    // capacity engine + planner page (uses core)
             '16d-factory-pages.js',       // factory page renderers (uses everything above)
+            '16e-factory-ops.js',         // Stage 1 ops UI: Jobs to Review, QC checklist, Bay Management, Hold/Variation
             // Manual-protocol layer (Operations Manual v3.1). Loads after the legacy
             // factory split — the new files deliberately do NOT redefine any legacy
             // global, they only ADD: FactoryState, FactoryPersistence, JobTraveler,
