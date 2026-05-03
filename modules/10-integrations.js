@@ -78,7 +78,13 @@ function googleSignInForLogin() {
     return googleSignInForLoginNative();
   }
   if (!GMAIL_CLIENT_ID) { alert('Admin must set Google Client ID first in Settings > Email & Gmail'); return; }
-  if (typeof google === 'undefined') { alert('Google Sign-In not loaded. Check internet connection.'); return; }
+  // Defensive: window.google may exist (e.g. Google Maps populated it) before
+  // the GIS library at https://accounts.google.com/gsi/client has finished
+  // loading. Check for the full path we actually need, not just `google`.
+  if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2 || typeof google.accounts.oauth2.initTokenClient !== 'function') {
+    alert('Google Sign-In is still loading. Wait a second and try again. (If this persists, an ad-blocker or network policy may be blocking accounts.google.com.)');
+    return;
+  }
   try {
     var client = google.accounts.oauth2.initTokenClient({
       client_id: GMAIL_CLIENT_ID,
