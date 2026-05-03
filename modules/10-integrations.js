@@ -78,13 +78,21 @@ function googleSignInForLogin() {
     return googleSignInForLoginNative();
   }
   if (!GMAIL_CLIENT_ID) { alert('Admin must set Google Client ID first in Settings > Email & Gmail'); return; }
-  // Defensive: window.google may exist (e.g. Google Maps populated it) before
-  // the GIS library at https://accounts.google.com/gsi/client has finished
-  // loading. Check for the full path we actually need, not just `google`.
+  // Defensive: window.google may exist (e.g. Google Maps populated it) and
+  // google.accounts may exist before google.accounts.oauth2.initTokenClient
+  // is fully ready. The GIS library at https://accounts.google.com/gsi/client
+  // initializes in stages, so we poll briefly instead of failing immediately.
   if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2 || typeof google.accounts.oauth2.initTokenClient !== 'function') {
-    alert('Google Sign-In is still loading. Wait a second and try again. (If this persists, an ad-blocker or network policy may be blocking accounts.google.com.)');
+    window._gsiRetryCount = (window._gsiRetryCount || 0) + 1;
+    if (window._gsiRetryCount > 12) {  // 12 × 250ms = 3s total
+      window._gsiRetryCount = 0;
+      alert('Google Sign-In failed to load after 3 seconds. Reload the page and try again. (If this persists, an ad-blocker or network policy may be blocking accounts.google.com.)');
+      return;
+    }
+    setTimeout(googleSignInForLogin, 250);
     return;
   }
+  window._gsiRetryCount = 0;
   try {
     var client = google.accounts.oauth2.initTokenClient({
       client_id: GMAIL_CLIENT_ID,
