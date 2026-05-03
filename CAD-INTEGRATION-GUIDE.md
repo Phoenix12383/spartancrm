@@ -214,40 +214,16 @@ and writes to `spartan_factory_items` in localStorage + Supabase.
 
 ## Step 6 — The 6-Station Model
 
-### Station definitions (in `js/modules/factory/23-factory-helpers.js`)
-
-```js
-var FACTORY_STATIONS_FROM_MANUAL = [
-  new ProductionStation({ id:'cutting',  cadKeys:['S1_saw','S2_steel']       }),
-  new ProductionStation({ id:'milling',  cadKeys:['S4A_cnc','S4B_screw']     }),
-  new ProductionStation({ id:'welding',  cadKeys:['S_weld','S_clean']         }),
-  new ProductionStation({ id:'hardware', cadKeys:['S5_hw']                    }),
-  new ProductionStation({ id:'reveals',  cadKeys:['S6_reveal','S7_fly']       }),
-  new ProductionStation({ id:'dispatch', cadKeys:['S_qc','S_disp']            }),
-];
-```
-
-`cadKeys` tells the station page which keys to sum from `item.stationTimes` to compute
-the time budget displayed for each frame card.
-
-### Route mapping (in `modules/99-init.js`)
-
-```js
-stncutting:  renderStnCutting,
-stnmilling:  renderStnMilling,
-stnwelding:  renderStnWelding,
-stnhardware: renderStnHardware,
-stnreveals:  renderStnReveals,
-stndispatch: renderStnDispatch,
-```
-
-### Station page renderer (`js/modules/factory/34-factory-station-pages.js`)
-
-`renderStationPage(stationId)` is a generic renderer:
-- Reads `getStationQueue(stationId)` from localStorage factory items
-- For each frame: shows name, job number, customer, product type, W×H, colours, glass spec, time budget, due date
-- Move-to-next-station button calls `assignToStation(itemId, nextStn.id)` → `moveFactoryItem()`
-- Final station shows "✅ Complete" button
+> **⚠ 2026-05-02 — REMOVED.** The 6-station operator-queue feature lived in
+> the now-retired `js/modules/factory/` v1.0 architecture (specifically
+> `23-factory-helpers.js` for `FACTORY_STATIONS_FROM_MANUAL` /
+> `ProductionStation`, and `34-factory-station-pages.js` for the generic
+> `renderStationPage(stationId)`). All renderer references in `99-init.js`
+> (`renderStnCutting`, `renderStnMilling`, etc.) are guarded with
+> `typeof === 'function'` checks and fall back to `renderFactoryDash` from the
+> legacy `16d-factory-pages.js`. If you need per-station operator queues
+> reinstated, build them on the canonical `modules/16*, 40-50` factory
+> architecture rather than restoring the v1 directory.
 
 ---
 
@@ -262,8 +238,7 @@ The CRM loads modules sequentially via injected `<script>` tags. Load order matt
 04-cad-integration.js      ← CAD bridge (before 05, uses only var globals)
 05-state-auth-rbac.js      ← defines getState/setState as const (TDZ sensitive)
 ...
-js/modules/factory/23-factory-helpers.js   ← FACTORY_STATIONS_FROM_MANUAL
-js/modules/factory/34-factory-station-pages.js
+(retired — see Step 6 above)
 ...
 99-init.js                 ← MUST be last
 ```

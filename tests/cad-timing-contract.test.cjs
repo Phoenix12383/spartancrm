@@ -3,7 +3,8 @@
 // ════════════════════════════════════════════════════════════════════════════
 //
 // Verifies the canonical timing surface from
-// js/modules/factory/26-cad-timing-contract.js against the contract
+// modules/17b-cad-timing-contract.js (relocated 2026-05-02 from
+// js/modules/factory/26-cad-timing-contract.js) against the contract
 // documented in docs/spartan-cad-timing-audit.md (CAD WIP38, 2026-05-01).
 //
 // Coverage:
@@ -62,7 +63,7 @@ function makeSandbox(originalReader) {
 }
 
 function loadContract(sandbox) {
-  const srcPath = path.resolve(__dirname, '..', 'js', 'modules', 'factory', '26-cad-timing-contract.js');
+  const srcPath = path.resolve(__dirname, '..', 'modules', '17b-cad-timing-contract.js');
   const full = fs.readFileSync(srcPath, 'utf8');
   // vm.runInContext doesn't promote top-level `class` / `function` declarations
   // to the sandbox as own properties (they live in module-scope only). Append
@@ -70,17 +71,19 @@ function loadContract(sandbox) {
   const expose = `
     ;(function(){
       var names = ['CadTimingContract','CAD_STATION_KEYS','CAD_STATION_NAMES',
-        'CAD_PRODUCT_TYPES','CAD_LEGACY_FRAME_TYPE_MAP','CAD_PROPERTY_TYPES',
-        'CAD_INSTALLATION_TYPES','CAD_FLOOR_BUCKETS','CAD_EXCLUDED_STATION_KEYS',
+        'CAD_PRODUCT_TYPES','CAD_PRODUCT_LABELS','CAD_LEGACY_FRAME_TYPE_MAP',
+        'CAD_PROPERTY_TYPES','CAD_INSTALLATION_TYPES','CAD_FLOOR_BUCKETS',
+        'CAD_EXCLUDED_STATION_KEYS',
         'getJobInstallMinutesForCrm','getJobProductionMinutesForCrm',
         'getJobStationTimesForCrm','getFrameInstallMinutes','getFrameProductionMinutes',
-        'formatMinutesAsHours','formatMinutesAsDays','formatStationTimes'];
+        'formatMinutesAsHours','formatMinutesAsDays','formatStationTimes',
+        'formatProductType'];
       for (var i=0;i<names.length;i++) {
         try { globalThis[names[i]] = eval(names[i]); } catch (e) {}
       }
     })();
   `;
-  vm.runInContext(full + expose, sandbox, { filename: '26-cad-timing-contract.js' });
+  vm.runInContext(full + expose, sandbox, { filename: '17b-cad-timing-contract.js' });
 }
 
 // Minimal CAD-shaped sample payload (audit §5)
