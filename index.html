@@ -39,15 +39,25 @@
     <div id="app"></div>
     
     <script>
+        // Early stub for the event-delegation framework (full impl is in
+        // modules/07-shared-ui.js, Layer 4). Modules loaded earlier than
+        // Layer 4 (e.g., 05-state-auth-rbac.js at Layer 2) call defineAction
+        // at top-level and would otherwise throw ReferenceError. This stub
+        // queues those early calls; 07-shared-ui drains the queue on load.
+        window._earlyActionQueue = [];
+        window.defineAction = function(name, handler) {
+            window._earlyActionQueue.push([name, handler]);
+        };
+
         // Supabase configuration
         var SUPABASE_URL = 'https://sedpmsgiscowohpqdjza.supabase.co';
         var SUPABASE_KEY = 'sb_publishable_yBluf2LlIAhewDUbNz3f5w_iiCNK6eY';
-        
+
         console.log('========================================');
         console.log('Spartan CRM - Loading Logical Modules');
         console.log('========================================\n');
         
-        const BUILD_VERSION = '20260503o';
+        const BUILD_VERSION = '20260503w';
 
         // Logical loading order based on dependencies
         const modules = [
@@ -56,8 +66,12 @@
             //needed for DEALS
             '02-mock-data.js',
             '02a-mock-factory-data.js',
-            '04-cad-integration.js',
-            
+            '02b-mock-stock-data.js',
+            '02c-mock-operator-data.js',
+            // 04-cad-integration.js removed 2026-05-02 — CRM-side CAD bridge
+            // is being rebuilt by the CAD dev; cad_modules/ is the canonical
+            // CAD layer going forward.
+
             // Layer 2: State & Auth
             '05-state-auth-rbac.js',
             
@@ -67,8 +81,16 @@
             // Layer 4: Shared UI
             '07-shared-ui.js',
             
-            // Layer 5: CRM Core
-            '08-sales-crm.js',
+            // Layer 5: CRM Core (split into orchestrator + 8 sub-modules 2026-05-02)
+            '08-sales-crm.js',              // Orchestrator: shared globals, shared helpers
+            '08a-sales-mobile.js',          // Mobile today screen, deals kanban, modals
+            '08b-sales-dashboard.js',       // Dashboard (desktop & mobile entry point)
+            '08c-sales-contacts.js',        // Contacts list, detail, edit, create
+            '08d-sales-deals-kanban.js',    // Deals kanban, stage management, DnD
+            '08e-sales-deal-detail.js',     // Deal detail, activities, templates
+            '08f-sales-deal-transitions.js',// Deal type picker, won/lost/unwind
+            '08g-sales-leads-newdeal.js',   // Leads detail, claim, new deal modal
+            '08h-sales-scheduler.js',       // Calendar scheduler, job scheduling
             
             // Layer 6: Feature Modules
             '14-google-maps-mock.js',  // mock exports window.initGoogleMaps / refreshMapData — used if no API key / SDK fails
@@ -83,30 +105,29 @@
             '16c-factory-capacity.js',    // capacity engine + planner page (uses core)
             '16d-factory-pages.js',       // factory page renderers (uses everything above)
             '16e-factory-ops.js',         // Stage 1 ops UI: Jobs to Review, QC checklist, Bay Management, Hold/Variation
-            // Manual-protocol layer (Operations Manual v3.1). Loads after the legacy
-            // factory split — the new files deliberately do NOT redefine any legacy
-            // global, they only ADD: FactoryState, FactoryPersistence, JobTraveler,
-            // MorningGateChecklist, DispatchChecklist, ServiceTriageJob, RedTag,
-            // HoldVariation, BOMGenerator, CapacityCalculator, KlaesOrderPair,
-            // KPI/lead-time constants, and renderFactoryAudit (Red Tag Loss Sheet).
-            'js/modules/factory/24-factory-state.js',         // FactoryState + manual enums
-            'js/modules/factory/25-factory-persistence.js',   // FactoryPersistence
-            'js/modules/factory/23-factory-helpers.js',       // protocol classes + helpers
-            'js/modules/factory/16-factory-crm.js',           // renderer classes + audit page
-            // Factory CRM Base v1.5 (scope-corrected) — 6 sections of pure
-            // data classes / enums / interfaces with Factory* prefix.
-            // factory-crm-base-class-diagram-v1-5-scope-corrected.md
-            'js/modules/factory/27-factory-v1-jobs-frames.js',           // §1 Jobs and frames
-            'js/modules/factory/28-factory-v1-people.js',                // §2 People — internal staff
-            'js/modules/factory/29-factory-v1-stock.js',                 // §3 Stock + locations + QR
-            'js/modules/factory/30-factory-v1-workstations-tasks.js',    // §4 Workstations + tasks + triggers
-            'js/modules/factory/31-factory-v1-suppliers.js',             // §5 Suppliers + procurement (light)
-            'js/modules/factory/32-factory-v1-audit.js',                 // §6 Audit trail + integrity watchers
-            'js/modules/factory/33-factory-v1-cad-bridge.js',            // CAD save → FactoryJob+Frame[] graph (subscribes to setState)
-            'js/modules/factory/34-factory-station-pages.js',            // Operator station queue pages (Cutting/Milling/Welding/Hardware/Reveals/Dispatch)
-            // 26-cad-timing-contract.js loads LATER (Layer 11e) because it
-            // decorates readJobInstallMinutes from 17-install-schedule.js.
+            '42-factory-dashboard-v2.js',
+            '40-factory-stage2-stock.js',
+            '43-factory-stage3-receiving.js',
+            '44-factory-stage4-orders-stocktake.js',
+            '45-factory-stage5-prodboard11.js',           // Stage 5
+            '46-factory-stage6-smartplanner.js',          // Stage 6
+            '47-factory-stage7-tablet-operator.js',       // Stage 7
+            '48-factory-stage8-service-rework.js',        // Stage 8
+            '49-factory-stage9-cost-reports.js',          // Stage 9
+            '50-factory-stage10-livefloor-settings.js',   // Stage 10
+
+
+            // (The js/modules/factory/ v1.0 architecture was retired 2026-05-02 —
+            // the only file kept was 26-cad-timing-contract.js, relocated to
+            // modules/17b-cad-timing-contract.js and loaded just below.)
+
             '17-install-schedule.js',
+            // CAD Timing Contract — codifies the 11-key station contract,
+            // 12 productType enum, install/property/floor enums, and applies the
+            // supply_only schedule-side override (spartan-cad-timing-audit.md §4.4).
+            // Decorates readJobInstallMinutes from 17 above; consumers just call
+            // readJobInstallMinutes(job) — it's been wrapped in place.
+            '17b-cad-timing-contract.js',
             '21-cm-schedule.js',
             
             // Layer 8: Financial & Reporting
@@ -119,7 +140,15 @@
             // Layer 9: Communication
             '06-email-tracking.js',
             '10-integrations.js',
-            '11-email-page.js',
+            // Email module split (orchestrator + 7 sub-modules)
+            '11-email-page.js',         // Orchestrator (renderEmailPage, renderEmailMobile, state vars, TODO: Maps/Reports/CustomFields)
+            '11a-email-compose.js',     // Composer modal, merge picker, send
+            '11b-email-views.js',       // Email list, detail, tracking views
+            '11c-email-templates.js',   // Template management, merge field binding
+            '11d-email-rte.js',         // Rich-text editor toolbar
+            '11e-email-signatures.js',  // Email signature management
+            '11f-email-sanitize.js',    // HTML sanitization
+            '11g-gmail-integration.js',  // Gmail composer and integration
             '28-twilio.js',            // Twilio Voice/SMS — must load AFTER 10-integrations.js (reads getState().gmailToken) and BEFORE 99-init.js (calls twilioInit)
             '14a-google-maps-real.js', // must load AFTER 11-email-page.js so it can wrap the real onGoogleMapsLoaded instead of being clobbered by it
 
@@ -142,13 +171,6 @@
             '31-fleet-page.js',
             // Layer 11e: Vehicle insurance PDF upload + parsing + alerts
             '31a-vehicle-insurance.js',
-
-            // Layer 11e: CAD Timing Contract — codifies the 11-key station
-            // contract + supply_only schedule-side override (audit §4.4).
-            // Decorates readJobInstallMinutes (from 17), so MUST load after
-            // 17, 30, 31. CONSUMERS that want the canonical reader: just call
-            // readJobInstallMinutes(job) — it's been wrapped in place.
-            'js/modules/factory/26-cad-timing-contract.js',
 
             // Layer 12: Initialization (MUST BE LAST)
             '99-init.js'
@@ -198,8 +220,7 @@
             }
             
             // Entries with a path separator are treated as relative to the project
-            // root (e.g. 'js/modules/factory/24-factory-state.js'); bare filenames
-            // default to the legacy modules/ directory.
+            // root (e.g. 'a/b/foo.js'); bare filenames default to modules/.
             const _entry = modules[current];
             const modulePath = (_entry.indexOf('/') >= 0)
               ? _entry.replace(/^\.\.\//, '')
