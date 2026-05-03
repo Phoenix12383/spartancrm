@@ -78,19 +78,31 @@ function googleSignInForLogin() {
     return googleSignInForLoginNative();
   }
   if (!GMAIL_CLIENT_ID) { alert('Admin must set Google Client ID first in Settings > Email & Gmail'); return; }
-  // Defensive: window.google may exist (e.g. Google Maps populated it) and
-  // google.accounts may exist before google.accounts.oauth2.initTokenClient
-  // is fully ready. The GIS library at https://accounts.google.com/gsi/client
-  // initializes in stages, so we poll briefly instead of failing immediately.
-  if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2 || typeof google.accounts.oauth2.initTokenClient !== 'function') {
+  // Defensive: poll for the GIS library at https://accounts.google.com/gsi/client
+  // to be fully initialized. Logs each retry so we can see what's actually missing
+  // when the timeout fires. 40 × 250ms = 10s max wait.
+  var gReady = (typeof google !== 'undefined') && google.accounts && google.accounts.oauth2 && (typeof google.accounts.oauth2.initTokenClient === 'function');
+  if (!gReady) {
     window._gsiRetryCount = (window._gsiRetryCount || 0) + 1;
-    if (window._gsiRetryCount > 12) {  // 12 × 250ms = 3s total
+    var diag = {
+      retry: window._gsiRetryCount,
+      hasGoogle: typeof google !== 'undefined',
+      hasAccounts: typeof google !== 'undefined' && !!google.accounts,
+      hasOauth2: typeof google !== 'undefined' && google.accounts && !!google.accounts.oauth2,
+      hasInit: typeof google !== 'undefined' && google.accounts && google.accounts.oauth2 && typeof google.accounts.oauth2.initTokenClient
+    };
+    console.log('[GIS] not ready, retry', diag);
+    if (window._gsiRetryCount > 40) {  // 40 × 250ms = 10s total
       window._gsiRetryCount = 0;
-      alert('Google Sign-In failed to load after 3 seconds. Reload the page and try again. (If this persists, an ad-blocker or network policy may be blocking accounts.google.com.)');
+      console.error('[GIS] gave up after 10s. Final state:', diag);
+      alert('Google Sign-In failed to load after 10 seconds. Open DevTools Console and look for [GIS] log lines — they show what part of the library is missing. Most likely an ad-blocker, browser privacy extension, or corporate firewall is blocking accounts.google.com.');
       return;
     }
     setTimeout(googleSignInForLogin, 250);
     return;
+  }
+  if (window._gsiRetryCount && window._gsiRetryCount > 0) {
+    console.log('[GIS] became ready after', window._gsiRetryCount, 'retries');
   }
   window._gsiRetryCount = 0;
   try {
