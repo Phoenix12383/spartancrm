@@ -4,6 +4,12 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-03) ────────
+defineAction('init-logout-and-reload', function(target, ev) {
+  localStorage.removeItem('spartan_current_user');
+  location.reload();
+});
+
 // Snapshot the currently-focused input so a full innerHTML rerender can
 // restore focus, caret position, and scroll offsets. Without this, a realtime
 // event fired while the user is typing (e.g. leads search while the map
@@ -272,7 +278,7 @@ if(!getCurrentUser()){
   renderLoginScreen();
 } else {
   // Show loading, then load from Supabase
-  document.getElementById('app').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:12px"><div style="width:40px;height:40px;border:3px solid #e5e7eb;border-top-color:#c41230;border-radius:50%;animation:spin 0.8s linear infinite"></div><div style="font-family:Syne,sans-serif;font-weight:700;color:#1a1a1a">SPARTAN CRM</div><div style="font-size:12px;color:#9ca3af" id="loadStatus">Connecting to database\u2026</div><button onclick="localStorage.removeItem(\'spartan_current_user\');location.reload()" style="margin-top:20px;padding:6px 16px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-size:11px;color:#6b7280;font-family:inherit">Sign Out & Return to Login</button></div><style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
+  document.getElementById('app').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;gap:12px"><div style="width:40px;height:40px;border:3px solid #e5e7eb;border-top-color:#c41230;border-radius:50%;animation:spin 0.8s linear infinite"></div><div style="font-family:Syne,sans-serif;font-weight:700;color:#1a1a1a">SPARTAN CRM</div><div style="font-size:12px;color:#9ca3af" id="loadStatus">Connecting to database\u2026</div><button data-action="init-logout-and-reload" style="margin-top:20px;padding:6px 16px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-size:11px;color:#6b7280;font-family:inherit">Sign Out & Return to Login</button></div><style>@keyframes spin{to{transform:rotate(360deg)}}</style>';
 
   // Init Supabase
   var sbReady = initSupabase();

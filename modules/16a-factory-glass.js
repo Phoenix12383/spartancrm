@@ -6,6 +6,84 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-03) ────────
+defineAction('glass-modal-bg-click', function(target, ev) {
+  if (ev.target === target) target.remove();
+});
+
+defineAction('glass-modal-close', function(target, ev) {
+  target.closest('.modal-bg').remove();
+});
+
+defineAction('glass-set-supplier', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  updateGlassOrder(orderId, 'glassSupplier', target.value);
+});
+
+defineAction('glass-set-po', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  updateGlassOrder(orderId, 'glassPO', target.value);
+});
+
+defineAction('glass-set-ordered-date', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  updateGlassOrder(orderId, 'glassOrderedDate', target.value);
+});
+
+defineAction('glass-set-expected-date', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  updateGlassOrder(orderId, 'glassExpectedDate', target.value);
+});
+
+defineAction('glass-remove-file', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  updateGlassOrder(orderId, 'glassOrderFile', null);
+});
+
+defineAction('glass-upload-file', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  var file = target.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    updateGlassOrder(orderId, 'glassOrderFile', {
+      name: file.name,
+      dataUrl: e.target.result,
+      uploadedAt: new Date().toISOString()
+    });
+    document.getElementById('glassModal').remove();
+    showGlassOrderModal(orderId);
+  };
+  reader.readAsDataURL(file);
+});
+
+defineAction('glass-send-email', function(target, ev) {
+  var to = document.getElementById('glassEmailTo').value;
+  if (!to) {
+    alert('Enter supplier email');
+    return false;
+  }
+  var emailSubject = target.dataset.emailSubject;
+  var emailBody = target.dataset.emailBody;
+  target.href = 'mailto:' + to + '?subject=' + emailSubject + '&body=' + emailBody;
+});
+
+defineAction('glass-mark-ordered', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  if (!getFactoryOrders().find(function(o) { return o.id === orderId; }).glassOrderFile) {
+    addToast('⚠️ Upload the glass order document first', 'error');
+    return;
+  }
+  updateGlassOrder(orderId, 'glassStatus', 'ordered');
+  target.closest('.modal-bg').remove();
+});
+
+defineAction('glass-mark-received', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  updateGlassOrder(orderId, 'glassStatus', 'received');
+  target.closest('.modal-bg').remove();
+});
+
 // ── Glass Ordering Protocol ─────────────────────────────────────────────────
 // Glass must be ordered 3 weeks (15 business days) before material delivery
 var GLASS_STATUSES = [
@@ -84,8 +162,8 @@ function showGlassOrderModal(orderId) {
   var totalPanes = Object.values(glassSpecs).reduce(function(s,g){return s+g.qty;},0);
   var isOverdue = (order.glassStatus||'not_ordered') === 'not_ordered';
 
-  var m = '<div class="modal-bg" id="glassModal" onclick="if(event.target===this){this.remove();}"><div class="modal" style="max-width:620px">'
-    +'<div class="modal-header" style="'+(isOverdue?'background:#fef2f2':'')+'"><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">\ud83e\ude9f Glass Order \u2014 '+order.jid+(isOverdue?' <span style="color:#ef4444;font-size:12px">\ud83d\udea8 NOT ORDERED</span>':'')+'</h3><button onclick="this.closest(\'.modal-bg\').remove()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px">\u00d7</button></div>'
+  var m = '<div class="modal-bg" id="glassModal" data-action="glass-modal-bg-click"><div class="modal" style="max-width:620px">'
+    +'<div class="modal-header" style="'+(isOverdue?'background:#fef2f2':'')+'"><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">\ud83e\ude9f Glass Order \u2014 '+order.jid+(isOverdue?' <span style="color:#ef4444;font-size:12px">\ud83d\udea8 NOT ORDERED</span>':'')+'</h3><button data-action="glass-modal-close" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px">\u00d7</button></div>'
     +'<div class="modal-body">';
 
   // Status strip
@@ -105,11 +183,11 @@ function showGlassOrderModal(orderId) {
 
   // Supplier + PO fields
   m += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">'
-    +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">Supplier</label><select class="sel" style="font-size:12px" onchange="updateGlassOrder(\''+order.id+'\',\'glassSupplier\',this.value)"><option value="">Select\u2026</option><option value="Viridian"'+(order.glassSupplier==='Viridian'?' selected':'')+'>Viridian Glass</option><option value="CSR"'+(order.glassSupplier==='CSR'?' selected':'')+'>CSR Building Products</option><option value="Metro"'+(order.glassSupplier==='Metro'?' selected':'')+'>Metro Glass</option><option value="Other"'+(order.glassSupplier==='Other'?' selected':'')+'>Other</option></select></div>'
-    +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">PO Number</label><input class="inp" style="font-size:12px" value="'+(order.glassPO||'')+'" onblur="updateGlassOrder(\''+order.id+'\',\'glassPO\',this.value)" placeholder="PO-2026-0123"></div></div>'
+    +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">Supplier</label><select class="sel" style="font-size:12px" data-on-change="glass-set-supplier" data-order-id="'+order.id+'"><option value="">Select\u2026</option><option value="Viridian"'+(order.glassSupplier==='Viridian'?' selected':'')+'>Viridian Glass</option><option value="CSR"'+(order.glassSupplier==='CSR'?' selected':'')+'>CSR Building Products</option><option value="Metro"'+(order.glassSupplier==='Metro'?' selected':'')+'>Metro Glass</option><option value="Other"'+(order.glassSupplier==='Other'?' selected':'')+'>Other</option></select></div>'
+    +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">PO Number</label><input class="inp" style="font-size:12px" value="'+(order.glassPO||'')+'" data-on-blur="glass-set-po" data-order-id="'+order.id+'" placeholder="PO-2026-0123"></div></div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">'
-    +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">Date Ordered</label><input type="date" class="inp" style="font-size:12px" value="'+(order.glassOrderedDate||'')+'" onchange="updateGlassOrder(\''+order.id+'\',\'glassOrderedDate\',this.value)"></div>'
-    +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">Expected Delivery</label><input type="date" class="inp" style="font-size:12px" value="'+(order.glassExpectedDate||'')+'" onchange="updateGlassOrder(\''+order.id+'\',\'glassExpectedDate\',this.value)"></div></div>';
+    +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">Date Ordered</label><input type="date" class="inp" style="font-size:12px" value="'+(order.glassOrderedDate||'')+'" data-on-change="glass-set-ordered-date" data-order-id="'+order.id+'"></div>'
+    +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">Expected Delivery</label><input type="date" class="inp" style="font-size:12px" value="'+(order.glassExpectedDate||'')+'" data-on-change="glass-set-expected-date" data-order-id="'+order.id+'"></div></div>';
 
   // Glass order file upload (MANDATORY)
   m += '<div style="padding:14px;background:'+(order.glassOrderFile?'#f0fdf4':'#fef2f2')+';border:1.5px solid '+(order.glassOrderFile?'#86efac':'#fca5a5')+';border-radius:10px;margin-bottom:14px">'
@@ -117,10 +195,10 @@ function showGlassOrderModal(orderId) {
   if (order.glassOrderFile) {
     m += '<div style="display:flex;align-items:center;gap:8px"><a href="'+order.glassOrderFile.dataUrl+'" target="_blank" download="'+order.glassOrderFile.name+'" style="color:#3b82f6;text-decoration:none;font-weight:600;font-size:12px">\ud83d\udcce '+order.glassOrderFile.name+'</a>'
       +'<span style="font-size:10px;color:#6b7280">Uploaded '+(order.glassOrderFile.uploadedAt?new Date(order.glassOrderFile.uploadedAt).toLocaleDateString('en-AU'):'')+'</span>'
-      +'<button onclick="updateGlassOrder(\''+order.id+'\',\'glassOrderFile\',null)" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px;font-weight:600">\u2715 Remove</button></div>';
+      +'<button data-action="glass-remove-file" data-order-id="'+order.id+'" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:10px;font-weight:600">\u2715 Remove</button></div>';
   } else {
     m += '<label style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#fff;border:1.5px dashed #fca5a5;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;color:#ef4444">\ud83d\udcc4 Upload Glass Order (PDF/Image)'
-      +'<input type="file" accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.csv" style="display:none" onchange="var file=this.files[0];if(!file)return;var reader=new FileReader();reader.onload=function(e){updateGlassOrder(\''+order.id+'\',\'glassOrderFile\',{name:file.name,dataUrl:e.target.result,uploadedAt:new Date().toISOString()});document.getElementById(\'glassModal\').remove();showGlassOrderModal(\''+order.id+'\');};reader.readAsDataURL(file);"></label>';
+      +'<input type="file" accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.csv" style="display:none" data-on-change="glass-upload-file" data-order-id="'+order.id+'"></label>';
   }
   m += '</div>';
 
@@ -134,16 +212,16 @@ function showGlassOrderModal(orderId) {
     +'<div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end">'
     +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:3px">Supplier Email</label>'
     +'<input class="inp" id="glassEmailTo" style="font-size:12px" value="'+emailTo+'" placeholder="supplier@example.com"></div>'
-    +'<a id="glassEmailBtn" href="mailto:'+emailTo+'?subject='+emailSubject+'&body='+emailBody+'" onclick="var to=document.getElementById(\'glassEmailTo\').value;if(!to){alert(\'Enter supplier email\');return false;}this.href=\'mailto:\'+to+\'?subject='+emailSubject+'&body='+emailBody+'\'" style="display:inline-flex;align-items:center;gap:6px;padding:8px 18px;background:#c41230;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap">\ud83d\udce7 Send Email</a></div>'
+    +'<a id="glassEmailBtn" href="mailto:'+emailTo+'?subject='+emailSubject+'&body='+emailBody+'" data-action="glass-send-email" data-email-subject="'+emailSubject+'" data-email-body="'+emailBody+'" style="display:inline-flex;align-items:center;gap:6px;padding:8px 18px;background:#c41230;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none;white-space:nowrap">\ud83d\udce7 Send Email</a></div>'
     +(order.glassOrderFile?'<div style="font-size:10px;color:#0369a1;margin-top:6px">\u2139\ufe0f Attach <strong>'+order.glassOrderFile.name+'</strong> to the email manually after your email client opens.</div>':'<div style="font-size:10px;color:#ef4444;margin-top:6px">\u26a0\ufe0f Upload the glass order document above before sending.</div>')
     +'</div>';
 
   // Action buttons
   m += '<div style="display:flex;gap:8px">';
   if ((order.glassStatus||'not_ordered') === 'not_ordered') {
-    m += '<button onclick="if(!getFactoryOrders().find(function(o){return o.id===\''+order.id+'\';}).glassOrderFile){addToast(\'\u26a0\ufe0f Upload the glass order document first\',\'error\');return;}updateGlassOrder(\''+order.id+'\',\'glassStatus\',\'ordered\');this.closest(\'.modal-bg\').remove()" class="btn-r" style="flex:1;justify-content:center">\ud83d\udce6 Mark Glass as Ordered</button>';
+    m += '<button data-action="glass-mark-ordered" data-order-id="'+order.id+'" class="btn-r" style="flex:1;justify-content:center">\ud83d\udce6 Mark Glass as Ordered</button>';
   } else if (order.glassStatus === 'ordered') {
-    m += '<button onclick="updateGlassOrder(\''+order.id+'\',\'glassStatus\',\'received\');this.closest(\'.modal-bg\').remove()" class="btn-r" style="flex:1;justify-content:center;background:#22c55e">\u2705 Mark Glass as Received</button>';
+    m += '<button data-action="glass-mark-received" data-order-id="'+order.id+'" class="btn-r" style="flex:1;justify-content:center;background:#22c55e">\u2705 Mark Glass as Received</button>';
   } else {
     m += '<div style="flex:1;padding:10px;text-align:center;background:#f0fdf4;border-radius:8px;color:#15803d;font-weight:700">\u2705 Glass received '+(order.glassReceivedDate||'')+'</div>';
   }

@@ -8,6 +8,91 @@
 // CALENDAR PAGE — Pipedrive-style week view with Google Calendar sync
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-02) ────────
+defineAction('calendar-close-modal', function(target, ev) {
+  calCloseModal();
+});
+defineAction('calendar-edit-event', function(target, ev) {
+  calEditEvent();
+});
+defineAction('calendar-delete-event', function(target, ev) {
+  calDeleteEvent(target.dataset.eventId);
+});
+defineAction('calendar-save-event', function(target, ev) {
+  calSaveEvent();
+});
+defineAction('calendar-link-deal', function(target, ev) {
+  calCloseModal();
+  setState({dealDetailId: target.dataset.dealId, page: 'deals'});
+});
+defineAction('calendar-link-lead', function(target, ev) {
+  calCloseModal();
+  setState({leadDetailId: target.dataset.leadId, page: 'leads'});
+});
+defineAction('calendar-date-change', function(target, ev) {
+  if (calEventModal) calEventModal.date = target.value;
+});
+defineAction('calendar-rep-filter', function(target, ev) {
+  calRepFilter = target.value;
+  renderPage();
+});
+defineAction('calendar-toggle-google', function(target, ev) {
+  calShowGoogle = !calShowGoogle;
+  renderPage();
+});
+defineAction('calendar-sync-google', function(target, ev) {
+  calSyncGoogle();
+});
+defineAction('calendar-connect-gmail', function(target, ev) {
+  gmailConnect();
+});
+defineAction('calendar-new-event', function(target, ev) {
+  var dateStr = target.dataset.date || '';
+  calNewEvent(dateStr);
+});
+defineAction('calendar-week-prev', function(target, ev) {
+  calNavWeek(-1);
+});
+defineAction('calendar-week-next', function(target, ev) {
+  calNavWeek(1);
+});
+defineAction('calendar-go-today', function(target, ev) {
+  calGoToday();
+});
+defineAction('calendar-mobile-today', function(target, ev) {
+  _mobileCalendarWeekOffset = 0;
+  renderPage();
+});
+defineAction('calendar-mobile-prev-week', function(target, ev) {
+  _mobileCalendarWeekOffset = (_mobileCalendarWeekOffset || 0) - 1;
+  renderPage();
+});
+defineAction('calendar-mobile-next-week', function(target, ev) {
+  _mobileCalendarWeekOffset = (_mobileCalendarWeekOffset || 0) + 1;
+  renderPage();
+});
+defineAction('calendar-add-device', function(target, ev) {
+  // Parse the JSON args from data-args attribute
+  var args = {};
+  ['title', 'location', 'notes', 'startIso', 'durationMinutes'].forEach(function(key) {
+    if (target.dataset[key]) {
+      if (key === 'durationMinutes') args[key] = Number(target.dataset[key]);
+      else args[key] = target.dataset[key];
+    }
+  });
+  addToDeviceCalendar(args);
+});
+defineAction('calendar-mobile-open-deal', function(target, ev) {
+  setState({dealDetailId: target.dataset.dealId});
+});
+defineAction('calendar-rep-legend-filter', function(target, ev) {
+  calRepFilter = target.dataset.repName;
+  renderPage();
+});
+defineAction('calendar-modal-bg-close', function(target, ev) {
+  if (ev.target === target) calCloseModal();
+});
+
 var calWeekOffset = 0;
 var calRepFilter = 'all';      // 'all' | rep name | 'mine'
 var calShowGoogle = true;      // toggle to hide/show Google events
@@ -363,11 +448,11 @@ function renderCalEventModal() {
   var isView = mode === 'view';
   var isGoogle = e.source === 'google';
 
-  return '<div class="modal-bg" onclick="if(event.target===this)calCloseModal()">'
+  return '<div class="modal-bg" data-action="calendar-modal-bg-close">'
     +'<div class="modal" style="max-width:480px">'
     +'<div style="padding:16px 20px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
     +'<h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">'+(mode==='create'?'\ud83d\udcc5 New Appointment':isView?'\ud83d\udcc5 Appointment Detail':'\u270f\ufe0f Edit Appointment')+'</h3>'
-    +'<button onclick="calCloseModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:18px">\u00d7</button></div>'
+    +'<button data-action="calendar-close-modal" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:18px">\u00d7</button></div>'
     +'<div class="modal-body" style="display:flex;flex-direction:column;gap:12px">'
 
     // Title
@@ -377,7 +462,7 @@ function renderCalEventModal() {
     // Date + Time + Duration
     +(isView ? '<div style="display:flex;gap:16px"><div><div style="font-size:11px;color:#6b7280;font-weight:600">Date</div><div style="font-size:13px;font-weight:600">'+date+'</div></div><div><div style="font-size:11px;color:#6b7280;font-weight:600">Time</div><div style="font-size:13px;font-weight:600">'+(e.time||'All day')+'</div></div></div>'
       : '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">'
-        +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Date</label><input class="inp" id="ce_date" type="date" value="'+date+'" onchange="calEventModal.date=this.value"></div>'
+        +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Date</label><input class="inp" id="ce_date" type="date" value="'+date+'" data-on-change="calendar-date-change"></div>'
         +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Time</label><input class="inp" id="ce_time" type="time" value="'+(e.time||'09:00')+'"></div>'
         +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Duration</label><select class="sel" id="ce_duration">'+[30,45,60,90,120].map(function(m){return '<option value="'+m+'"'+((e.duration||60)===m?' selected':'')+'>'+m+' min</option>';}).join('')+'</select></div></div>')
 
@@ -402,18 +487,18 @@ function renderCalEventModal() {
       : '<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Notes</label><textarea class="inp" id="ce_notes" rows="2" style="resize:vertical;font-family:inherit">'+(e.notes||'')+'</textarea></div>')
 
     // Linked entity info
-    +(isView && e.dealId ? '<div style="padding:8px 12px;background:#dbeafe;border-radius:8px;cursor:pointer" onclick="calCloseModal();setState({dealDetailId:\''+e.dealId+'\',page:\'deals\'})"><span style="font-size:12px;font-weight:600;color:#1d4ed8">\u2197 View linked deal</span></div>' : '')
-    +(isView && e.leadId ? '<div style="padding:8px 12px;background:#ede9fe;border-radius:8px;cursor:pointer" onclick="calCloseModal();setState({leadDetailId:\''+e.leadId+'\',page:\'leads\'})"><span style="font-size:12px;font-weight:600;color:#6d28d9">\u2197 View linked lead</span></div>' : '')
+    +(isView && e.dealId ? '<div style="padding:8px 12px;background:#dbeafe;border-radius:8px;cursor:pointer" data-action="calendar-link-deal" data-deal-id="'+e.dealId+'"><span style="font-size:12px;font-weight:600;color:#1d4ed8">\u2197 View linked deal</span></div>' : '')
+    +(isView && e.leadId ? '<div style="padding:8px 12px;background:#ede9fe;border-radius:8px;cursor:pointer" data-action="calendar-link-lead" data-lead-id="'+e.leadId+'"><span style="font-size:12px;font-weight:600;color:#6d28d9">\u2197 View linked lead</span></div>' : '')
     +(isView && isGoogle ? '<div style="padding:8px 12px;background:#e0f2fe;border-radius:8px"><span style="font-size:11px;color:#0369a1">\ud83d\udd35 Synced from Google Calendar</span></div>' : '')
 
     +'</div>'
     // Footer
     +'<div style="padding:12px 20px;border-top:1px solid #f0f0f0;background:#f9fafb;border-radius:0 0 16px 16px;display:flex;justify-content:space-between">'
-    +(isView && !isGoogle ? '<button onclick="calEditEvent()" class="btn-w" style="font-size:12px">\u270f Edit</button>' : '<div></div>')
-    +(isView && !isGoogle ? '<button onclick="calDeleteEvent(\''+e.id+'\')" style="font-size:12px;color:#b91c1c;background:none;border:none;cursor:pointer;font-family:inherit">Delete</button>' : '')
-    +(!isView ? '<button onclick="calCloseModal()" class="btn-w" style="font-size:12px">Cancel</button>' : '')
-    +(!isView ? '<button onclick="calSaveEvent()" class="btn-r" style="font-size:12px">'+(mode==='create'?'\u2713 Book Appointment':'Save Changes')+'</button>' : '')
-    +(isView && isGoogle ? '<button onclick="calCloseModal()" class="btn-w" style="font-size:12px">Close</button>' : '')
+    +(isView && !isGoogle ? '<button data-action="calendar-edit-event" class="btn-w" style="font-size:12px">\u270f Edit</button>' : '<div></div>')
+    +(isView && !isGoogle ? '<button data-action="calendar-delete-event" data-event-id="'+e.id+'" style="font-size:12px;color:#b91c1c;background:none;border:none;cursor:pointer;font-family:inherit">Delete</button>' : '')
+    +(!isView ? '<button data-action="calendar-close-modal" class="btn-w" style="font-size:12px">Cancel</button>' : '')
+    +(!isView ? '<button data-action="calendar-save-event" class="btn-r" style="font-size:12px">'+(mode==='create'?'\u2713 Book Appointment':'Save Changes')+'</button>' : '')
+    +(isView && isGoogle ? '<button data-action="calendar-close-modal" class="btn-w" style="font-size:12px">Close</button>' : '')
     +'</div></div></div>';
 }
 
@@ -557,19 +642,14 @@ function renderCalendarMobile() {
     var k2 = a.date.slice(0, 10);
     if (byDay[k2]) byDay[k2].apts.push(a);
   });
-  function fmtTime12(t) {
-    if (!t) return '';
-    var p = t.split(':'); var hh = parseInt(p[0]); var mm = p[1] || '00';
-    var ap = hh >= 12 ? 'pm' : 'am'; var h12 = hh % 12 || 12;
-    return h12 + ':' + mm + ap;
-  }
+  // fmtTime12 consolidated to 07-shared-ui.js (2026-05-02). Falls through to global.
   function fmtWeekRange(start) {
     var end = new Date(start); end.setDate(end.getDate() + 6);
     var s1 = start.toLocaleDateString('en-AU', { day:'numeric', month:'short' });
     var e1 = end.toLocaleDateString('en-AU', { day:'numeric', month:'short' });
     return s1 + ' – ' + e1;
   }
-  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+  // _esc consolidated to 07-shared-ui.js (2026-05-02). Falls through to the global.
   function dayCard(key, info) {
     var date = info.date;
     var dayApts = info.apts;
@@ -592,21 +672,19 @@ function renderCalendarMobile() {
         ? '<div style="padding:14px;font-size:11px;color:#9ca3af;font-style:italic;text-align:center">No appointments</div>'
         : dayApts.map(function(a, idx){
             var name = a.client || a.subject || 'Appointment';
-            var click = a.dealId ? "setState({dealDetailId:'" + _esc(a.dealId) + "'})" : '';
             // ISO start (date + time, defaulting to 09:00). Used by both the
             // "Add to phone calendar" button below and any future round-trip
             // sync. If the activity carries a duration we honour it.
             var startIso = String(a.date || '').slice(0,10) + 'T' + (a.time || '09:00') + ':00';
             var dur = Number(a.duration) || 60;
             var notesText = ((a.type || '') + (a.subject && a.subject !== name ? ' · ' + a.subject : '')).trim();
-            var addCalArgs = "{title:'" + _esc(name) + "',location:'" + _esc(a.suburb || '') + "',notes:'" + _esc(notesText) + "',startIso:'" + startIso + "',durationMinutes:" + dur + "}";
             // Row is now a flex container with two children: a tappable info
             // area (cursor:pointer if dealId opens the deal) + a small
             // "+📅" button on the right for adding to the phone calendar.
             // Native HTML doesn't allow nesting <button>, so we use a <div>
-            // with an onclick handler for the main click area.
+            // with a data-action handler for the main click area.
             return '<div style="display:flex;align-items:center;' + (idx > 0 ? 'border-top:1px solid #f3f4f6;' : '') + '">' +
-              '<div ' + (click ? 'onclick="' + click + '"' : '') + ' style="flex:1;min-width:0;padding:10px 0 10px 12px;cursor:' + (click ? 'pointer' : 'default') + ';display:flex;align-items:center;gap:10px">' +
+              '<div ' + (a.dealId ? 'data-action="calendar-mobile-open-deal" data-deal-id="' + a.dealId + '"' : '') + ' style="flex:1;min-width:0;padding:10px 0 10px 12px;cursor:' + (a.dealId ? 'pointer' : 'default') + ';display:flex;align-items:center;gap:10px">' +
                 '<div style="font-size:11px;font-weight:800;color:#c41230;width:50px;flex-shrink:0">' + (fmtTime12(a.time) || '—') + '</div>' +
                 '<div style="flex:1;min-width:0">' +
                   '<div style="font-size:13px;font-weight:600;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
@@ -614,7 +692,7 @@ function renderCalendarMobile() {
                 '</div>' +
                 (a.dealId ? '<span style="color:#9ca3af;font-size:14px;flex-shrink:0">↗</span>' : '') +
               '</div>' +
-              '<button onclick="addToDeviceCalendar(' + addCalArgs + ')" title="Add to phone calendar" style="flex-shrink:0;margin:0 8px 0 4px;padding:5px 9px;border:1px solid #e5e7eb;background:#f9fafb;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:700;color:#374151">+📅</button>' +
+              '<button data-action="calendar-add-device" data-title="' + _esc(name) + '" data-location="' + _esc(a.suburb || '') + '" data-notes="' + _esc(notesText) + '" data-start-iso="' + startIso + '" data-duration-minutes="' + dur + '" title="Add to phone calendar" style="flex-shrink:0;margin:0 8px 0 4px;padding:5px 9px;border:1px solid #e5e7eb;background:#f9fafb;border-radius:6px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:700;color:#374151">+📅</button>' +
             '</div>';
           }).join('')) +
     '</div>';
@@ -626,12 +704,12 @@ function renderCalendarMobile() {
           '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">Calendar</h1>' +
           '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + weekApts.length + ' event' + (weekApts.length===1?'':'s') + ' this week</div>' +
         '</div>' +
-        '<button onclick="_mobileCalendarWeekOffset=0;renderPage()" style="padding:5px 12px;border-radius:14px;border:none;background:#fef2f4;color:#c41230;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">Today</button>' +
+        '<button data-action="calendar-mobile-today" style="padding:5px 12px;border-radius:14px;border:none;background:#fef2f4;color:#c41230;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">Today</button>' +
       '</div>' +
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
-        '<button onclick="_mobileCalendarWeekOffset=(_mobileCalendarWeekOffset||0)-1;renderPage()" style="padding:6px 14px;border:none;background:#f3f4f6;border-radius:8px;cursor:pointer;font-family:inherit;font-size:14px;color:#374151;font-weight:700">‹</button>' +
+        '<button data-action="calendar-mobile-prev-week" style="padding:6px 14px;border:none;background:#f3f4f6;border-radius:8px;cursor:pointer;font-family:inherit;font-size:14px;color:#374151;font-weight:700">‹</button>' +
         '<div style="font-size:13px;font-weight:700;color:#0a0a0a">' + fmtWeekRange(weekStart) + '</div>' +
-        '<button onclick="_mobileCalendarWeekOffset=(_mobileCalendarWeekOffset||0)+1;renderPage()" style="padding:6px 14px;border:none;background:#f3f4f6;border-radius:8px;cursor:pointer;font-family:inherit;font-size:14px;color:#374151;font-weight:700">›</button>' +
+        '<button data-action="calendar-mobile-next-week" style="padding:6px 14px;border:none;background:#f3f4f6;border-radius:8px;cursor:pointer;font-family:inherit;font-size:14px;color:#374151;font-weight:700">›</button>' +
       '</div>' +
     '</div>' +
     Object.keys(byDay).map(function(k){ return dayCard(k, byDay[k]); }).join('');
@@ -685,7 +763,7 @@ function renderCalendarPage() {
   html += '</p></div>';
   html += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">';
   if (!isRep) {
-    html += '<select onchange="calRepFilter=this.value;renderPage()" class="sel" style="font-size:12px;padding:6px 10px;width:auto">';
+    html += '<select data-on-change="calendar-rep-filter" class="sel" style="font-size:12px;padding:6px 10px;width:auto">';
     html += '<option value="all"' + (calRepFilter==='all'?' selected':'') + '>All Reps</option>';
     html += '<option value="mine"' + (calRepFilter==='mine'?' selected':'') + '>Just Me (' + _calEsc(cu.name) + ')</option>';
     html += '<option disabled>\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500</option>';
@@ -698,11 +776,11 @@ function renderCalendarPage() {
     html += '</select>';
   }
   // Google layer toggle
-  html += '<button onclick="calShowGoogle=!calShowGoogle;renderPage()" class="btn-w" style="font-size:12px;gap:4px" title="Toggle Google Calendar events">'
+  html += '<button data-action="calendar-toggle-google" class="btn-w" style="font-size:12px;gap:4px" title="Toggle Google Calendar events">'
     + (calShowGoogle?'\u2713 Google':'\u2715 Google') + '</button>';
-  if (getState().gmailConnected) html += '<button onclick="calSyncGoogle()" class="btn-w" style="font-size:12px;gap:4px">\u21bb Sync</button>';
-  else html += '<button onclick="gmailConnect()" class="btn-r" style="font-size:12px">Connect My Google</button>';
-  html += '<button onclick="calNewEvent()" class="btn-r" style="font-size:12px;gap:4px">+ New Event</button>';
+  if (getState().gmailConnected) html += '<button data-action="calendar-sync-google" class="btn-w" style="font-size:12px;gap:4px">\u21bb Sync</button>';
+  else html += '<button data-action="calendar-connect-gmail" class="btn-r" style="font-size:12px">Connect My Google</button>';
+  html += '<button data-action="calendar-new-event" class="btn-r" style="font-size:12px;gap:4px">+ New Event</button>';
   html += '</div></div>';
 
   // Info banner about per-user Google sync (only for admins/managers)
@@ -721,10 +799,10 @@ function renderCalendarPage() {
 
   // Week nav
   html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">';
-  html += '<button onclick="calNavWeek(-1)" style="background:none;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer;padding:7px 12px;font-size:18px;color:#374151;font-family:inherit">\u2039</button>';
+  html += '<button data-action="calendar-week-prev" style="background:none;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer;padding:7px 12px;font-size:18px;color:#374151;font-family:inherit">\u2039</button>';
   html += '<div style="text-align:center;min-width:220px"><div style="font-size:16px;font-weight:700;font-family:Syne,sans-serif">' + wkLabel + '</div></div>';
-  html += '<button onclick="calNavWeek(1)" style="background:none;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer;padding:7px 12px;font-size:18px;color:#374151;font-family:inherit">\u203a</button>';
-  html += '<button onclick="calGoToday()" class="btn-w" style="font-size:12px;padding:5px 14px">Today</button>';
+  html += '<button data-action="calendar-week-next" style="background:none;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer;padding:7px 12px;font-size:18px;color:#374151;font-family:inherit">\u203a</button>';
+  html += '<button data-action="calendar-go-today" class="btn-w" style="font-size:12px;padding:5px 14px">Today</button>';
   html += '</div>';
 
   // Week grid with hours
@@ -739,7 +817,7 @@ function renderCalendarPage() {
   days.forEach(function(day) {
     html += '<div style="padding:8px 6px;border-right:1px solid #f0f0f0;border-bottom:1px solid '+(day.isToday?'#c41230':'#e5e7eb')+';text-align:center;background:'+(day.isToday?'#c41230':day.isPast?'#fafafa':'#f9fafb')+'">'
       +'<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:'+(day.isToday?'#fff':'#9ca3af')+'">'+day.dayName+'</div>'
-      +'<div style="font-size:18px;font-weight:800;color:'+(day.isToday?'#fff':'#1a1a1a')+';font-family:Syne,sans-serif;cursor:pointer" onclick="calNewEvent(\''+day.ds+'\')" title="Click to add event">'+day.dayNum+'</div></div>';
+      +'<div style="font-size:18px;font-weight:800;color:'+(day.isToday?'#fff':'#1a1a1a')+';font-family:Syne,sans-serif;cursor:pointer" data-action="calendar-new-event" data-date="'+day.ds+'" title="Click to add event">'+day.dayNum+'</div></div>';
   });
   html += '</div>';
 
@@ -794,7 +872,7 @@ function renderCalendarPage() {
   reps.forEach(function(r) {
     var cnt = 0;
     days.forEach(function(d){ d.events.forEach(function(e){ if(e.rep===r.name) cnt++; }); });
-    html += '<div style="display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer" onclick="calRepFilter=\''+_calEsc(r.name)+'\';renderPage()" title="Filter to '+_calEsc(r.name)+'"><div style="width:10px;height:10px;border-radius:50%;background:'+r.col+'"></div><span>'+_calEsc(r.name.split(' ')[0])+' ('+cnt+')</span></div>';
+    html += '<div style="display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer" data-action="calendar-rep-legend-filter" data-rep-name="'+_calEsc(r.name)+'" title="Filter to '+_calEsc(r.name)+'"><div style="width:10px;height:10px;border-radius:50%;background:'+r.col+'"></div><span>'+_calEsc(r.name.split(' ')[0])+' ('+cnt+')</span></div>';
   });
   var gCnt = 0;
   days.forEach(function(d){ d.events.forEach(function(e){ if(e.source==='google') gCnt++; }); });
@@ -825,4 +903,3 @@ function renderCalendarPage() {
 
   return html;
 }
-

@@ -4,6 +4,52 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-02) ────────
+defineAction('won-show-deal-detail', function(target, ev) {
+  var dealId = target.dataset.dealId;
+  setState({dealDetailId: dealId, page: 'deals'});
+});
+
+defineAction('won-search-input', function(target, ev) {
+  wonSearch = target.value;
+  renderPage();
+});
+
+defineAction('won-filter-branch', function(target, ev) {
+  wonFilterBranch = target.value;
+  renderPage();
+});
+
+defineAction('won-filter-rep', function(target, ev) {
+  wonFilterRep = target.value;
+  renderPage();
+});
+
+defineAction('won-filter-pipeline', function(target, ev) {
+  wonFilterPipeline = target.value;
+  renderPage();
+});
+
+defineAction('won-filter-deal-type', function(target, ev) {
+  wonFilterDealType = target.value;
+  renderPage();
+});
+
+defineAction('won-filter-range', function(target, ev) {
+  wonFilterRange = target.value;
+  renderPage();
+});
+
+defineAction('won-filter-range-mobile', function(target, ev) {
+  wonFilterRange = target.dataset.rangeId;
+  renderPage();
+});
+
+defineAction('won-toggle-sort', function(target, ev) {
+  var col = target.dataset.col;
+  wonToggleSort(col);
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 // WON DEALS PAGE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -47,19 +93,14 @@ function renderWonMobile() {
     });
   }
   filtered.sort(function(a, b){ return (b.wonDate || '').localeCompare(a.wonDate || ''); });
-  function fmtK(n) {
-    var v = Number(n) || 0;
-    if (v >= 1000000) return '$' + (v/1000000).toFixed(1) + 'M';
-    if (v >= 1000) return '$' + Math.round(v/1000) + 'k';
-    return '$' + v.toFixed(0);
-  }
-  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
-  function _attrEsc(s) { return String(s||'').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+  // fmtK consolidated to 07-shared-ui.js (2026-05-02). Falls through to global.
+  // _esc consolidated to 07-shared-ui.js (2026-05-02). Falls through to the global.
+  // _attrEsc consolidated to 07-shared-ui.js (2026-05-02). Falls through to global.
   var totalVal = filtered.reduce(function(s, d){ return s + (d.val || 0); }, 0);
   function wonCard(d) {
     var c = contacts.find(function(x){ return x.id === d.cid; });
     var name = c ? (c.fn + ' ' + c.ln) : (d.title || 'Deal');
-    return '<button onclick="setState({dealDetailId:\'' + _esc(d.id) + '\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid #22c55e">' +
+    return '<button data-action="won-show-deal-detail" data-deal-id="' + _esc(d.id) + '" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid #22c55e">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
         '<div style="flex:1;min-width:0">' +
           '<div style="font-size:14px;font-weight:700;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
@@ -79,11 +120,11 @@ function renderWonMobile() {
         '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">Won Deals</h1>' +
         '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + filtered.length + ' deal' + (filtered.length===1?'':'s') + ' · ' + fmtK(totalVal) + '</div>' +
       '</div>' +
-      '<input value="' + _attrEsc(wonSearch) + '" oninput="wonSearch=this.value;renderPage()" placeholder="Search name, suburb…" style="width:100%;padding:8px 12px;background:#f3f4f6;border:none;border-radius:8px;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box;margin-bottom:8px" />' +
+      '<input value="' + _attrEsc(wonSearch) + '" data-on-input="won-search-input" placeholder="Search name, suburb…" style="width:100%;padding:8px 12px;background:#f3f4f6;border:none;border-radius:8px;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box;margin-bottom:8px" />' +
       '<div style="display:flex;gap:4px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px">' +
         [{id:'all',label:'All'},{id:'thisMonth',label:'This month'},{id:'lastMonth',label:'Last month'},{id:'thisQuarter',label:'This Q'},{id:'thisYear',label:'YTD'}].map(function(r){
           var on = wonFilterRange === r.id;
-          return '<button onclick="wonFilterRange=\'' + r.id + '\';renderPage()" style="flex-shrink:0;padding:5px 12px;border-radius:14px;border:1px solid ' + (on ? '#c41230' : '#e5e7eb') + ';background:' + (on ? '#c41230' : '#fff') + ';color:' + (on ? '#fff' : '#6b7280') + ';font-size:11px;font-weight:' + (on ? 700 : 600) + ';cursor:pointer;font-family:inherit;white-space:nowrap">' + r.label + '</button>';
+          return '<button data-action="won-filter-range-mobile" data-range-id="' + r.id + '" style="flex-shrink:0;padding:5px 12px;border-radius:14px;border:1px solid ' + (on ? '#c41230' : '#e5e7eb') + ';background:' + (on ? '#c41230' : '#fff') + ';color:' + (on ? '#fff' : '#6b7280') + ';font-size:11px;font-weight:' + (on ? 700 : 600) + ';cursor:pointer;font-family:inherit;white-space:nowrap">' + r.label + '</button>';
         }).join('') +
       '</div>' +
     '</div>' +
@@ -184,28 +225,28 @@ function renderWonPage() {
 
     // Filters
     +'<div class="card" style="padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
-    +'<input id="wonSearchInput" oninput="wonSearch=this.value;renderPage()" value="' + wonSearch + '" class="inp" placeholder="Search deals..." style="flex:1;min-width:180px;font-size:13px">'
-    +'<select class="sel" style="width:auto;font-size:12px" onchange="wonFilterBranch=this.value;renderPage()">'
+    +'<input id="wonSearchInput" data-on-input="won-search-input" value="' + wonSearch + '" class="inp" placeholder="Search deals..." style="flex:1;min-width:180px;font-size:13px">'
+    +'<select class="sel" style="width:auto;font-size:12px" data-on-change="won-filter-branch">'
     +'<option value="all"' + (wonFilterBranch === 'all' ? ' selected' : '') + '>All Branches</option>'
     +'<option value="VIC"' + (wonFilterBranch === 'VIC' ? ' selected' : '') + '>VIC</option>'
     +'<option value="ACT"' + (wonFilterBranch === 'ACT' ? ' selected' : '') + '>ACT</option>'
     +'<option value="SA"' + (wonFilterBranch === 'SA' ? ' selected' : '') + '>SA</option>'
     +'</select>'
-    +'<select class="sel" style="width:auto;font-size:12px" onchange="wonFilterRep=this.value;renderPage()">'
+    +'<select class="sel" style="width:auto;font-size:12px" data-on-change="won-filter-rep">'
     +'<option value="all"' + (wonFilterRep === 'all' ? ' selected' : '') + '>All Reps</option>'
     + reps.map(function(r){ return '<option value="' + r + '"' + (wonFilterRep === r ? ' selected' : '') + '>' + r + '</option>'; }).join('')
     +'</select>'
-    +'<select class="sel" style="width:auto;font-size:12px" onchange="wonFilterPipeline=this.value;renderPage()">'
+    +'<select class="sel" style="width:auto;font-size:12px" data-on-change="won-filter-pipeline">'
     +'<option value="all"' + (wonFilterPipeline === 'all' ? ' selected' : '') + '>All Pipelines</option>'
     + PIPELINES.map(function(p){ return '<option value="' + p.id + '"' + (wonFilterPipeline === p.id ? ' selected' : '') + '>' + p.name + '</option>'; }).join('')
     +'</select>'
     // Brief 5 Phase 4: deal-type filter (All / Residential / Commercial).
-    +'<select class="sel" style="width:auto;font-size:12px" onchange="wonFilterDealType=this.value;renderPage()">'
+    +'<select class="sel" style="width:auto;font-size:12px" data-on-change="won-filter-deal-type">'
     +'<option value="all"' + (wonFilterDealType === 'all' ? ' selected' : '') + '>All Types</option>'
     +'<option value="residential"' + (wonFilterDealType === 'residential' ? ' selected' : '') + '>Residential</option>'
     +'<option value="commercial"' + (wonFilterDealType === 'commercial' ? ' selected' : '') + '>Commercial</option>'
     +'</select>'
-    +'<select class="sel" style="width:auto;font-size:12px" onchange="wonFilterRange=this.value;renderPage()">'
+    +'<select class="sel" style="width:auto;font-size:12px" data-on-change="won-filter-range">'
     +'<option value="all"' + (wonFilterRange === 'all' ? ' selected' : '') + '>All Time</option>'
     +'<option value="thisMonth"' + (wonFilterRange === 'thisMonth' ? ' selected' : '') + '>This Month</option>'
     +'<option value="lastMonth"' + (wonFilterRange === 'lastMonth' ? ' selected' : '') + '>Last Month</option>'
@@ -219,12 +260,12 @@ function renderWonPage() {
     +'<div class="card" style="overflow:hidden;padding:0">'
     +'<table style="width:100%;border-collapse:collapse">'
     +'<thead><tr>'
-    +'<th class="th" onclick="wonToggleSort(\'title\')" style="cursor:pointer">Deal ' + sortIcon('title') + '</th>'
-    +'<th class="th" onclick="wonToggleSort(\'contact\')" style="cursor:pointer">Contact</th>'
-    +'<th class="th" onclick="wonToggleSort(\'val\')" style="cursor:pointer;text-align:right">Value ' + sortIcon('val') + '</th>'
-    +'<th class="th" onclick="wonToggleSort(\'wonDate\')" style="cursor:pointer">Won Date ' + sortIcon('wonDate') + '</th>'
-    +'<th class="th" onclick="wonToggleSort(\'rep\')" style="cursor:pointer">Rep ' + sortIcon('rep') + '</th>'
-    +'<th class="th" onclick="wonToggleSort(\'branch\')" style="cursor:pointer">Branch ' + sortIcon('branch') + '</th>'
+    +'<th class="th" data-action="won-toggle-sort" data-col="title" style="cursor:pointer">Deal ' + sortIcon('title') + '</th>'
+    +'<th class="th" data-action="won-toggle-sort" data-col="contact" style="cursor:pointer">Contact</th>'
+    +'<th class="th" data-action="won-toggle-sort" data-col="val" style="cursor:pointer;text-align:right">Value ' + sortIcon('val') + '</th>'
+    +'<th class="th" data-action="won-toggle-sort" data-col="wonDate" style="cursor:pointer">Won Date ' + sortIcon('wonDate') + '</th>'
+    +'<th class="th" data-action="won-toggle-sort" data-col="rep" style="cursor:pointer">Rep ' + sortIcon('rep') + '</th>'
+    +'<th class="th" data-action="won-toggle-sort" data-col="branch" style="cursor:pointer">Branch ' + sortIcon('branch') + '</th>'
     +'<th class="th">Type</th>'
     +'<th class="th">Pipeline</th>'
     +'</tr></thead>'
@@ -241,7 +282,7 @@ function renderWonPage() {
         if (d.wonDate) {
           try { var wd = new Date(d.wonDate + 'T12:00:00'); wonDateFmt = wd.toLocaleDateString('en-AU', {day:'numeric',month:'short',year:'numeric'}); } catch(e){}
         }
-        return '<tr style="cursor:pointer" onclick="setState({dealDetailId:\'' + d.id + '\',page:\'deals\'})" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'\'">'
+        return '<tr style="cursor:pointer" data-action="won-show-deal-detail" data-deal-id="' + d.id + '" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'\'">'
           +'<td class="td"><div style="display:flex;align-items:center;gap:8px"><div style="width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0"></div><div><div style="font-size:13px;font-weight:600;color:#111">' + d.title + '</div>' + (d.suburb ? '<div style="font-size:11px;color:#9ca3af">' + d.suburb + '</div>' : '') + '</div></div></td>'
           +'<td class="td"><div style="font-size:13px;color:#374151">' + cName + '</div>' + (cEmail ? '<div style="font-size:11px;color:#9ca3af">' + cEmail + '</div>' : '') + '</td>'
           +'<td class="td" style="text-align:right;font-weight:700;color:#15803d;font-size:14px;font-family:Syne,sans-serif">' + fmt$(d.val) + '</td>'
@@ -260,4 +301,3 @@ function renderWonPage() {
     +'</div>'
     +'</div>';
 }
-

@@ -4,12 +4,149 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
-// ══════════════════════════════════════════════════════════════════════════════
-// COMMISSION SYSTEM
-// ══════════════════════════════════════════════════════════════════════════════
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-02) ──────────
+// 40 inline handlers migrated from onclick/onchange/oninput attributes.
+// (IIFE wrapper removed 2026-05-02 — file uses bare top-level functions like
+//  the rest of the codebase, so 99-init's pageRenderers can resolve
+//  renderCommissionPage. All defineAction calls below stay at top-level.)
 
-// ════════════════════════════════════════════════════════════════════════════
-// CONFIG DATA MODEL (Brief 4 Phase 1)
+defineAction('commission-rep-filter-set', function(target) {
+    commRepFilter = target.dataset.rep || 'all';
+    commTab = target.dataset.tab || 'overview';
+    renderPage();
+  });
+  defineAction('commission-mobile-filter-set', function(target) {
+    _mobileCommissionFilter = target.dataset.filter || 'all';
+    renderPage();
+  });
+  defineAction('commission-deal-detail-open', function(target) {
+    setState({dealDetailId: target.dataset.dealId});
+  });
+  defineAction('commission-deal-detail-navigate', function(target) {
+    setState({dealDetailId: target.dataset.dealId, page: 'deals'});
+  });
+  defineAction('commission-job-detail-navigate', function(target, ev) {
+    if (!target.dataset.jobId) return;
+    setState({jobDetailId: target.dataset.jobId, page: 'jobs', crmMode: 'jobs'});
+  });
+  defineAction('commission-paid-toggle', function(target) {
+    toggleCommissionPaid(target.dataset.dealId);
+  });
+  defineAction('commission-override-toggle', function(target) {
+    toggleOverridePaid(target.dataset.monthKey);
+  });
+  defineAction('commission-rep-rate-set', function(target) {
+    setRepRate(target.dataset.repName, target.value);
+  });
+  defineAction('commission-tab-set', function(target) {
+    commTab = target.dataset.tab || 'overview';
+    renderPage();
+  });
+  defineAction('commission-date-filter-set', function(target) {
+    commDateFilter = target.value;
+    renderPage();
+  });
+  defineAction('commission-rep-filter-select', function(target) {
+    commRepFilter = target.value;
+    renderPage();
+  });
+  defineAction('commission-status-filter-set', function(target) {
+    commStatusFilter = target.value;
+    renderPage();
+  });
+  defineAction('payrun-modal-new-open', function() {
+    openNewPayRunModal();
+  });
+  defineAction('payrun-modal-historical-open', function() {
+    openHistoricalPayRunModal();
+  });
+  defineAction('payrun-history-status-filter', function(target) {
+    payRunHistorySetStatus(target.value);
+  });
+  defineAction('payrun-history-search', function(target) {
+    payRunHistorySetSearch(target.value);
+  });
+  defineAction('payrun-detail-open', function(target) {
+    openPayRunDetail(target.dataset.payrunId);
+  });
+  defineAction('payrun-step-prev', function() {
+    var p = _pendingPayRun || {};
+    payRunSetStep((p.step || 0) - 1);
+  });
+  defineAction('payrun-step-next', function() {
+    var p = _pendingPayRun || {};
+    payRunSetStep((p.step || 0) + 1);
+  });
+  defineAction('payrun-finalise', function() {
+    payRunFinalise();
+  });
+  defineAction('payrun-modal-close', function(target, ev) {
+    if (ev && target !== ev.target) return; // only close if clicking modal-bg itself
+    closePayRunModal();
+  });
+  defineAction('payrun-modal-close-btn', function() {
+    closePayRunModal();
+  });
+  defineAction('payrun-period-preset-set', function(target) {
+    payRunSetPeriodPreset(target.dataset.preset);
+  });
+  defineAction('payrun-period-start-set', function(target) {
+    payRunSetCustomPeriod('start', target.value);
+  });
+  defineAction('payrun-period-end-set', function(target) {
+    payRunSetCustomPeriod('end', target.value);
+  });
+  defineAction('payrun-select-all', function() {
+    payRunSelectAll();
+  });
+  defineAction('payrun-select-none', function() {
+    payRunSelectNone();
+  });
+  defineAction('payrun-deal-toggle', function(target) {
+    payRunToggleDeal(target.dataset.dealId);
+  });
+  defineAction('payrun-date-set', function(target) {
+    payRunSetRunDate(target.value);
+  });
+  defineAction('payrun-method-set', function(target) {
+    payRunSetPaymentMethod(target.value);
+  });
+  defineAction('payrun-notes-set', function(target) {
+    payRunSetNotes(target.value);
+  });
+  defineAction('payrun-detail-modal-close', function(target, ev) {
+    if (ev && target !== ev.target) return;
+    closePayRunDetail();
+  });
+  defineAction('payrun-detail-modal-close-btn', function() {
+    closePayRunDetail();
+  });
+  defineAction('payrun-reconciled-mark', function(target) {
+    markPayRunReconciled(target.dataset.payrunId, prompt('Bank reference (optional):') || null);
+  });
+  defineAction('payrun-void-open', function(target) {
+    openVoidPayRunModal(target.dataset.payrunId);
+  });
+  defineAction('payrun-void-modal-close', function(target, ev) {
+    if (ev && target !== ev.target) return;
+    closeVoidPayRunModal();
+  });
+  defineAction('payrun-void-modal-close-btn', function() {
+    closeVoidPayRunModal();
+  });
+  defineAction('payrun-void-reason-set', function(target) {
+    payRunVoidSetReason(target.value);
+  });
+  defineAction('payrun-void-confirm', function() {
+    confirmVoidPayRun();
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // COMMISSION SYSTEM
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // CONFIG DATA MODEL (Brief 4 Phase 1)
 // ════════════════════════════════════════════════════════════════════════════
 //
 // Replaces the flat `spartan_commission_rates: {[repName]: pct}` localStorage
@@ -2038,7 +2175,7 @@ function _renderTeamRollupTab(allWon, status, allReps) {
     var flagBg    = r.isOutlier ? '#fef2f2' : (pctOfAvg >= 100 ? '#dcfce7' : '#f3f4f6');
     var flagText  = r.isOutlier ? '⚠️ ' + pctOfAvg + '% (outlier)' : pctOfAvg + '% of avg';
     var safeRep = r.repName.replace(/'/g, "\\'");
-    html += '<tr style="cursor:pointer" onclick="commRepFilter=\'' + safeRep + '\';commTab=\'overview\';renderPage()" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'\'">'
+    html += '<tr style="cursor:pointer" data-action="commission-rep-filter-set" data-rep="\'' + safeRep + '\'" data-tab="overview" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'\'">'
       + '<td class="td"><div style="display:flex;align-items:center;gap:8px"><div style="width:28px;height:28px;background:#c41230;border-radius:50%;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center">' + (r.initials || r.repName.charAt(0)) + '</div><div><div style="font-size:13px;font-weight:600">' + r.repName + '</div><div style="font-size:11px;color:#6b7280">' + (r.role || 'sales_rep').replace(/_/g,' ') + '</div></div></div></td>'
       + '<td class="td" style="text-align:center;font-size:13px">' + r.wonCount + '</td>'
       + '<td class="td" style="text-align:right;font-size:13px;font-weight:600">' + fmt$(r.wonValue) + '</td>'
@@ -2088,17 +2225,12 @@ function renderCommissionMobile() {
     else if (l.status === 'due') totals.due += l.commission;
     else totals.pending += l.commission;
   });
-  function fmtK(n) {
-    var v = Number(n) || 0;
-    if (v >= 1000000) return '$' + (v/1000000).toFixed(1) + 'M';
-    if (v >= 1000) return '$' + Math.round(v/1000) + 'k';
-    return '$' + v.toFixed(0);
-  }
+  // fmtK consolidated to 07-shared-ui.js (2026-05-02). Falls through to global.
   function fmt$(n) { return '$' + (Number(n) || 0).toLocaleString('en-AU', { maximumFractionDigits: 0 }); }
-  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+  // _esc consolidated to 07-shared-ui.js (2026-05-02). Falls through to the global.
   function statTile(label, val, count, col, key) {
     var on = filter === key;
-    return '<button onclick="_mobileCommissionFilter=\'' + key + '\';renderPage()" style="background:' + (on ? col : '#fff') + ';border-radius:12px;padding:12px;text-align:left;border:none;cursor:pointer;font-family:inherit;width:100%;box-shadow:0 1px 3px rgba(0,0,0,.06);' + (on ? 'color:#fff' : 'color:#0a0a0a') + '">' +
+    return '<button data-action="commission-mobile-filter-set" data-filter="' + key + '" style="background:' + (on ? col : '#fff') + ';border-radius:12px;padding:12px;text-align:left;border:none;cursor:pointer;font-family:inherit;width:100%;box-shadow:0 1px 3px rgba(0,0,0,.06);' + (on ? 'color:#fff' : 'color:#0a0a0a') + '">' +
       '<div style="font-size:9px;text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-bottom:6px;color:' + (on ? '#fff' : col) + ';opacity:' + (on ? '.9' : '1') + '">' + label + '</div>' +
       '<div style="font-size:18px;font-weight:800;font-family:Syne,sans-serif;line-height:1">' + fmtK(val) + '</div>' +
       '<div style="font-size:10px;margin-top:3px;opacity:' + (on ? '.85' : '.7') + '">' + count + ' deal' + (count===1?'':'s') + '</div>' +
@@ -2110,7 +2242,7 @@ function renderCommissionMobile() {
     var name = c ? (c.fn + ' ' + c.ln) : (d.title || 'Deal');
     var statusCol = l.status === 'paid' ? '#22c55e' : l.status === 'due' ? '#c41230' : '#f59e0b';
     var statusLabel = l.status === 'paid' ? '✓ Paid' : l.status === 'due' ? '💰 Due' : '⏳ Pending';
-    return '<button onclick="setState({dealDetailId:\'' + _esc(d.id) + '\'})" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ' + statusCol + '">' +
+    return '<button data-action="commission-deal-detail-open" data-deal-id="' + _esc(d.id) + '" style="width:100%;background:#fff;border-radius:12px;padding:12px;border:none;cursor:pointer;text-align:left;font-family:inherit;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px;border-left:3px solid ' + statusCol + '">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
         '<div style="flex:1;min-width:0">' +
           '<div style="font-size:13px;font-weight:700;color:#0a0a0a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + name + '</div>' +
@@ -2197,7 +2329,7 @@ function renderCommissionPage() {
       +reps.map(function(rep){
         var rd=allWon.filter(function(d){return d.rep===rep;}),rt=0,rp=0,ru=0;
         rd.forEach(function(d){var c=calcDealCommission(d);rt+=c.commission;if(paid[d.id]&&paid[d.id].status==='paid')rp+=c.commission;else ru+=c.commission;});
-        return '<div class="card" style="padding:16px;cursor:pointer;border:2px solid '+(commRepFilter===rep?'#c41230':'transparent')+'" onclick="commRepFilter='+(commRepFilter===rep?"'all'":"'"+rep+"'")+';renderPage()">'
+        return '<div class="card" style="padding:16px;cursor:pointer;border:2px solid '+(commRepFilter===rep?'#c41230':'transparent')+'" data-action="commission-rep-filter-set" data-rep="'+(commRepFilter===rep?"all":rep)+'">'
           +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-size:14px;font-weight:700">'+rep+'</div><span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:#dbeafe;color:#1d4ed8">'+getRepRate(rep)+'%</span></div>'
           +'<div style="font-size:20px;font-weight:800;color:#15803d;font-family:Syne,sans-serif">'+fmt$(rt)+'</div>'
           +'<div style="display:flex;gap:12px;font-size:11px;margin-top:4px"><span style="color:#15803d">\u2713 '+fmt$(rp)+'</span><span style="color:#dc2626">\u2717 '+fmt$(ru)+'</span></div>'
@@ -2295,8 +2427,8 @@ function renderCommissionPage() {
     else if(js.isDue) payBadge='<span style="font-size:10px;font-weight:700;padding:3px 10px;border-radius:20px;background:#fef2f2;color:#c41230;border:1px solid #fca5a5">\ud83d\udcb0 DUE</span>';
     else payBadge='<span style="font-size:10px;font-weight:700;padding:3px 10px;border-radius:20px;background:#fef9c3;color:#92400e;border:1px solid #fde68a">\u23f3 Pending</span>';
 
-    table+='<tr style="'+(js.isDue&&!isPaid?'background:#fff7ed':'')+'"><td class="td"><div style="font-size:13px;font-weight:600;cursor:pointer;color:#c41230" onclick="setState({dealDetailId:\''+d.id+'\',page:\'deals\'})">'+d.title+'</div></td>'
-      +'<td class="td" style="font-size:11px;font-weight:600;color:#3b82f6;cursor:pointer" onclick="'+(js.job?'setState({jobDetailId:\''+js.job.id+'\',page:\'jobs\',crmMode:\'jobs\'})':'')+'">'+(js.jobNumber||'\u2014')+'</td>'
+    table+='<tr style="'+(js.isDue&&!isPaid?'background:#fff7ed':'')+'"><td class="td"><div style="font-size:13px;font-weight:600;cursor:pointer;color:#c41230" data-action="commission-deal-detail-navigate" data-deal-id="'+d.id+'">'+d.title+'</div></td>'
+      +'<td class="td" style="font-size:11px;font-weight:600;color:#3b82f6;cursor:pointer" '+(js.job?'data-action="commission-job-detail-navigate" data-job-id="'+js.job.id+'"':'')+'>\u200b'+(js.jobNumber||'\u2014')+'</td>'
       +'<td class="td" style="font-size:12px;color:#6b7280">'+cName+'</td>'
       +'<td class="td" style="text-align:right;font-size:13px">'+fmt$(d.val)+'</td>'
       +'<td class="td" style="text-align:center;font-size:12px;color:#6b7280">'+(comm.effectiveRate != null ? comm.effectiveRate : comm.rate)+'%</td>'
@@ -2305,7 +2437,7 @@ function renderCommissionPage() {
       +'<td class="td" style="font-size:11px;color:#6b7280">'+wonFmt+'</td>'
       +'<td class="td" style="padding:6px 8px">'+pipeline+'</td>'
       +'<td class="td" style="text-align:center">'+payBadge+'</td>'
-      +(isAdmin?'<td class="td" style="text-align:center">'+(js.isDue||isPaid?'<button onclick="toggleCommissionPaid(\''+d.id+'\')" class="btn-w" style="font-size:10px;padding:3px 8px">'+(isPaid?'Undo':'Mark Paid')+'</button>':'<span style="font-size:9px;color:#9ca3af">Not yet due</span>')+'</td>':'')+'</tr>';
+      +(isAdmin?'<td class="td" style="text-align:center">'+(js.isDue||isPaid?'<button data-action="commission-paid-toggle" data-deal-id="'+d.id+'" class="btn-w" style="font-size:10px;padding:3px 8px">'+(isPaid?'Undo':'Mark Paid')+'</button>':'<span style="font-size:9px;color:#9ca3af">Not yet due</span>')+'</td>':'')+'</tr>';
   });
   table+='</tbody></table></div>';
 
@@ -2340,7 +2472,7 @@ function renderCommissionPage() {
         +'<td class="td" style="text-align:right;font-size:14px;font-weight:700;color:'+(isPd?'#15803d':'#c41230')+';font-family:Syne,sans-serif">'+fmt$(m.override)+'</td>'
         +'<td class="td" style="text-align:center"><span style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;background:'+(isPd?'#dcfce7':'#fee2e2')+';color:'+(isPd?'#15803d':'#dc2626')+'">'+(isPd?'\u2713 Paid':'Unpaid')+'</span>'
         +(isPd&&overridePaid[mk].paidDate?'<div style="font-size:10px;color:#9ca3af;margin-top:2px">'+overridePaid[mk].paidDate+'</div>':'')+'</td>'
-        +(isAdmin?'<td class="td" style="text-align:center"><button onclick="toggleOverridePaid(\''+mk+'\')" class="btn-w" style="font-size:11px;padding:4px 10px">'+(isPd?'Mark Unpaid':'Mark Paid')+'</button></td>':'')+'</tr>';
+        +(isAdmin?'<td class="td" style="text-align:center"><button data-action="commission-override-toggle" data-month-key="'+mk+'" class="btn-w" style="font-size:11px;padding:4px 10px">'+(isPd?'Mark Unpaid':'Mark Paid')+'</button></td>':'')+'</tr>';
     });
     overrideHtml+='</tbody></table></div>'
       +'<div style="margin-top:14px;padding:14px 18px;background:#f0fdf4;border:1px solid #86efac;border-radius:10px;font-size:12px;color:#166534">\ud83d\udcb5 The Sales Manager receives <strong>'+OVERRIDE_RATE+'% override</strong> on <strong>all company sales</strong> (ex-GST), paid monthly. This is separate from personal deal commission.</div>';
@@ -2366,7 +2498,7 @@ function renderCommissionPage() {
     allReps.forEach(function(u){
       var rd=getState().deals.filter(function(d){return d.won&&d.rep===u.name;}),te=rd.reduce(function(s,d){return s+calcDealCommission(d).commission;},0);
       ratesHtml+='<tr><td class="td"><div style="display:flex;align-items:center;gap:8px"><div style="width:28px;height:28px;background:#c41230;border-radius:50%;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center">'+u.initials+'</div><div><div style="font-size:13px;font-weight:600">'+u.name+'</div><div style="font-size:11px;color:#6b7280">'+u.role.replace(/_/g,' ')+'</div></div></div></td>'
-        +'<td class="td" style="text-align:center"><input type="number" step="0.5" min="0" max="100" value="'+getRepRate(u.name)+'" style="width:70px;text-align:center;padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:14px;font-weight:700;font-family:Syne,sans-serif" onchange="setRepRate(\''+u.name.replace(/'/g,"\\'")+'\',this.value)"> %</td>'
+        +'<td class="td" style="text-align:center"><input type="number" step="0.5" min="0" max="100" value="'+getRepRate(u.name)+'" style="width:70px;text-align:center;padding:5px;border:1px solid #e5e7eb;border-radius:6px;font-size:14px;font-weight:700;font-family:Syne,sans-serif" data-on-change="commission-rep-rate-set" data-rep-name="'+u.name.replace(/"/g,'&quot;')+'"> %</td>'
         +'<td class="td">'+rd.length+'</td><td class="td" style="text-align:right;font-size:14px;font-weight:700;color:#15803d;font-family:Syne,sans-serif">'+fmt$(te)+'</td></tr>';
     });
     ratesHtml+='</tbody></table></div><div style="margin-top:14px;padding:14px 18px;background:#fef9c3;border:1px solid #fde68a;border-radius:10px;font-size:12px;color:#92400e">\u26a0\ufe0f <strong>GST Note:</strong> Commission = (deal value \u00f7 1.1) \u00d7 rate%.</div>';
@@ -2406,8 +2538,8 @@ function renderCommissionPage() {
     +'<div class="card" style="padding:16px;text-align:center"><div style="font-size:24px;font-weight:800;color:#15803d;font-family:Syne,sans-serif">'+fmt$(totalPaid)+'</div><div style="font-size:12px;color:#6b7280;margin-top:4px">\u2713 Paid</div></div>'
     +'<div class="card" style="padding:16px;text-align:center"><div style="font-size:24px;font-weight:800;color:#dc2626;font-family:Syne,sans-serif">'+fmt$(totalUnpaid)+'</div><div style="font-size:12px;color:#6b7280;margin-top:4px">Outstanding</div></div>'
     +'<div class="card" style="padding:16px;text-align:center"><div style="font-size:24px;font-weight:800;color:#374151;font-family:Syne,sans-serif">'+fmt$(totalComm)+'</div><div style="font-size:12px;color:#6b7280;margin-top:4px">Total</div></div></div>'
-    +(tabs.length>0?'<div style="display:flex;gap:8px;margin-bottom:16px">'+tabs.map(function(t){return '<button onclick="commTab=\''+t.id+'\';renderPage()" class="pill'+(commTab===t.id?' on':'')+'" style="font-family:inherit;font-size:13px">'+t.label+'</button>';}).join('')+'</div>':'')
-    +(commTab==='overview'?'<div class="card" style="padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><select class="sel" style="width:auto;font-size:12px" onchange="commDateFilter=this.value;renderPage()"><option value="all"'+(commDateFilter==='all'?' selected':'')+'>All Time</option><option value="thisMonth"'+(commDateFilter==='thisMonth'?' selected':'')+'>This Month</option><option value="lastMonth"'+(commDateFilter==='lastMonth'?' selected':'')+'>Last Month</option><option value="thisQuarter"'+(commDateFilter==='thisQuarter'?' selected':'')+'>This Quarter</option><option value="last6"'+(commDateFilter==='last6'?' selected':'')+'>Last 6 Months</option><option value="thisYear"'+(commDateFilter==='thisYear'?' selected':'')+'>This Year</option></select>'+(isAdmin?'<select class="sel" style="width:auto;font-size:12px" onchange="commRepFilter=this.value;renderPage()"><option value="all"'+(commRepFilter==='all'?' selected':'')+'>All Reps</option>'+reps.map(function(r){return '<option value="'+r+'"'+(commRepFilter===r?' selected':'')+'>'+r+'</option>';}).join('')+'</select>':'')+'<select class="sel" style="width:auto;font-size:12px" onchange="commStatusFilter=this.value;renderPage()"><option value="all"'+(commStatusFilter==='all'?' selected':'')+'>All Status</option><option value="paid"'+(commStatusFilter==='paid'?' selected':'')+'>Paid</option><option value="due"'+(commStatusFilter==='due'?' selected':'')+'>Due (Ready to Pay)</option><option value="pending"'+(commStatusFilter==='pending'?' selected':'')+'>Pending (Not Yet Due)</option><option value="unpaid"'+(commStatusFilter==='unpaid'?' selected':'')+'>All Unpaid</option></select></div>':'')
+    +(tabs.length>0?'<div style="display:flex;gap:8px;margin-bottom:16px">'+tabs.map(function(t){return '<button data-action="commission-tab-set" data-tab="'+t.id+'" class="pill'+(commTab===t.id?' on':'')+'" style="font-family:inherit;font-size:13px">'+t.label+'</button>';}).join('')+'</div>':'')
+    +(commTab==='overview'?'<div class="card" style="padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap"><select class="sel" style="width:auto;font-size:12px" data-on-change="commission-date-filter-set"><option value="all"'+(commDateFilter==='all'?' selected':'')+'>All Time</option><option value="thisMonth"'+(commDateFilter==='thisMonth'?' selected':'')+'>This Month</option><option value="lastMonth"'+(commDateFilter==='lastMonth'?' selected':'')+'>Last Month</option><option value="thisQuarter"'+(commDateFilter==='thisQuarter'?' selected':'')+'>This Quarter</option><option value="last6"'+(commDateFilter==='last6'?' selected':'')+'>Last 6 Months</option><option value="thisYear"'+(commDateFilter==='thisYear'?' selected':'')+'>This Year</option></select>'+(isAdmin?'<select class="sel" style="width:auto;font-size:12px" data-on-change="commission-rep-filter-select"><option value="all"'+(commRepFilter==='all'?' selected':'')+'>All Reps</option>'+reps.map(function(r){return '<option value="'+r+'"'+(commRepFilter===r?' selected':'')+'>'+r+'</option>';}).join('')+'</select>':'')+'<select class="sel" style="width:auto;font-size:12px" data-on-change="commission-status-filter-set"><option value="all"'+(commStatusFilter==='all'?' selected':'')+'>All Status</option><option value="paid"'+(commStatusFilter==='paid'?' selected':'')+'>Paid</option><option value="due"'+(commStatusFilter==='due'?' selected':'')+'>Due (Ready to Pay)</option><option value="pending"'+(commStatusFilter==='pending'?' selected':'')+'>Pending (Not Yet Due)</option><option value="unpaid"'+(commStatusFilter==='unpaid'?' selected':'')+'>All Unpaid</option></select></div>':'')
     +repCards
     +(commTab==='overview'?table:commTab==='team'?teamHtml:commTab==='override'?overrideHtml:commTab==='audit'?auditHtml:commTab==='payruns'?payrunsHtml:ratesHtml)
     +(!isAdmin&&!isManager&&!isRep&&cu.role!=='accounts'?'<div class="card" style="padding:40px;text-align:center"><div style="font-size:28px;margin-bottom:8px">\ud83d\udd12</div><div style="font-size:14px;color:#6b7280">Commission data is restricted.</div></div>':'')
@@ -2448,16 +2580,16 @@ function _renderPayRunHistoryTab(cu, isAdmin, isManager, isRep) {
   // Top action bar
   var html = ''
     + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
-    + (canCreate ? '<button onclick="openNewPayRunModal()" class="btn-r" style="font-size:13px;padding:8px 14px">+ New Pay Run</button>' : '')
-    + (canBackfill ? '<button onclick="openHistoricalPayRunModal()" class="btn-w" style="font-size:12px;padding:7px 12px;color:#6b7280">\ud83d\udccb Record Historical</button>' : '')
+    + (canCreate ? '<button data-action="payrun-modal-new-open" class="btn-r" style="font-size:13px;padding:8px 14px">+ New Pay Run</button>' : '')
+    + (canBackfill ? '<button data-action="payrun-modal-historical-open" class="btn-w" style="font-size:12px;padding:7px 12px;color:#6b7280">\ud83d\udccb Record Historical</button>' : '')
     + '<div style="flex:1"></div>'
-    + '<select class="sel" style="width:auto;font-size:12px" onchange="payRunHistorySetStatus(this.value)">'
+    + '<select class="sel" style="width:auto;font-size:12px" data-on-change="payrun-history-status-filter">'
     +   '<option value="all"' + (f.status==='all'?' selected':'') + '>All status</option>'
     +   '<option value="finalised"' + (f.status==='finalised'?' selected':'') + '>Finalised</option>'
     +   '<option value="reconciled"' + (f.status==='reconciled'?' selected':'') + '>Reconciled</option>'
     +   '<option value="voided"' + (f.status==='voided'?' selected':'') + '>Voided</option>'
     + '</select>'
-    + '<input class="inp" placeholder="Search PR-### / method / notes / run by" oninput="payRunHistorySetSearch(this.value)" value="' + (f.search ? String(f.search).replace(/"/g,'&quot;') : '') + '" style="flex:1;min-width:200px;font-size:12px">'
+    + '<input class="inp" placeholder="Search PR-### / method / notes / run by" data-on-input="payrun-history-search" value="' + (f.search ? String(f.search).replace(/"/g,'&quot;') : '') + '" style="flex:1;min-width:200px;font-size:12px">'
     + '</div>';
 
   // Empty state
@@ -2466,7 +2598,7 @@ function _renderPayRunHistoryTab(cu, isAdmin, isManager, isRep) {
       + '<div style="font-size:36px;margin-bottom:10px">\ud83d\udcb8</div>'
       + '<div style="font-size:14px;font-weight:600;color:#6b7280;margin-bottom:6px">No pay runs ' + (isRep ? 'in your history yet' : 'yet') + '</div>'
       + (canCreate
-          ? '<div style="font-size:12px;color:#9ca3af;margin-bottom:16px">Bundle realised commissions into a single auditable payment event.</div><button onclick="openNewPayRunModal()" class="btn-r" style="font-size:13px">+ Create your first Pay Run</button>'
+          ? '<div style="font-size:12px;color:#9ca3af;margin-bottom:16px">Bundle realised commissions into a single auditable payment event.</div><button data-action="payrun-modal-new-open" class="btn-r" style="font-size:13px">+ Create your first Pay Run</button>'
           : '<div style="font-size:12px;color:#9ca3af">Pay runs will appear here once admin creates them.</div>')
       + '</div>';
     return html;
@@ -2483,7 +2615,7 @@ function _renderPayRunHistoryTab(cu, isAdmin, isManager, isRep) {
       var label = 'PR-' + String(r.runNumber).padStart(3, '0');
       var col = voided ? '#9ca3af' : (r.status === 'reconciled' ? '#15803d' : '#3b82f6');
       var bg = voided ? '#f9fafb' : (r.status === 'reconciled' ? '#f0fdf4' : '#eff6ff');
-      html += '<div class="card" style="padding:14px 16px;cursor:pointer;border-left:4px solid ' + col + (voided ? ';opacity:0.6;text-decoration:line-through' : '') + '" onclick="openPayRunDetail(\'' + r.id + '\')">'
+      html += '<div class="card" style="padding:14px 16px;cursor:pointer;border-left:4px solid ' + col + (voided ? ';opacity:0.6;text-decoration:line-through' : '') + '" data-action="payrun-detail-open" data-payrun-id="' + r.id + '">'
         + '<div style="display:flex;justify-content:space-between;align-items:center">'
         +   '<div><div style="font-size:14px;font-weight:700;font-family:Syne,sans-serif">' + label + '</div>'
         +     '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + r.runDate + ' \u00b7 ' + (r.paymentMethod || '\u2014') + (r.metadata && r.metadata.backfilled ? ' \u00b7 backfilled' : '') + '</div></div>'
@@ -2509,7 +2641,7 @@ function _renderPayRunHistoryTab(cu, isAdmin, isManager, isRep) {
       var statusBg    = voided ? '#f3f4f6' : (r.status === 'reconciled' ? '#dcfce7' : '#dbeafe');
       var period = (r.periodStart && r.periodEnd) ? (r.periodStart + ' \u2192 ' + r.periodEnd) : (r.metadata && r.metadata.backfilled ? 'all (backfill)' : '\u2014');
       var repCount = Object.keys(r.linesByRep || {}).length;
-      html += '<tr style="cursor:pointer' + (voided ? ';opacity:0.55' : '') + '" onclick="openPayRunDetail(\'' + r.id + '\')" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'\'">'
+      html += '<tr style="cursor:pointer' + (voided ? ';opacity:0.55' : '') + '" data-action="payrun-detail-open" data-payrun-id="' + r.id + '" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'\'">'
         + '<td class="td"><div style="font-weight:700;color:' + statusColor + ';font-family:Syne,sans-serif' + (voided ? ';text-decoration:line-through' : '') + '">' + label + '</div>'
         +   (r.metadata && r.metadata.backfilled ? '<div style="font-size:10px;color:#9ca3af">backfilled</div>' : '')
         + '</td>'
@@ -2547,26 +2679,26 @@ function renderPayRunModal() {
   var canBack = p.step > 1 && p.mode !== 'backfill'; // backfill skips step 1
   var canBack2 = p.step > 2; // backfill can still go back from 3 to 2
   var backBtn = (canBack || canBack2)
-    ? '<button class="btn-w" onclick="payRunSetStep(' + (p.step - 1) + ')" style="font-size:12px">\u2190 Back</button>'
+    ? '<button class="btn-w" data-action="payrun-step-prev" style="font-size:12px">\u2190 Back</button>'
     : '<span></span>';
   var nextBtn;
   if (p.step < 3) {
     var selectedCount = Object.keys(p.selectedDealIds || {}).length;
     var disabled = (p.step === 2 && selectedCount === 0);
-    nextBtn = '<button class="btn-r" onclick="payRunSetStep(' + (p.step + 1) + ')" ' + (disabled ? 'disabled style="opacity:0.5;font-size:12px"' : 'style="font-size:12px"') + '>Next \u2192</button>';
+    nextBtn = '<button class="btn-r" data-action="payrun-step-next" ' + (disabled ? 'disabled style="opacity:0.5;font-size:12px"' : 'style="font-size:12px"') + '>Next \u2192</button>';
   } else {
     var prNum = nextPayRunNumber();
     var label = 'PR-' + String(prNum).padStart(3, '0');
-    nextBtn = '<button class="btn-r" onclick="payRunFinalise()" style="font-size:13px;padding:8px 16px">Finalise ' + label + '</button>';
+    nextBtn = '<button class="btn-r" data-action="payrun-finalise" style="font-size:13px;padding:8px 16px">Finalise ' + label + '</button>';
   }
 
   return ''
-    + '<div class="modal-bg" onclick="if(event.target===this)closePayRunModal()">'
+    + '<div class="modal-bg" data-action="payrun-modal-close">'
     +   '<div class="modal" style="max-width:880px;max-height:90vh;display:flex;flex-direction:column">'
     +     '<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
     +       '<div><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">' + titlePrefix + '</h3>'
     +         '<div style="font-size:12px;color:#6b7280;margin-top:2px">' + stepLabel + '</div></div>'
-    +       '<button onclick="closePayRunModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button>'
+    +       '<button data-action="payrun-modal-close-btn" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button>'
     +     '</div>'
     +     '<div style="flex:1;overflow-y:auto;padding:24px">' + inner + '</div>'
     +     '<div style="padding:14px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;display:flex;justify-content:space-between;align-items:center">'
@@ -2590,7 +2722,7 @@ function _renderPayRunStep1Period(p) {
     + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-bottom:18px">';
   presets.forEach(function (pp) {
     var on = p.periodPreset === pp[0];
-    html += '<button onclick="payRunSetPeriodPreset(\'' + pp[0] + '\')" style="padding:14px;border:2px solid ' + (on?'#c41230':'#e5e7eb') + ';border-radius:10px;background:' + (on?'#fff5f6':'#fff') + ';cursor:pointer;font-family:inherit;text-align:left">'
+    html += '<button data-action="payrun-period-preset-set" data-preset="' + pp[0] + '" style="padding:14px;border:2px solid ' + (on?'#c41230':'#e5e7eb') + ';border-radius:10px;background:' + (on?'#fff5f6':'#fff') + ';cursor:pointer;font-family:inherit;text-align:left">'
       + '<div style="font-size:13px;font-weight:600;color:#1a1a1a">' + pp[1] + '</div>'
       + (on && pp[0] !== 'custom' ? '<div style="font-size:11px;color:#6b7280;margin-top:4px">' + p.periodStart + ' \u2192 ' + p.periodEnd + '</div>' : '')
       + '</button>';
@@ -2599,9 +2731,9 @@ function _renderPayRunStep1Period(p) {
   if (p.periodPreset === 'custom') {
     html += '<div style="display:flex;gap:12px;margin-bottom:14px">'
       + '<div style="flex:1"><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Start date</label>'
-      + '<input type="date" class="inp" value="' + (p.periodStart || '') + '" onchange="payRunSetCustomPeriod(\'start\',this.value)"></div>'
+      + '<input type="date" class="inp" value="' + (p.periodStart || '') + '" data-on-change="payrun-period-start-set"></div>'
       + '<div style="flex:1"><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">End date</label>'
-      + '<input type="date" class="inp" value="' + (p.periodEnd || '') + '" onchange="payRunSetCustomPeriod(\'end\',this.value)"></div>'
+      + '<input type="date" class="inp" value="' + (p.periodEnd || '') + '" data-on-change="payrun-period-end-set"></div>'
       + '</div>';
   }
   var elig = p.eligibleDeals || [];
@@ -2633,7 +2765,7 @@ function _renderPayRunStep2Deals(p) {
 
   var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
     + '<div style="font-size:13px;color:#374151"><strong>' + totalSelected + '</strong> of ' + elig.length + ' selected \u00b7 <strong>' + fmt$(totalAmount) + '</strong></div>'
-    + '<div style="display:flex;gap:6px"><button onclick="payRunSelectAll()" class="btn-w" style="font-size:11px;padding:4px 10px">Select all</button><button onclick="payRunSelectNone()" class="btn-w" style="font-size:11px;padding:4px 10px">Clear</button></div>'
+    + '<div style="display:flex;gap:6px"><button data-action="payrun-select-all" class="btn-w" style="font-size:11px;padding:4px 10px">Select all</button><button data-action="payrun-select-none" class="btn-w" style="font-size:11px;padding:4px 10px">Clear</button></div>'
     + '</div>';
 
   Object.keys(byRep).sort().forEach(function (rep) {
@@ -2649,7 +2781,7 @@ function _renderPayRunStep2Deals(p) {
     rows.forEach(function (e) {
       var checked = !!p.selectedDealIds[e.dealId];
       html += '<label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid #f3f4f6;cursor:pointer">'
-        + '<input type="checkbox"' + (checked?' checked':'') + ' onchange="payRunToggleDeal(\'' + e.dealId + '\')">'
+        + '<input type="checkbox"' + (checked?' checked':'') + ' data-on-change="payrun-deal-toggle" data-deal-id="' + e.dealId + '">'
         + '<div style="flex:1;font-size:13px">' + (e.deal.title || e.dealId)
         +   '<div style="font-size:11px;color:#9ca3af">' + (e.deal.suburb || '') + ' \u00b7 realised ' + e.anchorDate + ' \u00b7 ' + (e.status.gateUsed || 'won') + '</div>'
         + '</div>'
@@ -2696,14 +2828,14 @@ function _renderPayRunStep3Review(p) {
   // Run-date + payment method + notes
   html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">'
     + '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Run date</label>'
-    + '<input type="date" class="inp" value="' + (p.runDate || '') + '" onchange="payRunSetRunDate(this.value)"></div>'
+    + '<input type="date" class="inp" value="' + (p.runDate || '') + '" data-on-change="payrun-date-set"></div>'
     + '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Payment method</label>'
-    + '<select class="sel" onchange="payRunSetPaymentMethod(this.value)">'
+    + '<select class="sel" data-on-change="payrun-method-set">'
     +   ['EFT','EFT batch','Manual','Other'].map(function(m){ return '<option value="' + m + '"' + (p.paymentMethod===m?' selected':'') + '>' + m + '</option>'; }).join('')
     + '</select></div>'
     + '</div>'
     + '<div style="margin-bottom:12px"><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Notes (optional)</label>'
-    + '<textarea oninput="payRunSetNotes(this.value)" placeholder="e.g. Bank transfer Friday 25 Apr, batch ref 1234" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:12px;resize:vertical;min-height:60px">' + (p.notes || '').replace(/</g,'&lt;') + '</textarea></div>';
+    + '<textarea data-on-input="payrun-notes-set" placeholder="e.g. Bank transfer Friday 25 Apr, batch ref 1234" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:12px;resize:vertical;min-height:60px">' + (p.notes || '').replace(/</g,'&lt;') + '</textarea></div>';
   html += '<div style="padding:12px 14px;background:#fef9c3;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e">\u26a0\ufe0f Finalising will mark all ' + selectedIds.length + ' deals as <strong>paid</strong>. This action audit-logs and can be voided later if needed.</div>';
   return html;
 }
@@ -2728,7 +2860,7 @@ function renderPayRunDetailModal() {
   var visibleReps = isRep ? [cu.name] : Object.keys(run.linesByRep || {}).sort();
 
   var html = ''
-    + '<div class="modal-bg" onclick="if(event.target===this)closePayRunDetail()">'
+    + '<div class="modal-bg" data-action="payrun-detail-modal-close">'
     +   '<div class="modal" style="max-width:840px;max-height:90vh;display:flex;flex-direction:column' + (voided ? ';opacity:0.85' : '') + '">'
     +     '<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
     +       '<div><h3 style="margin:0;font-size:18px;font-weight:800;font-family:Syne,sans-serif;color:' + statusColor + (voided ? ';text-decoration:line-through' : '') + '">' + label + '</h3>'
@@ -2738,7 +2870,7 @@ function renderPayRunDetailModal() {
     +         '</div>'
     +       '</div>'
     +       '<div style="display:flex;gap:8px;align-items:center"><span style="font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;background:' + statusColor + '20;color:' + statusColor + '">' + run.status.toUpperCase() + '</span>'
-    +       '<button onclick="closePayRunDetail()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button></div>'
+    +       '<button data-action="payrun-detail-modal-close-btn" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button></div>'
     +     '</div>'
     +     '<div style="flex:1;overflow-y:auto;padding:20px">';
   if (voided) {
@@ -2786,12 +2918,12 @@ function renderPayRunDetailModal() {
   // Footer actions \u2014 status-dependent
   html += '<div style="padding:14px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;display:flex;justify-content:flex-end;gap:8px">';
   if (run.status === 'finalised' && canReconcile) {
-    html += '<button class="btn-w" onclick="markPayRunReconciled(\'' + run.id + '\', prompt(\'Bank reference (optional):\') || null)" style="font-size:12px">Mark Reconciled</button>';
+    html += '<button class="btn-w" data-action="payrun-reconciled-mark" data-payrun-id="' + run.id + '" style="font-size:12px">Mark Reconciled</button>';
   }
   if (run.status !== 'voided' && isAdmin) {
-    html += '<button onclick="openVoidPayRunModal(\'' + run.id + '\')" class="btn-w" style="font-size:12px;color:#b91c1c;border-color:#fca5a5">Void</button>';
+    html += '<button data-action="payrun-void-open" data-payrun-id="' + run.id + '" class="btn-w" style="font-size:12px;color:#b91c1c;border-color:#fca5a5">Void</button>';
   }
-  html += '<button onclick="closePayRunDetail()" class="btn-w" style="font-size:12px">Close</button></div>';
+  html += '<button data-action="payrun-detail-modal-close-btn" class="btn-w" style="font-size:12px">Close</button></div>';
   html += '</div></div>';
   return html;
 }
@@ -2804,7 +2936,7 @@ function renderVoidPayRunModal() {
   var label = 'PR-' + String(run.runNumber).padStart(3, '0');
   var dealCount = (run.dealIds || []).length;
   return ''
-    + '<div class="modal-bg" onclick="if(event.target===this)closeVoidPayRunModal()">'
+    + '<div class="modal-bg" data-action="payrun-void-modal-close">'
     +   '<div class="modal" style="max-width:520px">'
     +     '<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0">'
     +       '<h3 style="margin:0;font-size:16px;font-weight:700;color:#b91c1c">Void ' + label + '?</h3>'
@@ -2814,13 +2946,12 @@ function renderVoidPayRunModal() {
     +         'This will mark all <strong>' + dealCount + ' deal' + (dealCount !== 1 ? 's' : '') + '</strong> as realised-unpaid again. Voided runs stay in history with strikethrough \u2014 they\'re never deleted.'
     +       '</div>'
     +       '<label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Reason (required)</label>'
-    +       '<textarea id="prv_reason" oninput="payRunVoidSetReason(this.value)" placeholder="e.g. Wrong period selected, Bank refused payment, \u2026" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:12px;resize:vertical;min-height:60px">' + (_pendingPayRunVoid.voidReason || '') + '</textarea>'
+    +       '<textarea id="prv_reason" data-on-input="payrun-void-reason-set" placeholder="e.g. Wrong period selected, Bank refused payment, \u2026" style="width:100%;padding:8px 10px;border:1px solid #e5e7eb;border-radius:8px;font-family:inherit;font-size:12px;resize:vertical;min-height:60px">' + (_pendingPayRunVoid.voidReason || '') + '</textarea>'
     +     '</div>'
     +     '<div style="padding:14px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;display:flex;justify-content:flex-end;gap:8px">'
-    +       '<button class="btn-w" onclick="closeVoidPayRunModal()" style="font-size:12px">Cancel</button>'
-    +       '<button class="btn-r" onclick="confirmVoidPayRun()" style="font-size:12px;background:#b91c1c;border-color:#b91c1c">Void Pay Run</button>'
+    +       '<button class="btn-w" data-action="payrun-void-modal-close-btn" style="font-size:12px">Cancel</button>'
+    +       '<button class="btn-r" data-action="payrun-void-confirm" style="font-size:12px;background:#b91c1c;border-color:#b91c1c">Void Pay Run</button>'
     +     '</div>'
     +   '</div>'
     + '</div>';
 }
-
