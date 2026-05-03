@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Spartan CRM — Diagnostics</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: #f9fafb; color: #1a1a1a; margin: 0; padding: 24px; }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    p.lead { color: #6b7280; font-size: 13px; margin: 0 0 18px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
+    th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid #f3f4f6; font-size: 13px; vertical-align: top; }
+    th { background: #f9fafb; font-weight: 700; font-size: 11px; text-transform: uppercase; color: #6b7280; letter-spacing: .04em; }
+    tr:last-child td { border-bottom: 0; }
+    .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+    .pass { background: #dcfce7; color: #15803d; }
+    .fail { background: #fee2e2; color: #b91c1c; }
+    .warn { background: #fef3c7; color: #92400e; }
+    .pending { background: #e0e7ff; color: #3730a3; }
+    .note { color: #6b7280; font-size: 12px; }
+    pre { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 8px; font-size: 11px; overflow-x: auto; line-height: 1.5; }
+    h2 { font-size: 14px; margin: 24px 0 8px; color: #374151; }
+    .copy-btn { float: right; padding: 4px 10px; font-size: 11px; border: 1px solid #6b7280; background: transparent; color: #cbd5e1; border-radius: 5px; cursor: pointer; font-family: inherit; }
+    .copy-btn:hover { background: #1e293b; }
+    a { color: #3b82f6; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Spartan CRM — Diagnostics</h1>
+    <p class="lead">Reachability tests for the external services this app depends on. If anything shows FAIL, the cause is almost always a browser extension, privacy setting, or network policy on your end — not the app itself.</p>
+
+    <table id="results">
+      <thead>
+        <tr><th style="width:40%">Check</th><th style="width:20%">Status</th><th>Note</th></tr>
+      </thead>
+      <tbody>
+        <tr id="row-gis"><td>Google Identity Services<br><span class="note">accounts.google.com/gsi/client</span></td><td><span class="pill pending">Pending…</span></td><td class="note"></td></tr>
+        <tr id="row-maps"><td>Google Maps<br><span class="note">maps.googleapis.com</span></td><td><span class="pill pending">Pending…</span></td><td class="note"></td></tr>
+        <tr id="row-gapis"><td>Gmail / Calendar API<br><span class="note">apis.google.com</span></td><td><span class="pill pending">Pending…</span></td><td class="note"></td></tr>
+        <tr id="row-supabase"><td>Supabase<br><span class="note">project REST endpoint</span></td><td><span class="pill pending">Pending…</span></td><td class="note"></td></tr>
+        <tr id="row-cookies"><td>Third-party cookies<br><span class="note">required for OAuth popup</span></td><td><span class="pill pending">Pending…</span></td><td class="note"></td></tr>
+      </tbody>
+    </table>
+
+    <h2>Browser environment <button class="copy-btn" onclick="copyEnv()">Copy</button></h2>
+    <pre id="env"></pre>
+
+    <p class="note" style="margin-top:18px">Send this page (or a screenshot of it) to support if anything looks wrong. Return to the app: <a href="/index.html">/index.html</a>.</p>
+  </div>
+
+<script>
+  // No bundler, no modules — keep this page completely independent of the
+  // main app, so a broken main app doesn't break the diagnostic.
+
+  var SUPABASE_URL = 'https://sedpmsgiscowohpqdjza.supabase.co';
+  var SUPABASE_ANON_KEY = 'sb_publishable_yBluf2LlIAhewDUbNz3f5w_iiCNK6eY';
+
+  function setRow(id, status, note) {
+    var row = document.getElementById(id);
+    if (!row) return;
+    var pill = row.querySelector('.pill');
+    var noteCell = row.querySelector('td:nth-child(3)');
+    pill.className = 'pill ' + status;
+    pill.textContent = status === 'pass' ? 'PASS' : status === 'fail' ? 'FAIL' : status === 'warn' ? 'WARN' : 'Pending…';
+    if (note) noteCell.textContent = note;
+  }
+
+  // 1. GIS — try to load the script in an isolated iframe-free script tag.
+  (function checkGIS(){
+    var s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.onload = function(){
+      // Wait a tick for the lib to set up window.google.accounts
+      setTimeout(function(){
+        var ok = typeof google !== 'undefined' && google.accounts && google.accounts.oauth2 && typeof google.accounts.oauth2.initTokenClient === 'function';
+        if (ok) setRow('row-gis', 'pass', 'Loaded and initialized.');
+        else setRow('row-gis', 'warn', 'Script loaded but google.accounts.oauth2 not initialized.');
+      }, 500);
+    };
+    s.onerror = function(){
+      setRow('row-gis', 'fail', 'Script blocked or failed to load. Likely a browser extension (uBlock, Brave Shields, Privacy Badger) or DNS-level blocker (Pi-hole, AdGuard).');
+    };
+    document.head.appendChild(s);
+  })();
+
+  // 2. Maps — fetch a benign URL on the same origin
+  fetch('https://maps.googleapis.com/maps/api/js?libraries=places', { mode: 'no-cors' })
+    .then(function(){ setRow('row-maps', 'pass', 'Reachable.'); })
+    .catch(function(e){ setRow('row-maps', 'fail', 'Unreachable: ' + e.message); });
+
+  // 3. Generic Google APIs endpoint
+  fetch('https://apis.google.com/js/api.js', { mode: 'no-cors' })
+    .then(function(){ setRow('row-gapis', 'pass', 'Reachable.'); })
+    .catch(function(e){ setRow('row-gapis', 'fail', 'Unreachable: ' + e.message + ' — Gmail send and Calendar features will not work.'); });
+
+  // 4. Supabase — anon ping (HEAD on a known table or the auth health endpoint)
+  fetch(SUPABASE_URL + '/auth/v1/health', { headers: { apikey: SUPABASE_ANON_KEY } })
+    .then(function(r){
+      if (r.ok) setRow('row-supabase', 'pass', 'Reachable. HTTP ' + r.status);
+      else setRow('row-supabase', 'warn', 'Reached but returned HTTP ' + r.status);
+    })
+    .catch(function(e){ setRow('row-supabase', 'fail', 'Unreachable: ' + e.message); });
+
+  // 5. Third-party cookies — best-effort. Modern browsers don't expose a direct
+  // API. We can flag known risky configurations though.
+  (function checkCookies(){
+    var ua = navigator.userAgent.toLowerCase();
+    var safari = /safari/.test(ua) && !/chrome|edg|firefox/.test(ua);
+    var brave = !!(navigator.brave);
+    var enabled = navigator.cookieEnabled;
+    if (!enabled) {
+      setRow('row-cookies', 'fail', 'Cookies disabled in browser settings — OAuth popup will not work.');
+    } else if (safari) {
+      setRow('row-cookies', 'warn', 'Safari blocks third-party cookies by default. OAuth popup may fail; consider redirect flow.');
+    } else if (brave) {
+      setRow('row-cookies', 'warn', 'Brave default shields can break Google OAuth — check Shields icon for this site.');
+    } else {
+      setRow('row-cookies', 'pass', 'Cookies enabled. Third-party cookie behaviour depends on browser-specific settings; if OAuth popup fails despite this PASS, check tracking-prevention settings.');
+    }
+  })();
+
+  // Browser env block
+  function envBlob() {
+    return JSON.stringify({
+      userAgent: navigator.userAgent,
+      platform: navigator.platform,
+      language: navigator.language,
+      cookieEnabled: navigator.cookieEnabled,
+      doNotTrack: navigator.doNotTrack,
+      brave: !!(navigator.brave),
+      onLine: navigator.onLine,
+      protocol: location.protocol,
+      host: location.host,
+      timestamp: new Date().toISOString()
+    }, null, 2);
+  }
+  document.getElementById('env').textContent = envBlob();
+
+  function copyEnv() {
+    navigator.clipboard.writeText(envBlob()).then(function(){
+      var btn = document.querySelector('.copy-btn');
+      var orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(function(){ btn.textContent = orig; }, 1200);
+    });
+  }
+  window.copyEnv = copyEnv;
+</script>
+</body>
+</html>

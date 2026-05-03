@@ -78,24 +78,59 @@ function googleSignInForLogin() {
     return googleSignInForLoginNative();
   }
   if (!GMAIL_CLIENT_ID) { alert('Admin must set Google Client ID first in Settings > Email & Gmail'); return; }
-  // Defensive: poll for the GIS library at https://accounts.google.com/gsi/client
-  // to be fully initialized. Logs each retry so we can see what's actually missing
-  // when the timeout fires. 40 × 250ms = 10s max wait.
+  // Defensive: poll for GIS readiness, with two early-exit conditions so we
+  // give users a specific message instead of a generic "still loading":
+  //   - window._gisScriptFailed (set by onerror on the <script> tag)
+  //   - window._gisScriptLoaded === undefined after a few seconds (script
+  //     never fired onload OR onerror — usually means extension blocked it
+  //     before the request even left the browser)
   var gReady = (typeof google !== 'undefined') && google.accounts && google.accounts.oauth2 && (typeof google.accounts.oauth2.initTokenClient === 'function');
   if (!gReady) {
     window._gsiRetryCount = (window._gsiRetryCount || 0) + 1;
     var diag = {
       retry: window._gsiRetryCount,
+      scriptLoaded: !!window._gisScriptLoaded,
+      scriptFailed: !!window._gisScriptFailed,
       hasGoogle: typeof google !== 'undefined',
       hasAccounts: typeof google !== 'undefined' && !!google.accounts,
       hasOauth2: typeof google !== 'undefined' && google.accounts && !!google.accounts.oauth2,
       hasInit: typeof google !== 'undefined' && google.accounts && google.accounts.oauth2 && typeof google.accounts.oauth2.initTokenClient
     };
     console.log('[GIS] not ready, retry', diag);
+    // Hard-fail early if the script tag's onerror fired — no point waiting 10s.
+    if (window._gisScriptFailed) {
+      window._gsiRetryCount = 0;
+      var envFail = {
+        userAgent: navigator.userAgent,
+        brave: !!(navigator.brave),
+        cookieEnabled: navigator.cookieEnabled,
+        doNotTrack: navigator.doNotTrack
+      };
+      console.error('[GIS] script load failed (onerror fired). Env:', envFail);
+      var msg = 'Google Sign-In is blocked by a browser extension, ad-blocker, or network policy. Disable shields/privacy extensions for this site and try again, or open /diag.html for a diagnostic.';
+      if (typeof addToast === 'function') addToast(msg, 'error');
+      else alert(msg);
+      return;
+    }
     if (window._gsiRetryCount > 40) {  // 40 × 250ms = 10s total
       window._gsiRetryCount = 0;
-      console.error('[GIS] gave up after 10s. Final state:', diag);
-      alert('Google Sign-In failed to load after 10 seconds. Open DevTools Console and look for [GIS] log lines — they show what part of the library is missing. Most likely an ad-blocker, browser privacy extension, or corporate firewall is blocking accounts.google.com.');
+      var env = {
+        userAgent: navigator.userAgent,
+        brave: !!(navigator.brave),
+        cookieEnabled: navigator.cookieEnabled,
+        doNotTrack: navigator.doNotTrack,
+        scriptLoaded: !!window._gisScriptLoaded,
+        scriptFailed: !!window._gisScriptFailed
+      };
+      console.error('[GIS] gave up after 10s. Final state:', diag, 'Env:', env);
+      // If the script never even fired onload/onerror, it was almost certainly
+      // blocked at the request level (uBlock, Brave Shields, Pi-hole DNS).
+      var blocked = !window._gisScriptLoaded && !window._gisScriptFailed;
+      var detailMsg = blocked
+        ? 'Google services blocked — likely a browser extension or DNS-level blocker. Disable shields/ad-blocker for this site, or open /diag.html for details.'
+        : 'Google Sign-In failed to load after 10 seconds. Check DevTools Console for [GIS] log lines, or open /diag.html for a full diagnostic.';
+      if (typeof addToast === 'function') addToast(detailMsg, 'error');
+      else alert(detailMsg);
       return;
     }
     setTimeout(googleSignInForLogin, 250);

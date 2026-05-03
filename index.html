@@ -8,7 +8,12 @@
     <link rel="stylesheet" href="js/styles.css">
     
     <!-- External scripts -->
-    <script src="https://accounts.google.com/gsi/client"></script>
+    <!-- Google Identity Services. onerror flags blocked/failed loads so the
+         sign-in flow can show a specific "extension is blocking us" message
+         instead of the generic timeout. onload sets a positive flag too. -->
+    <script src="https://accounts.google.com/gsi/client"
+            onload="window._gisScriptLoaded=true;"
+            onerror="window._gisScriptFailed=true;console.error('[GIS] script load failed — likely blocked by browser extension, ad-blocker, or network policy. accounts.google.com is unreachable.');"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
     <!-- PDF.js — used to extract text from uploaded vehicle insurance PDFs
          (parseInsurancePdf in 31a-vehicle-insurance.js). Worker is set on
@@ -57,7 +62,7 @@
         console.log('Spartan CRM - Loading Logical Modules');
         console.log('========================================\n');
         
-        const BUILD_VERSION = '20260504a';
+        const BUILD_VERSION = '20260504b';
 
         // Logical loading order based on dependencies
         const modules = [
