@@ -11,7 +11,43 @@
 (function(){
   'use strict';
 
-  function fmtHM(min) { var h = Math.floor(min/60); var m = min % 60; return h + 'h ' + (m<10?'0'+m:m) + 'm'; }
+  // ── Event-delegation actions (07-shared-ui.js framework, 2026-05-02) ────────
+  // Pilot for the inline-handler retirement. Each action is registered once at
+  // module-load time; the body-level listener in 07-shared-ui dispatches click
+  // / change events here based on data-action / data-on-change attributes.
+  defineAction('fleet-week-prev', function(target) {
+    var step = +(target.dataset.step || 0);
+    setState({ fleetPlanOffset: (getState().fleetPlanOffset || 0) - step });
+  });
+  defineAction('fleet-week-next', function(target) {
+    var step = +(target.dataset.step || 0);
+    setState({ fleetPlanOffset: (getState().fleetPlanOffset || 0) + step });
+  });
+  defineAction('fleet-week-reset', function() {
+    setState({ fleetPlanOffset: 0, fleetExpandedWeek: 0 });
+  });
+  defineAction('fleet-set-weeks', function(target) {
+    setState({ fleetPlanWeeks: +target.value, fleetExpandedWeek: null });
+  });
+  defineAction('fleet-toggle-week', function(target) {
+    var offset = +target.dataset.weekOffset;
+    var current = getState().fleetExpandedWeek;
+    setState({ fleetExpandedWeek: current === offset ? null : offset });
+  });
+  defineAction('fleet-nav-job-detail', function(target, ev) {
+    ev.preventDefault();
+    setState({ page: 'jobs', jobDetailId: target.dataset.jobId });
+  });
+
+  // Was a local "Xh YYm" formatter; now delegates to the canonical contract
+  // helper (modules/17b-cad-timing-contract.js, spec §5.2). Display tightens
+  // slightly: "0h 30m"→"30m", "1h 00m"→"1h", "1h 05m"→"1h 5m". Falls back to
+  // the original padded format if the contract didn't load.
+  function fmtHM(min) {
+    if (typeof formatMinutesAsHours === 'function') return formatMinutesAsHours(min);
+    var h = Math.floor(min/60), m = min % 60;
+    return h + 'h ' + (m<10?'0'+m:m) + 'm';
+  }
 
   function renderFleetPage() {
     var jobs = (getState().jobs || []);
@@ -79,10 +115,10 @@
       +'<div><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:22px;margin:0">🚚 Fleet & Delivery</h2>'
       +'<div style="font-size:12px;color:#6b7280;margin-top:2px">Recommended vehicle per scheduled job — flags conflicts and won\'t-fit cases.</div></div>'
       +'<div style="margin-left:auto;display:flex;align-items:center;gap:6px">'
-      +'<button onclick="setState({fleetPlanOffset:(getState().fleetPlanOffset||0)-'+weekCount+'})" class="btn-w" style="padding:6px 12px;font-size:12px">← Prev '+weekCount+'w</button>'
-      +'<button onclick="setState({fleetPlanOffset:0,fleetExpandedWeek:0})" class="btn-'+(startOffset===0?'r':'w')+'" style="padding:6px 14px;font-size:12px;font-weight:700">Reset</button>'
-      +'<button onclick="setState({fleetPlanOffset:(getState().fleetPlanOffset||0)+'+weekCount+'})" class="btn-w" style="padding:6px 12px;font-size:12px">Next '+weekCount+'w →</button>'
-      +'<select class="sel" style="font-size:12px;padding:6px 10px" onchange="setState({fleetPlanWeeks:+this.value,fleetExpandedWeek:null})">'
+      +'<button data-action="fleet-week-prev" data-step="'+weekCount+'" class="btn-w" style="padding:6px 12px;font-size:12px">← Prev '+weekCount+'w</button>'
+      +'<button data-action="fleet-week-reset" class="btn-'+(startOffset===0?'r':'w')+'" style="padding:6px 14px;font-size:12px;font-weight:700">Reset</button>'
+      +'<button data-action="fleet-week-next" data-step="'+weekCount+'" class="btn-w" style="padding:6px 12px;font-size:12px">Next '+weekCount+'w →</button>'
+      +'<select class="sel" style="font-size:12px;padding:6px 10px" data-on-change="fleet-set-weeks">'
       +[2,4,8,12].map(function(n){return '<option value="'+n+'"'+(weekCount===n?' selected':'')+'>'+n+' weeks</option>';}).join('')
       +'</select>'
       +'</div></div></div>';
@@ -130,7 +166,7 @@
       var leftBar = todayInWeek ? '3px solid #c41230' : '3px solid transparent';
 
       weekHtml += '<div style="border-top:1px solid #f3f4f6">'
-        +'<div onclick="setState({fleetExpandedWeek:'+(isExpanded?'null':wk.offset)+'})" '
+        +'<div data-action="fleet-toggle-week" data-week-offset="'+wk.offset+'" '
         +'onmouseover="this.style.background=\''+rowBgHover+'\'" onmouseout="this.style.background=\'transparent\'" '
         +'style="cursor:pointer;display:flex;align-items:center;gap:14px;padding:14px 12px;border-left:'+leftBar+';transition:background 0.12s">'
         +'<div style="color:#9ca3af;font-size:11px;width:14px">'+(isExpanded?'▾':'▸')+'</div>'
@@ -214,7 +250,7 @@
                 vehicleCell = '<span style="display:inline-flex;align-items:center;gap:6px"><span style="font-weight:700;color:#111827">'+v.name+'</span>'+(v.rego?'<span style="font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px">'+v.rego+'</span>':'')+'</span>';
               }
               weekHtml += '<tr style="border-top:1px solid #f3f4f6">'
-                +'<td style="padding:10px 14px;border-left:3px solid '+accent+'"><a href="#" onclick="event.preventDefault();setState({page:\'jobs\',jobDetailId:\''+j.id+'\'})" style="color:#2563eb;font-weight:700;text-decoration:none">'+(j.jobNumber||j.id)+'</a></td>'
+                +'<td style="padding:10px 14px;border-left:3px solid '+accent+'"><a href="#" data-action="fleet-nav-job-detail" data-job-id="'+j.id+'" style="color:#2563eb;font-weight:700;text-decoration:none">'+(j.jobNumber||j.id)+'</a></td>'
                 +'<td style="padding:10px 14px;color:#374151;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+cn+'</td>'
                 +'<td style="padding:10px 14px;color:'+(j.installTime?'#374151':'#9ca3af')+';font-variant-numeric:tabular-nums">'+(j.installTime||'—')+'</td>'
                 +'<td style="padding:10px 14px;color:#374151;font-variant-numeric:tabular-nums">'+frames+'</td>'

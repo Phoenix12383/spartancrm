@@ -7,6 +7,53 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-03) ────────
+
+defineAction('factory-pages-show-glass-order', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  showGlassOrderModal(orderId);
+});
+
+defineAction('factory-pages-show-profile-order', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  showProfileOrderModal(orderId);
+});
+
+defineAction('factory-pages-navigate-job', function(target, ev) {
+  ev.preventDefault();
+  var jobId = target.dataset.jobId;
+  navigateTo('jobs', {jobDetailId: jobId});
+});
+
+defineAction('factory-pages-push-to-factory', function(target, ev) {
+  var jobId = target.dataset.jobId;
+  pushJobToFactory(jobId);
+});
+
+defineAction('factory-pages-update-material-date', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  updateFactoryOrderField(orderId, 'materialDeliveryDate', target.value);
+});
+
+defineAction('factory-pages-advance-order', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  advanceFactoryOrder(orderId);
+});
+
+defineAction('factory-pages-move-item', function(target, ev) {
+  var itemId = target.dataset.itemId;
+  var nextStation = target.dataset.nextStation;
+  moveFactoryItem(itemId, nextStation);
+});
+
+defineAction('factory-pages-station-header', function(target, ev) {
+  var page = target.dataset.page;
+  setState({page: page});
+  renderPage();
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+
 function renderFactoryDash() {
   var orders=getFactoryOrders();var items=getFactoryItems();var jobs=getState().jobs||[];var contacts=getState().contacts||[];
   var branch=getState().branch||'all';
@@ -52,17 +99,17 @@ function renderFactoryDash() {
       var needsGlass = (o.glassStatus||'not_ordered')==='not_ordered';
       var needsProfile = (o.profileStatus||'not_ordered')==='not_ordered';
       var needsStr = (needsGlass?'\ud83e\ude9f Glass ':'')+(needsProfile?'\ud83d\udce6 Profiles':'');
-      h+='<tr style="background:#fef2f2"><td class="td" style="font-weight:700;color:#c41230">'+o.jid+'</td><td class="td">'+o.customer+'</td><td class="td">'+o.frameCount+'</td><td class="td" style="font-weight:700;color:#ef4444">'+needsStr+'</td><td class="td" style="white-space:nowrap">'+(needsGlass?'<button onclick="showGlassOrderModal(\''+o.id+'\')" class="btn-r" style="font-size:9px;padding:2px 8px;margin-right:4px">\ud83e\ude9f Glass</button>':'')+(needsProfile?'<button onclick="showProfileOrderModal(\''+o.id+'\')" class="btn-r" style="font-size:9px;padding:2px 8px;background:#7c3aed">\ud83d\udce6 Profiles</button>':'')+'</td></tr>';
+      h+='<tr style="background:#fef2f2"><td class="td" style="font-weight:700;color:#c41230">'+o.jid+'</td><td class="td">'+o.customer+'</td><td class="td">'+o.frameCount+'</td><td class="td" style="font-weight:700;color:#ef4444">'+needsStr+'</td><td class="td" style="white-space:nowrap">'+(needsGlass?'<button data-action="factory-pages-show-glass-order" data-order-id="'+o.id+'" class="btn-r" style="font-size:9px;padding:2px 8px;margin-right:4px">\ud83e\ude9f Glass</button>':'')+(needsProfile?'<button data-action="factory-pages-show-profile-order" data-order-id="'+o.id+'" class="btn-r" style="font-size:9px;padding:2px 8px;background:#7c3aed">\ud83d\udce6 Profiles</button>':'')+'</td></tr>';
     });
     h+='</tbody></table>';
   }
   h+='</div>';
 
   if(awaitingProd.length>0){h+='<div class="card" style="padding:0;overflow:hidden;margin-bottom:16px"><div style="padding:14px 20px;border-bottom:1px solid #f0f0f0"><h4 style="font-size:14px;font-weight:700;margin:0">\u26a1 Ready to Enter Production ('+awaitingProd.length+')</h4></div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th class="th">Job</th><th class="th">Client</th><th class="th">Suburb</th><th class="th">Value</th><th class="th">Frames</th><th class="th">Signed</th><th class="th"></th></tr></thead><tbody>';
-    awaitingProd.forEach(function(j,i){var c=contacts.find(function(ct){return ct.id===j.contactId;});var frames=(j.cadSurveyData||j.cadData||{}).projectItems||[];h+='<tr style="'+(i%2?'background:#fafafa':'')+'"><td class="td" style="font-weight:700;color:#c41230"><span onclick="navigateTo(\'jobs\',{jobDetailId:\''+j.id+'\'})" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px">'+(j.jobNumber||j.id)+'</span></td><td class="td">'+(c?c.fn+' '+c.ln:'\u2014')+'</td><td class="td">'+(j.suburb||'')+'</td><td class="td" style="font-weight:600">$'+Number(j.val||0).toLocaleString()+'</td><td class="td">'+frames.length+'</td><td class="td">'+(j.finalSignedAt?new Date(j.finalSignedAt).toLocaleDateString('en-AU'):'\u2014')+'</td><td class="td"><button onclick="pushJobToFactory(\''+j.id+'\')" class="btn-r" style="font-size:10px;padding:4px 14px">\ud83c\udfed Send to Factory</button></td></tr>';});
+    awaitingProd.forEach(function(j,i){var c=contacts.find(function(ct){return ct.id===j.contactId;});var frames=(j.cadSurveyData||j.cadData||{}).projectItems||[];h+='<tr style="'+(i%2?'background:#fafafa':'')+'"><td class="td" style="font-weight:700;color:#c41230"><span data-action="factory-pages-navigate-job" data-job-id="'+j.id+'" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px">'+(j.jobNumber||j.id)+'</span></td><td class="td">'+(c?c.fn+' '+c.ln:'\u2014')+'</td><td class="td">'+(j.suburb||'')+'</td><td class="td" style="font-weight:600">$'+Number(j.val||0).toLocaleString()+'</td><td class="td">'+frames.length+'</td><td class="td">'+(j.finalSignedAt?new Date(j.finalSignedAt).toLocaleDateString('en-AU'):'\u2014')+'</td><td class="td"><button data-action="factory-pages-push-to-factory" data-job-id="'+j.id+'" class="btn-r" style="font-size:10px;padding:4px 14px">\ud83c\udfed Send to Factory</button></td></tr>';});
     h+='</tbody></table></div>';}
   if(inFactory.length>0){h+='<div class="card" style="padding:0;overflow:hidden"><div style="padding:14px 20px;border-bottom:1px solid #f0f0f0"><h4 style="font-size:14px;font-weight:700;margin:0">\ud83d\udee0\ufe0f Active Orders ('+inFactory.length+')</h4></div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th class="th">Job</th><th class="th">Client</th><th class="th">Frames</th><th class="th">Value</th><th class="th">Status</th><th class="th">\ud83e\ude9f Glass</th><th class="th">\ud83d\udce6 Profiles</th><th class="th">Install</th><th class="th" style="width:140px">Advance</th></tr></thead><tbody>';
-    inFactory.forEach(function(o,i){var ps=getFactoryStatusObj(o.status);var gs=getGlassStatusObj(o.glassStatus||'not_ordered');var prs=getProfileStatusObj(o.profileStatus||'not_ordered');var glassOverdue=(o.glassStatus||'not_ordered')==='not_ordered';var profileOverdue=(o.profileStatus||'not_ordered')==='not_ordered';var rowRed=glassOverdue||profileOverdue;var nextIdx=FACTORY_STATUS_ORDER.indexOf(o.status)+1;var nextSt=nextIdx<FACTORY_STATUS_ORDER.length?FACTORY_STATUS_ORDER[nextIdx]:null;h+='<tr style="'+(rowRed?'background:#fef2f2':i%2?'background:#fafafa':'')+'"><td class="td" style="font-weight:700;color:#c41230"><span onclick="navigateTo(\'jobs\',{jobDetailId:\''+o.crmJobId+'\'})" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px">'+o.jid+'</span></td><td class="td">'+o.customer+'</td><td class="td">'+o.frameCount+'</td><td class="td" style="font-weight:600">$'+Number(o.value||0).toLocaleString()+'</td><td class="td"><span class="bdg" style="background:'+ps.col+'20;color:'+ps.col+';border:1px solid '+ps.col+'40;font-size:10px">'+ps.label+'</span></td><td class="td" style="'+(glassOverdue?'background:#fef2f2':'')+'"><span onclick="showGlassOrderModal(\''+o.id+'\')" style="cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;'+(glassOverdue?'background:#ef4444;color:#fff':'color:'+gs.col)+'">'+gs.icon+' '+gs.label+(glassOverdue?' \ud83d\udea8':'')+'</span></td><td class="td" style="'+(profileOverdue?'background:#fef2f2':'')+'"><span onclick="showProfileOrderModal(\''+o.id+'\')" style="cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;'+(profileOverdue?'background:#ef4444;color:#fff':'color:'+prs.col)+'">'+prs.icon+' '+prs.label+(profileOverdue?' \ud83d\udea8':'')+'</span></td><td class="td">'+(o.installDate||'\u2014')+'</td><td class="td">'+(nextSt?'<button onclick="advanceFactoryOrder(\''+o.id+'\')" class="btn-w" style="font-size:10px;padding:3px 10px">\u2192 '+getFactoryStatusObj(nextSt).label+'</button>':'<span style="color:#22c55e;font-weight:600">\u2705</span>')+'</td></tr>';});
+    inFactory.forEach(function(o,i){var ps=getFactoryStatusObj(o.status);var gs=getGlassStatusObj(o.glassStatus||'not_ordered');var prs=getProfileStatusObj(o.profileStatus||'not_ordered');var glassOverdue=(o.glassStatus||'not_ordered')==='not_ordered';var profileOverdue=(o.profileStatus||'not_ordered')==='not_ordered';var rowRed=glassOverdue||profileOverdue;var nextIdx=FACTORY_STATUS_ORDER.indexOf(o.status)+1;var nextSt=nextIdx<FACTORY_STATUS_ORDER.length?FACTORY_STATUS_ORDER[nextIdx]:null;h+='<tr style="'+(rowRed?'background:#fef2f2':i%2?'background:#fafafa':'')+'"><td class="td" style="font-weight:700;color:#c41230"><span data-action="factory-pages-navigate-job" data-job-id="'+o.crmJobId+'" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px">'+o.jid+'</span></td><td class="td">'+o.customer+'</td><td class="td">'+o.frameCount+'</td><td class="td" style="font-weight:600">$'+Number(o.value||0).toLocaleString()+'</td><td class="td"><span class="bdg" style="background:'+ps.col+'20;color:'+ps.col+';border:1px solid '+ps.col+'40;font-size:10px">'+ps.label+'</span></td><td class="td" style="'+(glassOverdue?'background:#fef2f2':'')+'"><span data-action="factory-pages-show-glass-order" data-order-id="'+o.id+'" style="cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;'+(glassOverdue?'background:#ef4444;color:#fff':'color:'+gs.col)+'">'+gs.icon+' '+gs.label+(glassOverdue?' \ud83d\udea8':'')+'</span></td><td class="td" style="'+(profileOverdue?'background:#fef2f2':'')+'"><span data-action="factory-pages-show-profile-order" data-order-id="'+o.id+'" style="cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;'+(profileOverdue?'background:#ef4444;color:#fff':'color:'+prs.col)+'">'+prs.icon+' '+prs.label+(profileOverdue?' \ud83d\udea8':'')+'</span></td><td class="td">'+(o.installDate||'\u2014')+'</td><td class="td">'+(nextSt?'<button data-action="factory-pages-advance-order" data-order-id="'+o.id+'" class="btn-w" style="font-size:10px;padding:3px 10px">\u2192 '+getFactoryStatusObj(nextSt).label+'</button>':'<span style="color:#22c55e;font-weight:600">\u2705</span>')+'</td></tr>';});
     h+='</tbody></table></div>';}
   return '<div>'+h+'</div>';
 }
@@ -98,18 +145,18 @@ function renderProdQueue() {
         estComplete='<span style="color:#f59e0b;font-size:10px">\u26a0 Set materials date</span>';
       }
       h+='<tr style="'+(i%2?'background:#fafafa':'')+'">'
-        +'<td class="td" style="font-weight:700;color:#c41230"><span onclick="navigateTo(\'jobs\',{jobDetailId:\''+o.crmJobId+'\'})" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px">'+o.jid+'</span></td>'
+        +'<td class="td" style="font-weight:700;color:#c41230"><span data-action="factory-pages-navigate-job" data-job-id="'+o.crmJobId+'" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px">'+o.jid+'</span></td>'
         +'<td class="td">'+o.customer+'</td>'
         +'<td class="td">'+o.frameCount+'</td>'
         +'<td class="td" style="font-weight:600">$'+Number(o.value||0).toLocaleString()+'</td>'
         +'<td class="td">'+pmB+'</td>'
         +'<td class="td"><span class="bdg" style="background:'+ps.col+'20;color:'+ps.col+';border:1px solid '+ps.col+'40;font-size:10px">'+ps.label+'</span></td>'
-        +'<td class="td" style="'+((o.glassStatus||'not_ordered')==='not_ordered'?'background:#fef2f2':'')+'"><span onclick="showGlassOrderModal(\''+o.id+'\')" style="cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;'+((o.glassStatus||'not_ordered')==='not_ordered'?'background:#ef4444;color:#fff':'color:'+gs.col)+'">'+gs.icon+' '+gs.label+((o.glassStatus||'not_ordered')==='not_ordered'?' \ud83d\udea8':'')+'</span></td>'
-        +'<td class="td" style="'+(profileNotOrdered?'background:#fef2f2':'')+'"><span onclick="showProfileOrderModal(\''+o.id+'\')" style="cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;'+(profileNotOrdered?'background:#ef4444;color:#fff':'color:'+prs.col)+'">'+prs.icon+' '+prs.label+(profileNotOrdered?' \ud83d\udea8':'')+'</span></td>'
-        +'<td class="td"><input type="date" class="inp" style="font-size:11px;padding:4px 6px;width:130px" value="'+(o.materialDeliveryDate||'')+'" onchange="updateFactoryOrderField(\''+o.id+'\',\'materialDeliveryDate\',this.value)"></td>'
+        +'<td class="td" style="'+((o.glassStatus||'not_ordered')==='not_ordered'?'background:#fef2f2':'')+'"><span data-action="factory-pages-show-glass-order" data-order-id="'+o.id+'" style="cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;'+((o.glassStatus||'not_ordered')==='not_ordered'?'background:#ef4444;color:#fff':'color:'+gs.col)+'">'+gs.icon+' '+gs.label+((o.glassStatus||'not_ordered')==='not_ordered'?' \ud83d\udea8':'')+'</span></td>'
+        +'<td class="td" style="'+(profileNotOrdered?'background:#fef2f2':'')+'"><span data-action="factory-pages-show-profile-order" data-order-id="'+o.id+'" style="cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;'+(profileNotOrdered?'background:#ef4444;color:#fff':'color:'+prs.col)+'">'+prs.icon+' '+prs.label+(profileNotOrdered?' \ud83d\udea8':'')+'</span></td>'
+        +'<td class="td"><input type="date" class="inp" style="font-size:11px;padding:4px 6px;width:130px" value="'+(o.materialDeliveryDate||'')+'" data-action="factory-pages-update-material-date" data-order-id="'+o.id+'"></td>'
         +'<td class="td">'+estComplete+'</td>'
         +'<td class="td" style="font-size:11px">'+(o.installDate||'\u2014')+'</td>'
-        +'<td class="td">'+(nextSt?'<button onclick="advanceFactoryOrder(\''+o.id+'\')" class="btn-w" style="font-size:10px;padding:3px 10px">\u2192 '+getFactoryStatusObj(nextSt).label+'</button>':'<span style="color:#22c55e;font-weight:600">\u2705 Complete</span>')+'</td></tr>';
+        +'<td class="td">'+(nextSt?'<button data-action="factory-pages-advance-order" data-order-id="'+o.id+'" class="btn-w" style="font-size:10px;padding:3px 10px">\u2192 '+getFactoryStatusObj(nextSt).label+'</button>':'<span style="color:#22c55e;font-weight:600">\u2705 Complete</span>')+'</td></tr>';
     });
     h+='</tbody></table></div></div>';}
   return '<div>'+h+'</div>';
@@ -142,7 +189,7 @@ function renderProdBoard() {
     var stnPage  = stnPageMap[stn.id];
 
     // Column header \u2014 clicking anywhere on it navigates to the station page
-    var headerClick = stnPage ? 'onclick="setState({page:\'' + stnPage + '\'});renderPage()" style="cursor:pointer"' : '';
+    var headerClick = stnPage ? 'data-action="factory-pages-station-header" data-page="' + stnPage + '" style="cursor:pointer"' : '';
     h += '<div style="min-width:200px;flex:1;background:#f9fafb;border-radius:12px;border:1px solid #e5e7eb;display:flex;flex-direction:column">';
     h += '<div ' + headerClick + ' style="padding:10px 12px;border-bottom:1px solid #e5e7eb;border-radius:12px 12px 0 0;text-align:center;'
       + (stnPage ? 'background:#fff;transition:background .15s" onmouseover="this.style.background=\'#f0f9ff\'" onmouseout="this.style.background=\'#fff\'"' : '"')
@@ -166,8 +213,13 @@ function renderProdBoard() {
       if (it.stationTimes && stn.cadKeys) {
         mins = stn.cadKeys.reduce(function(s,k){return s + (Number(it.stationTimes[k])||0);}, 0);
       }
+      // Format consolidated to contract helper (modules/17b-cad-timing-contract.js
+      // §5.2). Display gains a space between h and m: "1h30m" → "1h 30m".
       var timeTag = mins > 0 ? '<span style="font-size:9px;color:' + (mins>60?'#f59e0b':'#6b7280') + ';margin-left:4px">'
-        + (mins >= 60 ? Math.floor(mins/60) + 'h' + (mins%60?Math.round(mins%60)+'m':'') : Math.round(mins) + 'm') + '</span>' : '';
+        + (typeof formatMinutesAsHours === 'function'
+            ? formatMinutesAsHours(mins)
+            : (mins >= 60 ? Math.floor(mins/60) + 'h' + (mins%60?Math.round(mins%60)+'m':'') : Math.round(mins) + 'm'))
+        + '</span>' : '';
 
       h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px;font-size:10px'
         + (it.rework ? ';border-left:3px solid #ef4444' : '') + '">';
@@ -179,11 +231,11 @@ function renderProdBoard() {
       h += '<div style="color:#9ca3af;font-size:9px">' + (it.customer||'') + (it.suburb ? ' \u00b7 ' + it.suburb : '') + '</div>';
       if (it.rework) h += '<div style="color:#ef4444;font-weight:700;font-size:9px;margin-top:2px">\u26a0 REWORK</div>';
       if (nextStn) {
-        h += '<button onclick="moveFactoryItem(\'' + it.id + '\',\'' + nextStn.id + '\')" '
+        h += '<button data-action="factory-pages-move-item" data-item-id="' + it.id + '" data-next-station="' + nextStn.id + '" '
           + 'style="margin-top:4px;width:100%;padding:3px;border:1px solid #e5e7eb;border-radius:4px;background:#fff;font-size:9px;cursor:pointer;color:#3b82f6;font-weight:600">'
           + '\u2192 ' + nextStn.name + '</button>';
       } else {
-        h += '<button onclick="moveFactoryItem(\'' + it.id + '\',\'complete\')" '
+        h += '<button data-action="factory-pages-move-item" data-item-id="' + it.id + '" data-next-station="complete" '
           + 'style="margin-top:4px;width:100%;padding:3px;border:none;border-radius:4px;background:#22c55e;font-size:9px;cursor:pointer;color:#fff;font-weight:600">'
           + '\u2705 Complete</button>';
       }
@@ -235,7 +287,7 @@ function renderFactoryDispatch() {
   var h='<div style="margin-bottom:20px"><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:24px;margin:0">\ud83d\ude9a Dispatch</h2><p style="color:#6b7280;font-size:13px;margin:4px 0 0">Jobs ready to ship and dispatch history</p></div>';
   h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px"><div class="card" style="padding:14px;border-left:4px solid #06b6d4"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Ready</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#06b6d4;margin-top:4px">'+ready.length+'</div></div><div class="card" style="padding:14px;border-left:4px solid #22c55e"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Dispatched</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#22c55e;margin-top:4px">'+dispatched.length+'</div></div></div>';
   if(ready.length>0){h+='<div class="card" style="padding:0;overflow:hidden;margin-bottom:16px"><div style="padding:14px 20px;border-bottom:1px solid #f0f0f0;background:#ecfeff"><h4 style="font-size:14px;font-weight:700;margin:0;color:#0e7490">\ud83d\udce6 Ready for Dispatch</h4></div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th class="th">Job</th><th class="th">Client</th><th class="th">Address</th><th class="th">Frames</th><th class="th"></th></tr></thead><tbody>';
-    ready.forEach(function(o,i){h+='<tr style="'+(i%2?'background:#fafafa':'')+'"><td class="td" style="font-weight:700;color:#c41230">'+o.jid+'</td><td class="td">'+o.customer+'</td><td class="td">'+o.address+'</td><td class="td">'+o.frameCount+'</td><td class="td"><button onclick="advanceFactoryOrder(\''+o.id+'\')" class="btn-r" style="font-size:10px;padding:3px 12px">\ud83d\ude9a Dispatch</button></td></tr>';});h+='</tbody></table></div>';}
+    ready.forEach(function(o,i){h+='<tr style="'+(i%2?'background:#fafafa':'')+'"><td class="td" style="font-weight:700;color:#c41230">'+o.jid+'</td><td class="td">'+o.customer+'</td><td class="td">'+o.address+'</td><td class="td">'+o.frameCount+'</td><td class="td"><button data-action="factory-pages-advance-order" data-order-id="'+o.id+'" class="btn-r" style="font-size:10px;padding:3px 12px">\ud83d\ude9a Dispatch</button></td></tr>';});h+='</tbody></table></div>';}
   if(dispatched.length>0){h+='<div class="card" style="padding:0;overflow:hidden"><div style="padding:14px 20px;border-bottom:1px solid #f0f0f0;background:#f0fdf4"><h4 style="font-size:14px;font-weight:700;margin:0;color:#15803d">\u2705 Dispatched</h4></div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th class="th">Job</th><th class="th">Client</th><th class="th">Address</th><th class="th">Frames</th><th class="th">Value</th></tr></thead><tbody>';
     dispatched.forEach(function(o,i){h+='<tr style="'+(i%2?'background:#fafafa':'')+'"><td class="td" style="font-weight:700;color:#22c55e">'+o.jid+'</td><td class="td">'+o.customer+'</td><td class="td">'+o.address+'</td><td class="td">'+o.frameCount+'</td><td class="td" style="font-weight:600">$'+Number(o.value||0).toLocaleString()+'</td></tr>';});h+='</tbody></table></div>';}
   return '<div>'+h+'</div>';

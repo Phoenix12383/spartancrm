@@ -10,6 +10,11 @@
 // Production times per frame from Spartan CAD PRICING_DEFAULTS (minutes).
 // NOTE: Glazing intentionally excluded — Spartan site-glazes, so glass is fitted
 // on-site at installation, not in the factory.
+// FACTORY_STATIONS_TIMES IDs MUST match the 11-key contract from CAD
+// (modules/17b-cad-timing-contract.js + spec §3 / §9.2). This local list adds
+// per-station rate/cap/staff/color metadata that the contract intentionally
+// doesn't carry. The runtime check below warns immediately if the two ever
+// drift apart so a contract-vs-local mismatch can be spotted in the console.
 var FACTORY_STATIONS_TIMES = [
   {id:'S1_saw',name:'Profile Saw',rate:42,cap:480,staff:2,col:'#ef4444'},
   {id:'S2_steel',name:'Steel Saw',rate:38,cap:480,staff:2,col:'#f97316'},
@@ -24,6 +29,20 @@ var FACTORY_STATIONS_TIMES = [
   {id:'S_disp',name:'Dispatch',rate:35,cap:480,staff:2,col:'#6b7280'},
 ];
 
+// Drift guard — warn if the local IDs ever diverge from the contract.
+(function _validateFactoryStationKeys(){
+  if (typeof CAD_STATION_KEYS === 'undefined') return;   // contract not loaded
+  var local    = FACTORY_STATIONS_TIMES.map(function(s){ return s.id; }).slice().sort().join(',');
+  var contract = [].concat(CAD_STATION_KEYS).sort().join(',');
+  if (local !== contract) {
+    console.warn(
+      '[16c-factory-capacity] FACTORY_STATIONS_TIMES IDs do not match CAD_STATION_KEYS — ' +
+      'station-time totals may be miscomputed.\n  Local:    ' + local +
+      '\n  Contract: ' + contract
+    );
+  }
+})();
+
 // Estimate production minutes per frame at each station (from CAD engine)
 function estimateFrameMinutes(frame) {
   var type = frame.productType || 'awning_window';
@@ -35,7 +54,14 @@ function estimateFrameMinutes(frame) {
   var numMullions = panels > 1 ? panels - 1 : 0;
   var profileBars = numRects * 4 + numMullions;
   var totalCorners = numRects * 4 + numMullions * 2;
-  var hwPerSash = {awning_window:12,casement_window:12,tilt_turn_window:18,fixed_window:2,sliding_window:8,french_door:20,hinged_door:16,bifold_door:14,lift_slide_door:25,smart_slide_door:14,stacker_door:12,double_hung_window:10};
+  // ⚠ Drift vs. spec §3.3 (CAD timing audit, modules/17b-cad-timing-contract.js):
+  //  - `double_hung_window` is NOT in CAD_PRODUCT_TYPES (legacy local enum only)
+  //  - `vario_slide_door` IS in CAD_PRODUCT_TYPES but is missing here — defaults
+  //    to undefined and S5 hardware minutes will be 0 for that productType.
+  // This estimator is a pre-CAD fallback for capacity planning only; once CAD
+  // emits a payload, we trust totals.stationTimes and don't call this. Still,
+  // worth aligning the keys when convenient.
+  var hwPerSash = {awning_window:12,casement_window:12,tilt_turn_window:18,fixed_window:2,sliding_window:8,french_door:20,hinged_door:16,bifold_door:14,lift_slide_door:25,smart_slide_door:14,vario_slide_door:12,stacker_door:12,double_hung_window:10};
 
   return {
     S1_saw: 1 + profileBars * 1.3 + numMullions * 0.8 + panels * 1.2,
@@ -125,6 +151,20 @@ function estimateOrderMinutes(order) {
 
 var _factoryCapWeek = 0;
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-03) ────────
+defineAction('factorycap-week-prev', function(target, ev) {
+  window._factoryCapWeek--;
+  renderPage();
+});
+defineAction('factorycap-week-this', function(target, ev) {
+  window._factoryCapWeek = 0;
+  renderPage();
+});
+defineAction('factorycap-week-next', function(target, ev) {
+  window._factoryCapWeek++;
+  renderPage();
+});
+
 function renderFactoryCapacity() {
   var orders = getFactoryOrders().filter(function(o) { return o.status !== 'dispatched'; });
   var branch = getState().branch || 'all';
@@ -207,7 +247,11 @@ function renderFactoryCapacity() {
 
   // KPIs
   var totalFrames = estimates.reduce(function(s, o) { return s + o.est.frameCount; }, 0);
-  var totalHrs = Math.round(estimates.reduce(function(s, o) { return s + o.totalMins; }, 0) / 60);
+  // Rounded integer hours for KPI display; uses contract 'integer' style.
+  var _totalMinsForKpi = estimates.reduce(function(s, o) { return s + o.totalMins; }, 0);
+  var totalHrs = (typeof formatMinutesAsHours === 'function')
+    ? formatMinutesAsHours(_totalMinsForKpi, 'integer')
+    : Math.round(_totalMinsForKpi / 60) + 'h';
   var avgDays = estimates.length > 0 ? Math.round(estimates.reduce(function(s, o) { return s + o.prodDays; }, 0) / estimates.length * 10) / 10 : 0;
   var noMaterialDate = estimates.filter(function(o) { return !o.materialDeliveryDate; }).length;
   var bottleneckStn = FACTORY_STATIONS_TIMES.reduce(function(a, b) { return (stationLoad[a.id] || 0) > (stationLoad[b.id] || 0) ? a : b; });
@@ -215,15 +259,15 @@ function renderFactoryCapacity() {
   var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">'
     + '<div><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:24px;margin:0">\ud83d\udcc8 Capacity Planner</h2>'
     + '<p style="color:#6b7280;font-size:13px;margin:4px 0 0">Auto-schedule based on material delivery + Spartan CAD station times</p></div>'
-    + '<div style="display:flex;gap:6px"><button onclick="_factoryCapWeek--;renderPage()" class="btn-w" style="font-size:12px;padding:5px 10px">\u2190 Prev</button>'
-    + '<button onclick="_factoryCapWeek=0;renderPage()" class="btn-w" style="font-size:12px;padding:5px 10px">This Week</button>'
-    + '<button onclick="_factoryCapWeek++;renderPage()" class="btn-w" style="font-size:12px;padding:5px 10px">Next \u2192</button></div></div>';
+    + '<div style="display:flex;gap:6px"><button data-action="factorycap-week-prev" class="btn-w" style="font-size:12px;padding:5px 10px">\u2190 Prev</button>'
+    + '<button data-action="factorycap-week-this" class="btn-w" style="font-size:12px;padding:5px 10px">This Week</button>'
+    + '<button data-action="factorycap-week-next" class="btn-w" style="font-size:12px;padding:5px 10px">Next \u2192</button></div></div>';
 
   // KPI strip
   h += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px">'
     + '<div class="card" style="padding:14px 16px;border-left:4px solid #c41230"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">In Queue</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#c41230;margin-top:4px">' + orders.length + '</div></div>'
     + '<div class="card" style="padding:14px 16px;border-left:4px solid #3b82f6"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Total Frames</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#3b82f6;margin-top:4px">' + totalFrames + '</div></div>'
-    + '<div class="card" style="padding:14px 16px;border-left:4px solid #f59e0b"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Labour Hours</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#f59e0b;margin-top:4px">' + totalHrs + 'h</div></div>'
+    + '<div class="card" style="padding:14px 16px;border-left:4px solid #f59e0b"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Labour Hours</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#f59e0b;margin-top:4px">' + totalHrs + '</div></div>'
     + '<div class="card" style="padding:14px 16px;border-left:4px solid #a855f7"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Avg Lead Time</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:#a855f7;margin-top:4px">' + avgDays + 'd</div></div>'
     + '<div class="card" style="padding:14px 16px;border-left:4px solid ' + (noMaterialDate > 0 ? '#ef4444' : '#22c55e') + '"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Missing Mat. Date</div><div style="font-size:22px;font-weight:800;font-family:Syne,sans-serif;color:' + (noMaterialDate > 0 ? '#ef4444' : '#22c55e') + ';margin-top:4px">' + noMaterialDate + '</div></div></div>';
 

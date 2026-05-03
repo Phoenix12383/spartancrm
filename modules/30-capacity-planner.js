@@ -13,6 +13,55 @@
 (function(){
   'use strict';
 
+  // ── Event-delegation actions (07-shared-ui.js framework, 2026-05-02) ────────
+  defineAction('capplan-filter-tool', function(target, ev) {
+    setState({capPlanFilterToolId:target.value,capPlanExpandedWeek:null});
+  });
+  defineAction('capplan-prev-weeks', function(target, ev) {
+    var weekCount = +(getState().capPlanWeeks) || 8;
+    setState({capPlanOffset:(getState().capPlanOffset||0)-weekCount});
+  });
+  defineAction('capplan-reset', function(target, ev) {
+    setState({capPlanOffset:0,capPlanExpandedWeek:null});
+  });
+  defineAction('capplan-next-weeks', function(target, ev) {
+    var weekCount = +(getState().capPlanWeeks) || 8;
+    setState({capPlanOffset:(getState().capPlanOffset||0)+weekCount});
+  });
+  defineAction('capplan-weeks-select', function(target, ev) {
+    setState({capPlanWeeks:+target.value,capPlanExpandedWeek:null});
+  });
+  defineAction('capplan-clear-filter', function(target, ev) {
+    setState({capPlanFilterToolId:'',capPlanExpandedWeek:null});
+  });
+  defineAction('capplan-reset-dismissed', function(target, ev) {
+    capPlanResetDismissed();
+  });
+  defineAction('capplan-dismiss-suggestion', function(target, ev) {
+    var suggestionId = target.dataset.suggestionId;
+    capPlanDismissSuggestion(suggestionId);
+  });
+  defineAction('capplan-job-link', function(target, ev) {
+    ev.preventDefault();
+    setState({page:'jobs',jobDetailId:target.dataset.jobId});
+  });
+  defineAction('capplan-move-job', function(target, ev) {
+    var jobId = target.dataset.jobId;
+    var fromWeekStart = target.dataset.fromWeekStart;
+    var toWeekStart = target.dataset.toWeekStart;
+    capPlanMoveJob(jobId,fromWeekStart,toWeekStart);
+  });
+  defineAction('capplan-toggle-week', function(target, ev) {
+    var weekOffset = +target.dataset.weekOffset;
+    var expandedWeek = getState().capPlanExpandedWeek;
+    var isExpanded = expandedWeek === weekOffset;
+    setState({capPlanExpandedWeek:isExpanded?null:weekOffset});
+  });
+  defineAction('capplan-job-segment', function(target, ev) {
+    ev.stopPropagation();
+    setState({page:'jobs',jobDetailId:target.dataset.jobId});
+  });
+
   // Default work assumptions when an installer doesn't have explicit fields.
   var DEFAULT_WORK_DAYS = ['mon','tue','wed','thu','fri'];
   var DEFAULT_WORK_START = '07:00';
@@ -79,7 +128,15 @@
     return                  {key:'green',    col:'#16a34a', bg:'#f0fdf4', label:'Healthy'};
   }
 
-  function fmtHM(min) { var h = Math.floor(min/60); var m = min % 60; return h + 'h ' + (m<10?'0'+m:m) + 'm'; }
+  // Was a local "Xh YYm" formatter; now delegates to the canonical contract
+  // helper (modules/17b-cad-timing-contract.js, spec §5.2). Display tightens
+  // slightly: "0h 30m"→"30m", "1h 00m"→"1h", "1h 05m"→"1h 5m". Falls back to
+  // the original padded format if the contract didn't load.
+  function fmtHM(min) {
+    if (typeof formatMinutesAsHours === 'function') return formatMinutesAsHours(min);
+    var h = Math.floor(min/60), m = min % 60;
+    return h + 'h ' + (m<10?'0'+m:m) + 'm';
+  }
 
   // Build move-suggestions for any overloaded week. Picks the job most worth
   // moving (latest installDate within the week, then largest minutes), then
@@ -260,17 +317,17 @@
       +'<div><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:22px;margin:0">📊 Capacity Planner</h2>'
       +'<div style="font-size:12px;color:#6b7280;margin-top:2px">Demand vs capacity per week — can we hit our scheduled install dates?</div></div>'
       +'<div style="margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
-      +'<select class="sel" title="Slice capacity by which crews own a specific tool" style="font-size:12px;padding:6px 10px;max-width:220px" onchange="setState({capPlanFilterToolId:this.value,capPlanExpandedWeek:null})">'
+      +'<select class="sel" title="Slice capacity by which crews own a specific tool" style="font-size:12px;padding:6px 10px;max-width:220px" data-on-change="capplan-filter-tool">'
       +toolOpts
       +'</select>'
-      +'<button onclick="setState({capPlanOffset:(getState().capPlanOffset||0)-'+weekCount+'})" class="btn-w" style="padding:6px 12px;font-size:12px">← Prev '+weekCount+'w</button>'
-      +'<button onclick="setState({capPlanOffset:0,capPlanExpandedWeek:null})" class="btn-'+(startOffset===0?'r':'w')+'" style="padding:6px 14px;font-size:12px;font-weight:700">Reset</button>'
-      +'<button onclick="setState({capPlanOffset:(getState().capPlanOffset||0)+'+weekCount+'})" class="btn-w" style="padding:6px 12px;font-size:12px">Next '+weekCount+'w →</button>'
-      +'<select class="sel" style="font-size:12px;padding:6px 10px" onchange="setState({capPlanWeeks:+this.value,capPlanExpandedWeek:null})">'
+      +'<button data-action="capplan-prev-weeks" class="btn-w" style="padding:6px 12px;font-size:12px">← Prev '+weekCount+'w</button>'
+      +'<button data-action="capplan-reset" class="btn-'+(startOffset===0?'r':'w')+'" style="padding:6px 14px;font-size:12px;font-weight:700">Reset</button>'
+      +'<button data-action="capplan-next-weeks" class="btn-w" style="padding:6px 12px;font-size:12px">Next '+weekCount+'w →</button>'
+      +'<select class="sel" style="font-size:12px;padding:6px 10px" data-on-change="capplan-weeks-select">'
       +[4,8,12,16].map(function(n){return '<option value="'+n+'"'+(weekCount===n?' selected':'')+'>'+n+' weeks</option>';}).join('')
       +'</select>'
       +'</div>'
-      +(filterTool ? '<div style="margin-top:10px;padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;font-size:12px;color:#1d4ed8;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span>🔍 Filtering by <strong>'+filterTool.name+'</strong> — '+filteredInstallers.length+'/'+installers.length+' installer'+(installers.length!==1?'s':'')+' own this tool. Demand only counts jobs that require it.</span><button onclick="setState({capPlanFilterToolId:\'\',capPlanExpandedWeek:null})" class="btn-w" style="font-size:11px;padding:3px 10px">Clear filter</button></div>' : '')
+      +(filterTool ? '<div style="margin-top:10px;padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;font-size:12px;color:#1d4ed8;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span>🔍 Filtering by <strong>'+filterTool.name+'</strong> — '+filteredInstallers.length+'/'+installers.length+' installer'+(installers.length!==1?'s':'')+' own this tool. Demand only counts jobs that require it.</span><button data-action="capplan-clear-filter" class="btn-w" style="font-size:11px;padding:3px 10px">Clear filter</button></div>' : '')
       +'</div></div>';
 
     // ── Summary tiles (overall picture) ──────────────────────────────────────
@@ -296,7 +353,7 @@
         +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
         +'<div><h3 style="font-family:Syne,sans-serif;font-size:15px;font-weight:800;margin:0;color:#92400e">💡 Suggestions</h3>'
         +'<div style="font-size:11px;color:#92400e;margin-top:2px">Move jobs from overloaded weeks into open capacity. These are recommendations — review before applying.</div></div>'
-        +(dismissedCount > 0 ? '<button onclick="capPlanResetDismissed()" class="btn-w" style="font-size:11px;padding:5px 10px">Restore '+dismissedCount+' dismissed</button>' : '')
+        +(dismissedCount > 0 ? '<button data-action="capplan-reset-dismissed" class="btn-w" style="font-size:11px;padding:5px 10px">Restore '+dismissedCount+' dismissed</button>' : '')
         +'</div>';
       if (suggestions.length === 0) {
         suggestionsHtml += '<div style="font-size:12px;color:#92400e;font-style:italic">All current suggestions have been dismissed for now.</div>';
@@ -313,17 +370,17 @@
               +'<div style="font-size:13px;font-weight:700;color:#7f1d1d">⚠ '+s.fromWeekLabel+' over by '+fmtHM(s.overflowMins)+' — no single-move fit</div>'
               +'<div style="font-size:11px;color:#6b7280;margin-top:2px">'+gapMsg+' Options: shrink one job, split it, scroll the window forward, or add capacity (extra installer, fewer leave days).</div>'
               +'</div>'
-              +'<button onclick="capPlanDismissSuggestion(\''+s.id+'\')" title="Dismiss" style="background:none;border:none;color:#9ca3af;cursor:pointer;font-size:14px;padding:4px 6px">✕</button>'
+              +'<button data-action="capplan-dismiss-suggestion" data-suggestion-id="'+s.id+'" title="Dismiss" style="background:none;border:none;color:#9ca3af;cursor:pointer;font-size:14px;padding:4px 6px">✕</button>'
               +'</div>';
             return;
           }
           suggestionsHtml += '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:#fff;border:1px solid #fde68a;border-radius:8px">'
             +'<div style="flex:1;min-width:0">'
-            +'<div style="font-size:13px;font-weight:700;color:#374151"><a href="#" onclick="event.preventDefault();setState({page:\'jobs\',jobDetailId:\''+s.jobId+'\'})" style="color:#3b82f6;text-decoration:none">'+s.jobNumber+'</a> · '+fmtHM(s.jobMinutes)+'</div>'
+            +'<div style="font-size:13px;font-weight:700;color:#374151"><a href="#" data-action="capplan-job-link" data-job-id="'+s.jobId+'" style="color:#3b82f6;text-decoration:none">'+s.jobNumber+'</a> · '+fmtHM(s.jobMinutes)+'</div>'
             +'<div style="font-size:11px;color:#6b7280;margin-top:2px">Move from <strong style="color:#7f1d1d">'+s.fromWeekLabel+'</strong> (over by '+fmtHM(s.overflowMins)+') → <strong style="color:#15803d">'+s.toWeekLabel+'</strong></div>'
             +'</div>'
-            +'<button onclick="capPlanMoveJob(\''+s.jobId+'\',\''+s.fromWeekStart+'\',\''+s.toWeekStart+'\')" class="btn-r" style="font-size:11px;padding:5px 12px;white-space:nowrap">Move →</button>'
-            +'<button onclick="capPlanDismissSuggestion(\''+s.id+'\')" title="Dismiss this suggestion" style="background:none;border:none;color:#9ca3af;cursor:pointer;font-size:14px;padding:4px 6px">✕</button>'
+            +'<button data-action="capplan-move-job" data-job-id="'+s.jobId+'" data-from-week-start="'+s.fromWeekStart+'" data-to-week-start="'+s.toWeekStart+'" class="btn-r" style="font-size:11px;padding:5px 12px;white-space:nowrap">Move →</button>'
+            +'<button data-action="capplan-dismiss-suggestion" data-suggestion-id="'+s.id+'" title="Dismiss this suggestion" style="background:none;border:none;color:#9ca3af;cursor:pointer;font-size:14px;padding:4px 6px">✕</button>'
             +'</div>';
         });
         suggestionsHtml += '</div>';
@@ -354,7 +411,7 @@
       var todayInWeek = wk.dates.some(function(d){return isToday(d);});
 
       bars += '<div style="border-top:1px solid #f3f4f6;padding:10px 0">'
-        +'<div onclick="setState({capPlanExpandedWeek:'+(isExpanded?'null':wk.offset)+'})" style="cursor:pointer;display:flex;align-items:center;gap:14px">'
+        +'<div data-action="capplan-toggle-week" data-week-offset="'+wk.offset+'" style="cursor:pointer;display:flex;align-items:center;gap:14px">'
         +'<div style="min-width:160px;font-size:12px;font-weight:'+(todayInWeek?'700':'600')+';color:'+(todayInWeek?'#c41230':'#374151')+'">'+(todayInWeek?'👉 ':'')+label+'</div>'
         +'<div style="flex:1;min-width:200px"><div style="height:18px;background:#f3f4f6;border-radius:9px;overflow:hidden;position:relative">'
         +'<div style="height:100%;background:'+band.col+';width:'+fillPct+'%;border-radius:9px 0 0 9px;transition:width .2s"></div>'
@@ -383,7 +440,7 @@
             var c = contacts.find(function(ct){return ct.id===j.contactId;});
             var cn = c ? c.fn+' '+c.ln : '—';
             var col = segCol[idx % segCol.length];
-            bars += '<div title="'+(j.jobNumber||j.id)+' · '+cn+' · '+fmtHM(m)+'" style="background:'+col+';width:'+pctOfCap+'%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600;overflow:hidden;white-space:nowrap;cursor:pointer" onclick="event.stopPropagation();setState({page:\'jobs\',jobDetailId:\''+j.id+'\'})">'+(pctOfCap>6?(j.jobNumber||''):'')+'</div>';
+            bars += '<div title="'+(j.jobNumber||j.id)+' · '+cn+' · '+fmtHM(m)+'" style="background:'+col+';width:'+pctOfCap+'%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:600;overflow:hidden;white-space:nowrap;cursor:pointer" data-action="capplan-job-segment" data-job-id="'+j.id+'">'+(pctOfCap>6?(j.jobNumber||''):'')+'</div>';
             sumSoFar += m;
           });
           if (wk.capacity > sumSoFar) {
@@ -409,7 +466,7 @@
             var effective = (typeof crewEffectiveMinutes === 'function' && crewIds.length>0) ? crewEffectiveMinutes(crewIds, base) : base;
             var col = segCol[idx % segCol.length];
             bars += '<tr style="border-top:1px solid #fff">'
-              +'<td class="td"><span style="display:inline-block;width:8px;height:8px;background:'+col+';border-radius:2px;margin-right:6px"></span><a href="#" onclick="event.preventDefault();setState({page:\'jobs\',jobDetailId:\''+j.id+'\'})" style="color:#3b82f6;font-weight:600">'+(j.jobNumber||j.id)+'</a></td>'
+              +'<td class="td"><span style="display:inline-block;width:8px;height:8px;background:'+col+';border-radius:2px;margin-right:6px"></span><a href="#" data-action="capplan-job-link" data-job-id="'+j.id+'" style="color:#3b82f6;font-weight:600">'+(j.jobNumber||j.id)+'</a></td>'
               +'<td class="td">'+cn+'</td>'
               +'<td class="td">'+(j.installDate||'—')+(j.installTime?' '+j.installTime:'')+'</td>'
               +'<td class="td">'+(crewIds.length===0?'<span style="color:#9ca3af">unassigned</span>':crewIds.length+' assigned')+'</td>'

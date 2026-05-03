@@ -6,6 +6,139 @@
 //   renderBayManagement()  → /baymanagement
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-03) ────────
+defineAction('ops-dismiss-hold-modal', function(target, ev) {
+  if (ev.target === target) {
+    _holdTargetId = null;
+    renderPage();
+  }
+});
+
+defineAction('ops-cancel-hold', function(target, ev) {
+  _holdTargetId = null;
+  renderPage();
+});
+
+defineAction('ops-apply-hold', function(target, ev) {
+  applyHold();
+});
+
+defineAction('ops-back-to-dashboard', function(target, ev) {
+  navigateTo('factorydash');
+});
+
+defineAction('ops-show-hold-modal-job', function(target, ev) {
+  var jobId = target.dataset.jobId;
+  showHoldModal(jobId, 'job');
+});
+
+defineAction('ops-bounce-to-sales', function(target, ev) {
+  var jobId = target.dataset.jobId;
+  bounceToSales(jobId);
+});
+
+defineAction('ops-start-review', function(target, ev) {
+  var jobId = target.dataset.jobId;
+  setState({ factoryReviewJobId: jobId });
+  _reviewTab = 'frames';
+  renderPage();
+});
+
+defineAction('ops-release-hold-job', function(target, ev) {
+  var jobId = target.dataset.jobId;
+  releaseHold(jobId, 'job');
+});
+
+defineAction('ops-back-from-review', function(target, ev) {
+  setState({ factoryReviewJobId: null });
+  renderPage();
+});
+
+defineAction('ops-select-review-tab', function(target, ev) {
+  var tabId = target.dataset.tabId;
+  _reviewTab = tabId;
+  renderPage();
+});
+
+defineAction('ops-send-to-factory', function(target, ev) {
+  var jobId = target.dataset.jobId;
+  pushJobToFactory(jobId);
+  setState({ factoryReviewJobId: null });
+});
+
+defineAction('ops-view-full-job', function(target, ev) {
+  var jobId = target.dataset.jobId;
+  navigateTo('jobs', { jobDetailId: jobId });
+});
+
+defineAction('ops-start-qc', function(target, ev) {
+  var frameId = target.dataset.frameId;
+  _qcActiveFrameId = frameId;
+  renderPage();
+});
+
+defineAction('ops-back-from-qc', function(target, ev) {
+  _qcActiveFrameId = null;
+  renderPage();
+});
+
+defineAction('ops-qc-tick', function(target, ev) {
+  var frameId = target.dataset.frameId;
+  var idx = parseInt(target.dataset.idx, 10);
+  qcTick(frameId, idx);
+});
+
+defineAction('ops-qc-fail', function(target, ev) {
+  var frameId = target.dataset.frameId;
+  var idx = parseInt(target.dataset.idx, 10);
+  qcFail(frameId, idx);
+});
+
+defineAction('ops-qc-pass', function(target, ev) {
+  var frameId = target.dataset.frameId;
+  qcPass(frameId);
+});
+
+defineAction('ops-select-bay', function(target, ev) {
+  var bayId = target.dataset.bayId;
+  _baySelectedId = bayId;
+  renderPage();
+});
+
+defineAction('ops-assign-frame-to-bay', function(target, ev) {
+  var frameId = target.dataset.frameId;
+  var bayId = target.value;
+  if (bayId) {
+    bayAssignFrame(frameId, bayId);
+    target.value = '';
+  }
+});
+
+defineAction('ops-back-from-bay', function(target, ev) {
+  _baySelectedId = null;
+  renderPage();
+});
+
+defineAction('ops-assign-frame-to-bay-detail', function(target, ev) {
+  var frameId = target.value;
+  var bayId = target.dataset.bayId;
+  if (frameId) {
+    bayAssignFrame(frameId, bayId);
+    target.value = '';
+  }
+});
+
+defineAction('ops-toggle-bay-checklist', function(target, ev) {
+  var bayId = target.dataset.bayId;
+  var idx = parseInt(target.dataset.idx, 10);
+  bayToggleChecklist(bayId, idx);
+});
+
+defineAction('ops-close-bay', function(target, ev) {
+  var bayId = target.dataset.bayId;
+  bayClose(bayId);
+});
+
 // ── Module state ─────────────────────────────────────────────────────────────
 var _reviewTab = 'frames';
 var _qcActiveFrameId = null;
@@ -117,18 +250,18 @@ function bounceToSales(jobId) {
 
 function _renderHoldModal() {
   if (!_holdTargetId) return '';
-  return '<div class="modal-bg" onclick="if(event.target===this){_holdTargetId=null;renderPage()}">'
+  return '<div class="modal-bg" data-action="ops-dismiss-hold-modal">'
     + '<div class="modal" style="max-width:420px">'
     + '<div style="padding:20px 24px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
     + '<h3 style="margin:0;font-size:16px;font-weight:700">⏸ Place on Hold</h3>'
-    + '<button onclick="_holdTargetId=null;renderPage()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:20px;line-height:1">×</button>'
+    + '<button data-action="ops-cancel-hold" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:20px;line-height:1">×</button>'
     + '</div>'
     + '<div style="padding:24px">'
     + '<label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:6px">Reason <span style="color:#ef4444">*</span></label>'
     + '<textarea id="hold_reason" placeholder="e.g. Waiting on client colour confirmation, glass supplier delay…" style="width:100%;padding:10px;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;min-height:90px;font-family:inherit;resize:vertical;box-sizing:border-box"></textarea>'
     + '<div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">'
-    + '<button onclick="_holdTargetId=null;renderPage()" class="btn-w" style="font-size:12px">Cancel</button>'
-    + '<button onclick="applyHold()" class="btn-r" style="font-size:12px">⏸ Confirm Hold</button>'
+    + '<button data-action="ops-cancel-hold" class="btn-w" style="font-size:12px">Cancel</button>'
+    + '<button data-action="ops-apply-hold" class="btn-r" style="font-size:12px">⏸ Confirm Hold</button>'
     + '</div></div></div></div>';
 }
 
@@ -155,7 +288,7 @@ function renderJobsToReview() {
   });
 
   var h = '<div style="margin-bottom:20px;display:flex;align-items:center;gap:12px">'
-    + '<button onclick="navigateTo(\'factorydash\')" style="background:none;border:none;cursor:pointer;color:#6b7280;padding:4px 8px;font-size:18px;border-radius:6px">←</button>'
+    + '<button data-action="ops-back-to-dashboard" style="background:none;border:none;cursor:pointer;color:#6b7280;padding:4px 8px;font-size:18px;border-radius:6px">←</button>'
     + '<div><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:24px;margin:0">📋 Jobs to Review</h2>'
     + '<p style="color:#6b7280;font-size:13px;margin:4px 0 0">Review signed-off designs before releasing to the factory floor</p></div>'
     + '</div>';
@@ -203,9 +336,9 @@ function renderJobsToReview() {
         + '</div>'
         + '</div>'
         + '<div style="display:flex;gap:6px;flex-shrink:0">'
-        + '<button onclick="showHoldModal(\'' + j.id + '\',\'job\')" class="btn-w" style="font-size:11px;padding:5px 10px">⏸ Hold</button>'
-        + '<button onclick="bounceToSales(\'' + j.id + '\')" style="font-size:11px;padding:5px 10px;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;cursor:pointer;font-family:inherit;font-weight:600">↩ Bounce</button>'
-        + '<button onclick="setState({factoryReviewJobId:\'' + j.id + '\'});_reviewTab=\'frames\';renderPage()" class="btn-r" style="font-size:11px;padding:5px 14px;font-weight:700">Review →</button>'
+        + '<button data-action="ops-show-hold-modal-job" data-job-id="' + j.id + '" class="btn-w" style="font-size:11px;padding:5px 10px">⏸ Hold</button>'
+        + '<button data-action="ops-bounce-to-sales" data-job-id="' + j.id + '" style="font-size:11px;padding:5px 10px;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;cursor:pointer;font-family:inherit;font-weight:600">↩ Bounce</button>'
+        + '<button data-action="ops-start-review" data-job-id="' + j.id + '" class="btn-r" style="font-size:11px;padding:5px 14px;font-weight:700">Review →</button>'
         + '</div></div>';
     });
     h += '</div>';
@@ -221,7 +354,7 @@ function renderJobsToReview() {
         + '<div style="flex:1"><span style="font-weight:700;color:#c41230">' + (j.jobNumber || j.id) + '</span>'
         + ' <span style="color:#374151">' + (c ? c.fn + ' ' + c.ln : '') + '</span>'
         + '<div style="font-size:11px;color:#f59e0b;font-weight:600;margin-top:2px">Reason: ' + (j.factoryHoldReason || '—') + '</div></div>'
-        + '<button onclick="releaseHold(\'' + j.id + '\',\'job\')" style="font-size:11px;padding:5px 12px;background:#d1fae5;color:#065f46;border:1px solid #6ee7b7;border-radius:8px;cursor:pointer;font-family:inherit;font-weight:600">▶ Release</button>'
+        + '<button data-action="ops-release-hold-job" data-job-id="' + j.id + '" style="font-size:11px;padding:5px 12px;background:#d1fae5;color:#065f46;border:1px solid #6ee7b7;border-radius:8px;cursor:pointer;font-family:inherit;font-weight:600">▶ Release</button>'
         + '</div>';
     });
     h += '</div>';
@@ -253,7 +386,7 @@ function _renderJobReviewDetail(jobId) {
   var cmPaid = cmInv && cmInv.status === 'Paid';
 
   var h = '<div style="margin-bottom:16px;display:flex;align-items:center;gap:10px">'
-    + '<button onclick="setState({factoryReviewJobId:null});renderPage()" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:18px;padding:4px 8px;border-radius:6px">← Back</button>'
+    + '<button data-action="ops-back-from-review" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:18px;padding:4px 8px;border-radius:6px">← Back</button>'
     + '<div style="flex:1">'
     + '<h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:22px;margin:0">' + (job.jobNumber || job.id) + (c ? ' — ' + c.fn + ' ' + c.ln : '') + '</h2>'
     + '<p style="color:#6b7280;font-size:12px;margin:4px 0 0">' + (job.suburb || '') + ' · $' + Number(job.val || 0).toLocaleString() + ' · ' + frames.length + ' frames</p>'
@@ -263,7 +396,7 @@ function _renderJobReviewDetail(jobId) {
   h += '<div style="display:flex;border-bottom:2px solid #e5e7eb;margin-bottom:16px;overflow-x:auto;gap:0">';
   TABS.forEach(function(t) {
     var active = _reviewTab === t.id;
-    h += '<button onclick="_reviewTab=\'' + t.id + '\';renderPage()" style="padding:10px 14px;border:none;background:none;cursor:pointer;font-size:12px;font-weight:' + (active ? '700' : '500') + ';color:' + (active ? '#c41230' : '#6b7280') + ';border-bottom:3px solid ' + (active ? '#c41230' : 'transparent') + ';margin-bottom:-2px;white-space:nowrap;font-family:inherit">' + t.label + '</button>';
+    h += '<button data-action="ops-select-review-tab" data-tab-id="' + t.id + '" style="padding:10px 14px;border:none;background:none;cursor:pointer;font-size:12px;font-weight:' + (active ? '700' : '500') + ';color:' + (active ? '#c41230' : '#6b7280') + ';border-bottom:3px solid ' + (active ? '#c41230' : 'transparent') + ';margin-bottom:-2px;white-space:nowrap;font-family:inherit">' + t.label + '</button>';
   });
   h += '</div>';
 
@@ -278,10 +411,10 @@ function _renderJobReviewDetail(jobId) {
   if (!cmPaid && cmInv) {
     h += '<div style="width:100%;padding:8px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;font-size:12px;color:#b91c1c;margin-bottom:4px">⚠ <strong>45% progress claim not paid.</strong> You can still send to factory but this is flagged for the Director.</div>';
   }
-  h += '<button onclick="pushJobToFactory(\'' + job.id + '\');setState({factoryReviewJobId:null})" class="btn-r" style="padding:9px 22px;font-weight:700;font-size:13px">🏭 Send to Factory</button>'
-    + '<button onclick="showHoldModal(\'' + job.id + '\',\'job\')" class="btn-w" style="padding:9px 14px;font-size:12px">⏸ Hold</button>'
-    + '<button onclick="bounceToSales(\'' + job.id + '\')" style="padding:9px 14px;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;font-family:inherit">↩ Bounce to Sales</button>'
-    + '<button onclick="navigateTo(\'jobs\',{jobDetailId:\'' + job.id + '\'})" style="padding:9px 14px;background:none;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;color:#374151;font-family:inherit">📁 View Full Job</button>'
+  h += '<button data-action="ops-send-to-factory" data-job-id="' + job.id + '" class="btn-r" style="padding:9px 22px;font-weight:700;font-size:13px">🏭 Send to Factory</button>'
+    + '<button data-action="ops-show-hold-modal-job" data-job-id="' + job.id + '" class="btn-w" style="padding:9px 14px;font-size:12px">⏸ Hold</button>'
+    + '<button data-action="ops-bounce-to-sales" data-job-id="' + job.id + '" style="padding:9px 14px;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;font-family:inherit">↩ Bounce to Sales</button>'
+    + '<button data-action="ops-view-full-job" data-job-id="' + job.id + '" style="padding:9px 14px;background:none;border:1px solid #e5e7eb;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;color:#374151;font-family:inherit">📁 View Full Job</button>'
     + '</div>';
 
   return '<div>' + h + _renderHoldModal() + '</div>';
@@ -293,7 +426,7 @@ function _reviewTabFrames(frames) {
   frames.forEach(function(f, i) {
     var times = f.stationTimes || {};
     var totalMin = Object.values(times).reduce(function(s, v) { return s + (v || 0); }, 0);
-    var ptype = (f.productType || 'unknown').replace(/_/g, ' ');
+    var ptype = formatProductType(f.productType, 'unknown');
     h += '<div class="card" style="padding:14px">'
       + '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">'
       + '<span style="font-size:14px;font-weight:800;color:#c41230;font-family:Syne,sans-serif">' + (f.name || 'Frame ' + (i + 1)) + '</span>'
@@ -428,14 +561,17 @@ function _reviewTabCapacity(job, frames) {
     h += '<tr style="' + (i % 2 ? 'background:#fafafa' : '') + (isBottleneck ? ';background:#fff7ed' : '') + '">'
       + '<td class="td">' + (s.icon || '') + ' ' + s.name + (isBottleneck ? ' <span style="font-size:9px;background:#f59e0b;color:#fff;padding:1px 5px;border-radius:3px">BOTTLENECK</span>' : '') + '</td>'
       + '<td class="td" style="font-weight:600">' + mins + '</td>'
-      + '<td class="td">' + (mins / 60).toFixed(1) + 'h</td>'
+      + '<td class="td">' + (typeof formatMinutesAsHours === 'function' ? formatMinutesAsHours(mins, 'decimal') : (mins / 60).toFixed(1) + 'h') + '</td>'
       + '<td class="td" style="color:#6b7280">' + days + '</td>'
       + '</tr>';
   });
   h += '</tbody></table></div>';
 
   h += '<div class="card" style="padding:14px 18px;display:flex;gap:24px;flex-wrap:wrap">'
-    + '<div><div style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">Total Production</div><div style="font-size:18px;font-weight:800;color:#374151;font-family:Syne,sans-serif">' + totalMins + ' min <span style="font-size:13px;font-weight:500">(' + (totalMins / 60).toFixed(1) + ' hrs)</span></div></div>'
+    // Hero-stat display intentionally uses verbose " hrs" suffix (not the
+    // contract's 'h'); kept hand-rolled to preserve the Total Production
+    // visual. Calculation is the same as formatMinutesAsHours(_,'decimal').
+    + '<div><div style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">Total Production</div><div style="font-size:18px;font-weight:800;color:#374151;font-family:Syne,sans-serif">' + totalMins + ' min <span style="font-size:13px;font-weight:500">(' + (totalMins / 60).toFixed(1) + ' hrs · ' + (typeof formatMinutesAsDays === 'function' ? formatMinutesAsDays(totalMins) : Math.ceil(totalMins / 480 * 2) / 2) + 'd)</span></div></div>'
     + (job.installDate ? '<div><div style="font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em">Customer Install Date</div><div style="font-size:18px;font-weight:800;color:#374151;font-family:Syne,sans-serif">' + new Date(job.installDate).toLocaleDateString('en-AU') + '</div></div>' : '')
     + '</div>';
   return h;
@@ -516,11 +652,11 @@ function renderQCPage() {
       h += '<tr style="' + (i % 2 ? 'background:#fafafa' : '') + (failCount ? ';background:#fef2f2' : '') + '">'
         + '<td class="td" style="font-weight:700;color:#c41230">' + (item.name || item.id) + '</td>'
         + '<td class="td">' + (item.jobRef || '—') + '</td>'
-        + '<td class="td">' + (item.productType || '—').replace(/_/g, ' ') + '</td>'
+        + '<td class="td">' + formatProductType(item.productType, '—') + '</td>'
         + '<td class="td">' + (item.widthMm || item.width || '?') + '×' + (item.heightMm || item.height || '?') + '</td>'
         + '<td class="td"><span class="bdg" style="font-size:10px">' + item.station + '</span></td>'
         + '<td class="td">' + (failCount ? '<span style="color:#ef4444;font-weight:600">⚠ ' + failCount + ' fail(s)</span>' : tickCount ? '<span style="color:#f59e0b;font-weight:600">' + tickCount + '/' + QC_CHECKLIST_ITEMS.length + ' checked</span>' : '<span style="color:#9ca3af">Pending</span>') + '</td>'
-        + '<td class="td"><button onclick="_qcActiveFrameId=\'' + item.id + '\';renderPage()" class="btn-r" style="font-size:10px;padding:4px 12px">Run QC →</button></td>'
+        + '<td class="td"><button data-action="ops-start-qc" data-frame-id="' + item.id + '" class="btn-r" style="font-size:10px;padding:4px 12px">Run QC →</button></td>'
         + '</tr>';
     });
     h += '</tbody></table></div>';
@@ -551,9 +687,9 @@ function _renderQCChecklist(frameId, items, qcStore) {
 
   var h = '<div style="max-width:620px;margin:0 auto">'
     + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">'
-    + '<button onclick="_qcActiveFrameId=null;renderPage()" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:18px;padding:4px 8px;border-radius:6px">← Back</button>'
+    + '<button data-action="ops-back-from-qc" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:18px;padding:4px 8px;border-radius:6px">← Back</button>'
     + '<div><div style="font-size:18px;font-weight:800;font-family:Syne,sans-serif">QC: ' + (frame.name || frameId) + '</div>'
-    + '<div style="font-size:12px;color:#6b7280">' + (frame.jobRef || '') + ' · ' + (frame.productType || '').replace(/_/g, ' ') + ' · ' + (frame.widthMm || frame.width || '?') + '×' + (frame.heightMm || frame.height || '?') + 'mm</div>'
+    + '<div style="font-size:12px;color:#6b7280">' + (frame.jobRef || '') + ' · ' + formatProductType(frame.productType) + ' · ' + (frame.widthMm || frame.width || '?') + '×' + (frame.heightMm || frame.height || '?') + 'mm</div>'
     + '</div></div>'
     + '<div style="margin-bottom:6px;height:8px;background:#f0f0f0;border-radius:4px"><div style="height:100%;background:' + (allTicked ? '#22c55e' : pct > 50 ? '#f59e0b' : '#c41230') + ';border-radius:4px;width:' + pct + '%;transition:width .3s"></div></div>'
     + '<div style="font-size:12px;color:#6b7280;margin-bottom:16px">' + tickCount + ' / ' + QC_CHECKLIST_ITEMS.length + ' items checked' + (failCount ? ' · <span style="color:#ef4444;font-weight:600">' + failCount + ' failure(s)</span>' : '') + '</div>';
@@ -562,18 +698,18 @@ function _renderQCChecklist(frameId, items, qcStore) {
     var ticked = !!(entry.ticks || {})[idx];
     var failure = (entry.failures || []).find(function(f) { return f.item === idx; });
     h += '<div style="display:flex;align-items:flex-start;gap:12px;padding:12px;border:1px solid ' + (failure ? '#fecaca' : ticked ? '#bbf7d0' : '#e5e7eb') + ';border-radius:8px;margin-bottom:6px;background:' + (failure ? '#fef2f2' : ticked ? '#f0fdf4' : '#fff') + '">'
-      + '<button onclick="qcTick(\'' + frameId + '\',' + idx + ')" style="width:26px;height:26px;border-radius:50%;border:2px solid ' + (ticked ? '#22c55e' : '#d1d5db') + ';background:' + (ticked ? '#22c55e' : '#fff') + ';cursor:pointer;flex-shrink:0;font-size:13px;color:#fff;display:flex;align-items:center;justify-content:center;font-family:inherit">' + (ticked ? '✓' : '') + '</button>'
+      + '<button data-action="ops-qc-tick" data-frame-id="' + frameId + '" data-idx="' + idx + '" style="width:26px;height:26px;border-radius:50%;border:2px solid ' + (ticked ? '#22c55e' : '#d1d5db') + ';background:' + (ticked ? '#22c55e' : '#fff') + ';cursor:pointer;flex-shrink:0;font-size:13px;color:#fff;display:flex;align-items:center;justify-content:center;font-family:inherit">' + (ticked ? '✓' : '') + '</button>'
       + '<div style="flex:1">'
       + '<div style="font-size:13px;color:' + (failure ? '#b91c1c' : ticked ? '#15803d' : '#374151') + ';font-weight:' + (ticked ? '600' : '400') + '">' + (idx + 1) + '. ' + label + '</div>'
       + (failure ? '<div style="font-size:11px;color:#b91c1c;margin-top:3px">❌ ' + failure.category + (failure.notes ? ': ' + failure.notes : '') + '</div>' : '')
       + '</div>'
-      + (!ticked && !failure ? '<button onclick="qcFail(\'' + frameId + '\',' + idx + ')" style="padding:4px 10px;border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:6px;cursor:pointer;font-size:10px;font-weight:600;flex-shrink:0;font-family:inherit">Fail ✗</button>' : '')
+      + (!ticked && !failure ? '<button data-action="ops-qc-fail" data-frame-id="' + frameId + '" data-idx="' + idx + '" style="padding:4px 10px;border:1px solid #fca5a5;background:#fee2e2;color:#b91c1c;border-radius:6px;cursor:pointer;font-size:10px;font-weight:600;flex-shrink:0;font-family:inherit">Fail ✗</button>' : '')
       + '</div>';
   });
 
   h += '<div style="margin-top:20px">'
     + (allTicked
-      ? '<button onclick="qcPass(\'' + frameId + '\')" style="width:100%;padding:14px;background:#22c55e;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">✅ QC Pass — Advance to Dispatch</button>'
+      ? '<button data-action="ops-qc-pass" data-frame-id="' + frameId + '" style="width:100%;padding:14px;background:#22c55e;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">✅ QC Pass — Advance to Dispatch</button>'
       : '<div style="padding:12px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;text-align:center;font-size:13px;color:#9ca3af">All ' + QC_CHECKLIST_ITEMS.length + ' items must be checked before passing</div>')
     + '</div></div>';
   return h;
@@ -657,7 +793,7 @@ function renderBayManagement() {
     bayItems.forEach(function(i) { if (i.jobRef && !jobRefs.includes(i.jobRef)) jobRefs.push(i.jobRef); });
     var closed = !!bay.closedAt;
     var col = closed ? '#22c55e' : bayItems.length > 0 ? '#3b82f6' : '#d1d5db';
-    h += '<div class="card" style="padding:14px;border-left:4px solid ' + col + ';cursor:pointer;transition:box-shadow .15s" onmouseenter="this.style.boxShadow=\'0 4px 12px #0000001a\'" onmouseleave="this.style.boxShadow=\'\'" onclick="_baySelectedId=\'' + bay.id + '\';renderPage()">'
+    h += '<div class="card" style="padding:14px;border-left:4px solid ' + col + ';cursor:pointer;transition:box-shadow .15s" onmouseenter="this.style.boxShadow=\'0 4px 12px #0000001a\'" onmouseleave="this.style.boxShadow=\'\'" data-action="ops-select-bay" data-bay-id="' + bay.id + '">'
       + '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">'
       + '<span style="font-size:14px;font-weight:800;font-family:Syne,sans-serif">Bay ' + bay.number + '</span>'
       + (closed ? '<span style="font-size:9px;background:#22c55e;color:#fff;padding:2px 6px;border-radius:10px">CLOSED</span>' : bayItems.length > 0 ? '<span style="font-size:9px;background:#3b82f620;color:#3b82f6;padding:2px 6px;border-radius:10px;border:1px solid #3b82f640">ACTIVE</span>' : '<span style="font-size:9px;color:#d1d5db">EMPTY</span>')
@@ -678,9 +814,9 @@ function renderBayManagement() {
       h += '<tr style="' + (i % 2 ? 'background:#fafafa' : '') + '">'
         + '<td class="td" style="font-weight:700;color:#c41230">' + (item.name || item.id) + '</td>'
         + '<td class="td">' + (item.jobRef || '—') + '</td>'
-        + '<td class="td">' + (item.productType || '').replace(/_/g, ' ') + '</td>'
+        + '<td class="td">' + formatProductType(item.productType) + '</td>'
         + '<td class="td">' + (item.widthMm || item.width || '?') + '×' + (item.heightMm || item.height || '?') + '</td>'
-        + '<td class="td"><select onchange="bayAssignFrame(\'' + item.id + '\',this.value);this.value=\'\'" style="border:1px solid #e5e7eb;border-radius:6px;padding:4px 8px;font-size:11px;font-family:inherit"><option value="">Assign to bay…</option>'
+        + '<td class="td"><select data-action="ops-assign-frame-to-bay" data-frame-id="' + item.id + '" style="border:1px solid #e5e7eb;border-radius:6px;padding:4px 8px;font-size:11px;font-family:inherit"><option value="">Assign to bay…</option>'
         + bays.filter(function(b) { return !b.closedAt; }).map(function(b) { return '<option value="' + b.id + '">Bay ' + b.number + '</option>'; }).join('')
         + '</select></td>'
         + '</tr>';
@@ -697,7 +833,7 @@ function _renderBayDetail(bay, bays, items, orders) {
   var allTicked = BAY_CLOSURE_ITEMS.every(function(_, idx) { return checklist[idx]; });
 
   var h = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">'
-    + '<button onclick="_baySelectedId=null;renderPage()" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:18px;padding:4px 8px;border-radius:6px">← Bays</button>'
+    + '<button data-action="ops-back-from-bay" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:18px;padding:4px 8px;border-radius:6px">← Bays</button>'
     + '<h3 style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;margin:0">Bay ' + bay.number + '</h3>'
     + (bay.closedAt ? '<span style="color:#22c55e;font-size:12px;font-weight:600">✅ Closed ' + new Date(bay.closedAt).toLocaleString('en-AU') + '</span>' : '')
     + '</div>';
@@ -706,7 +842,7 @@ function _renderBayDetail(bay, bays, items, orders) {
   h += '<div class="card" style="padding:0;overflow:hidden;margin-bottom:12px">'
     + '<div style="padding:12px 16px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
     + '<h4 style="font-size:13px;font-weight:700;margin:0">Frame Manifest (' + bayItems.length + ')</h4>'
-    + (!bay.closedAt ? '<select onchange="bayAssignFrame(null,\'' + bay.id + '\',this.value);this.value=\'\'" style="border:1px solid #e5e7eb;border-radius:6px;padding:4px 8px;font-size:11px;font-family:inherit"><option value="">+ Add frame…</option>'
+    + (!bay.closedAt ? '<select data-action="ops-assign-frame-to-bay-detail" data-bay-id="' + bay.id + '" style="border:1px solid #e5e7eb;border-radius:6px;padding:4px 8px;font-size:11px;font-family:inherit"><option value="">+ Add frame…</option>'
       + items.filter(function(i){return i.station==='dispatch'&&i.qcPassedAt&&!i.bayId;}).map(function(i){return '<option value="'+i.id+'">'+(i.name||i.id)+' ('+( i.jobRef||'')+') </option>';}).join('')
       + '</select>' : '')
     + '</div>';
@@ -718,7 +854,7 @@ function _renderBayDetail(bay, bays, items, orders) {
       h += '<tr style="' + (i % 2 ? 'background:#fafafa' : '') + '">'
         + '<td class="td" style="font-weight:700;color:#c41230">' + (item.name || item.id) + '</td>'
         + '<td class="td">' + (item.jobRef || '—') + '</td>'
-        + '<td class="td">' + (item.productType || '').replace(/_/g, ' ') + '</td>'
+        + '<td class="td">' + formatProductType(item.productType) + '</td>'
         + '<td class="td">' + (item.widthMm || item.width || '?') + '×' + (item.heightMm || item.height || '?') + '</td>'
         + '<td class="td">' + (item.qcPassedAt ? '<span style="color:#22c55e;font-weight:600">✅ Passed</span>' : '<span style="color:#f59e0b">⏳ Pending</span>') + '</td>'
         + '</tr>';
@@ -734,14 +870,14 @@ function _renderBayDetail(bay, bays, items, orders) {
       + '<div style="font-size:12px;color:#6b7280;margin-bottom:12px">Every item must be ticked before the bay can be closed. Software-locked.</div>';
     BAY_CLOSURE_ITEMS.forEach(function(label, idx) {
       var ticked = !!checklist[idx];
-      h += '<div onclick="bayToggleChecklist(\'' + bay.id + '\',' + idx + ')" style="display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid ' + (ticked ? '#bbf7d0' : '#e5e7eb') + ';border-radius:8px;margin-bottom:6px;background:' + (ticked ? '#f0fdf4' : '#fff') + ';cursor:pointer;user-select:none">'
+      h += '<div data-action="ops-toggle-bay-checklist" data-bay-id="' + bay.id + '" data-idx="' + idx + '" style="display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid ' + (ticked ? '#bbf7d0' : '#e5e7eb') + ';border-radius:8px;margin-bottom:6px;background:' + (ticked ? '#f0fdf4' : '#fff') + ';cursor:pointer;user-select:none">'
         + '<div style="width:22px;height:22px;border-radius:50%;border:2px solid ' + (ticked ? '#22c55e' : '#d1d5db') + ';background:' + (ticked ? '#22c55e' : '#fff') + ';display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;color:#fff">' + (ticked ? '✓' : '') + '</div>'
         + '<span style="font-size:13px;color:' + (ticked ? '#15803d' : '#374151') + ';font-weight:' + (ticked ? '600' : '400') + '">' + (idx + 1) + '. ' + label + '</span>'
         + '</div>';
     });
     h += '<div style="margin-top:14px">'
       + (allTicked && bayItems.length > 0
-        ? '<button onclick="bayClose(\'' + bay.id + '\')" style="width:100%;padding:14px;background:#22c55e;color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">🚛 Close Bay — Notify Install Crew</button>'
+        ? '<button data-action="ops-close-bay" data-bay-id="' + bay.id + '" style="width:100%;padding:14px;background:#22c55e;color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit">🚛 Close Bay — Notify Install Crew</button>'
         : '<div style="padding:12px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;text-align:center;font-size:12px;color:#9ca3af">Tick all ' + BAY_CLOSURE_ITEMS.length + ' items and ensure at least 1 frame is assigned</div>')
       + '</div></div>';
   }
