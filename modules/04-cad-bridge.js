@@ -5,10 +5,13 @@
 //
 // History:
 //   - Pre-2026-05-02: lived as modules/04-cad-integration.js
-//   - 2026-05-02 (5d6a960): rewritten for same-origin iframe (this code)
+//   - 2026-05-02 (5d6a960): rewritten for same-origin iframe
 //   - 2026-05-03 (5081f3c): file deleted while 'CAD bridge being rebuilt'
 //   - 2026-05-04: recovered as modules/04-cad-bridge.js, paired with the
 //                 quote helpers in modules/04-cad-quote-helpers.js
+//   - 2026-05-04: switched to cross-origin — CAD now lives on its own
+//                 Vercel project (spartan-cad-modular.vercel.app); the
+//                 local cad.html / modules/cad_modules/ tree is dead code.
 //
 // CAD-side scope (from 12-crm-postmessage-bridge.js):
 //   M1 (current — 2.0.0-WIP28):  init/ready/request-save/save/save-error/close
@@ -34,7 +37,12 @@
 
 
 // ── 1. Config ────────────────────────────────────────────────────────────────
-var CAD_HTML_PATH = 'cad.html';
+// CAD lives on its own Vercel project — single, stable origin, fine to
+// hardcode. CRM-side has many origins (every preview branch + future
+// production domain) so we don't try to enumerate them on the CAD side;
+// that asymmetry is handled by the CAD repo, which is owned separately.
+var CAD_ORIGIN = 'https://spartan-cad-modular.vercel.app';
+var CAD_IFRAME_SRC = CAD_ORIGIN + '/';
 
 var CAD_MSG_INIT         = 'spartan-cad-init';
 var CAD_MSG_READY        = 'spartan-cad-ready';
@@ -112,7 +120,7 @@ function _renderCadOverlay() {
 
   var iframe = document.createElement('iframe');
   iframe.id = 'cadIframe';
-  iframe.src = CAD_HTML_PATH;
+  iframe.src = CAD_IFRAME_SRC;
   iframe.style.cssText = 'flex:1 1 auto;width:100%;border:none;background:#fff';
   iframe.setAttribute('title', 'Spartan CAD');
   iframe.setAttribute('allow', 'clipboard-write; clipboard-read');
@@ -153,7 +161,7 @@ function _cadSendInit() {
   }
 
   try {
-    s.iframe.contentWindow.postMessage(payload, window.location.origin);
+    s.iframe.contentWindow.postMessage(payload, CAD_ORIGIN);
   } catch (e) {
     console.warn('[Spartan CAD] postMessage failed:', e);
   }
@@ -227,8 +235,8 @@ function _buildCadInitPayload(entityType, entityId, mode) {
 
 // ── 6. Message listener ──────────────────────────────────────────────────────
 function _onCadMessage(event) {
-  // Same-origin check — accept messages from our own origin only.
-  if (event.origin !== window.location.origin) return;
+  // Cross-origin check — accept messages only from the CAD Vercel project.
+  if (event.origin !== CAD_ORIGIN) return;
   if (!_cadSession) return;
   var msg = event.data;
   if (!msg || typeof msg !== 'object' || !msg.type) return;
@@ -259,7 +267,7 @@ function _cadRequestSave() {
     return;
   }
   try {
-    s.iframe.contentWindow.postMessage({ type: CAD_MSG_REQUEST_SAVE }, window.location.origin);
+    s.iframe.contentWindow.postMessage({ type: CAD_MSG_REQUEST_SAVE }, CAD_ORIGIN);
   } catch (e) {
     console.warn('[Spartan CAD] request-save postMessage failed:', e);
   }
