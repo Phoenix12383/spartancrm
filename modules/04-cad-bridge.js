@@ -303,6 +303,12 @@ function _persistCadSave(msg, entityType, entityId, mode) {
     quoteNumber:  msg.quoteNumber || '',
     projectName:  msg.projectName || '',
     totals:       msg.totals || null,
+    // CAD always emits trimCutList as of WIP38 (CAD-side). Shape is
+    // { cuts: [...], byTrim: { <label>: { totalLengthMm, cutCount, ... } } }
+    // — see modules/cad_modules/22-trim-cutlist.js for the full schema.
+    // Carried through to the quote / job CAD slot so the in-CRM Cutlist
+    // viewer (renderCutlistModal) can render it without re-querying CAD.
+    trimCutList:  msg.trimCutList || null,
     cadVersion:   msg.cadVersion || null,
   };
 
@@ -337,6 +343,7 @@ function _persistToLeadOrDeal(st, entityType, entityId, msg, cadBlob) {
         savedAt:      cadBlob.savedAt,
         quoteNumber:  cadBlob.quoteNumber,
         totals:       cadBlob.totals,
+        trimCutList:  cadBlob.trimCutList,
         notes:        '',
       };
     }
