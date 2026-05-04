@@ -298,6 +298,189 @@ function renderEntityDetail({
   backOnclick, backLabel,
   activities,
   contact,
+}) {
+  // Native wrapper: use the boss's stripped-down mobile layout (hero +
+  // quick actions + flat details + notes + bottom actions). Desktop flow
+  // continues below unchanged.
+  if (typeof isNativeWrapper === 'function' && isNativeWrapper()) {
+    return _renderEntityDetailMobile({ entityType: entityType, entityId: entityId, title: title, owner: owner, contact: contact, backOnclick: backOnclick, backLabel: backLabel });
+  }
+  const TABS = [
+    { id: 'activity', label: 'Activity', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>' },
+    { id: 'notes', label: 'Notes', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>' },
+    { id: 'call', label: 'Call', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.8a19.79 19.79 0 01-3.07-8.67A2 2 0 012 .84h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 8.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg>' },
+    { id: 'sms', label: 'SMS', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>' },
+    { id: 'email', label: 'Email', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>' },
+    { id: 'files', label: 'Files', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>' },
+  ];
+
+  // Inline form content
+  const inlineForm = renderTabForm(entityId, entityType, detailTab, contact);
+
+  // ── History items ─────────────────────────────────────────────────────────
+  const AICON = { note: '📝', call: '📞', email: '✉️', task: '☑️', stage: '🔀', created: '⭐', meeting: '📅', file: '📎', edit: '✏️', photo: '📸' };
+  const ACOLBORDER = { note: '#f59e0b', call: '#3b82f6', email: '#8b5cf6', task: '#22c55e', stage: '#9ca3af', created: '#ef4444', meeting: '#0d9488', file: '#6366f1', edit: '#64748b', photo: '#ec4899' };
+
+  const historyItems = activities.length === 0
+    ? `<div style="padding:40px 20px;text-align:center">
+        <div style="font-size:32px;margin-bottom:10px">📋</div>
+        <div style="font-size:14px;font-weight:500;color:#374151;margin-bottom:4px">No activity yet</div>
+        <div style="font-size:13px;color:#9ca3af">Scheduled activities, pinned notes and emails will appear here.</div>
+        <button onclick="openScheduleModal('${entityId}','${entityType}','call')" class="btn-r" style="margin-top:16px;font-size:12px">+ Schedule an activity</button>
+      </div>`
+    : `<div>
+        ${activities.map((act, idx) => `
+          <div style="display:flex;gap:0;padding:14px 20px;${idx < activities.length - 1 ? 'border-bottom:1px solid #f3f4f6' : ''}">
+            <!-- Icon column -->
+            <div style="display:flex;flex-direction:column;align-items:center;margin-right:14px;flex-shrink:0">
+              <div style="width:36px;height:36px;border-radius:50%;background:${ACOLBORDER[act.type] || '#9ca3af'}18;border:2px solid ${ACOLBORDER[act.type] || '#9ca3af'}40;display:flex;align-items:center;justify-content:center;font-size:16px">${AICON[act.type] || '📌'}</div>
+              ${idx < activities.length - 1 ? `<div style="width:2px;flex:1;background:#f3f4f6;margin-top:6px;min-height:20px"></div>` : ''}
+            </div>
+            <!-- Content -->
+            <div style="flex:1;min-width:0;padding-bottom:4px">
+              <!-- Header row -->
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px">
+                <div>
+                  <span style="font-size:13px;font-weight:600;color:#111">${act.type === 'created' ? 'Created' : ''}${act.type === 'stage' ? 'Stage change' : ''}</span>
+                  ${act.subject ? ('<span style="font-size:13px;font-weight:600;color:#111">' + act.subject + '</span>' + (act.type === 'email' ? ('<span class="etrack" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:20px;margin-left:8px;' + (act.opens > 0 ? 'background:#f0fdf4;color:#15803d' : 'background:#f3f4f6;color:#9ca3af') + '"> 👁 ' + (act.opens > 0 ? act.opens + '× opened' : 'Not opened') + (act.opens > 0 && act.openedAt ? ' <span style="opacity:.7">· ' + act.openedAt + '</span>' : '') + '<div class="etrack-tip">' + emailTrackTip(act, getState().emailSent) + '</div></span>') : '')) : ''}
+                  ${!act.subject && act.type !== 'created' && act.type !== 'stage' ? `<span style="font-size:13px;font-weight:600;color:#111">${act.type.charAt(0).toUpperCase() + act.type.slice(1)}${act.scheduled ? ` <span style="font-size:11px;font-weight:600;color:#0d9488;background:#ccfbf1;padding:1px 7px;border-radius:20px">Scheduled</span>` : ''}</span>` : ''}
+                  ${act._source ? `<span style="font-size:11px;color:#9ca3af;margin-left:6px">via ${act._source === 'deal' ? act._dealTitle || 'deal' : act._leadName || 'lead'}</span>` : ''}
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+                  ${act.by ? `<span style="font-size:11px;color:#9ca3af">${act.by}</span>` : ''}
+                  <span style="font-size:11px;color:#d1d5db">·</span>
+                  <span style="font-size:11px;color:#9ca3af">${act.date || ''} ${act.time || ''}</span>
+                </div>
+              </div>
+
+              <!-- Body. Brief 6 Phase 1: email activities sanitise + render
+                   their HTML body via _sanitizeEmailBody (handles plain-text
+                   vs HTML internally, including pre-wrap for plain text).
+                   Other activity types stay on the existing pre-wrap raw
+                   render — their text is plain and includes intentional
+                   newlines from edit/note/call activities. -->
+              ${act.text && act.type !== 'stage' ? (
+                // Image-URL → render inline <img>. Catches the mobile camera
+                // capture flow (type='file', text=publicUrl) AND the older
+                // type='photo' shape if any of those rows exist. Anything
+                // else falls through to the existing text/email rendering.
+                /^https?:\/\/.+\.(jpe?g|png|gif|webp|heic)(\?.*)?$/i.test(act.text)
+                  ? `<a href="${String(act.text).replace(/"/g,'&quot;')}" target="_blank" rel="noopener" style="display:inline-block;margin-top:4px;border-radius:8px;overflow:hidden;border:1px solid #f3f4f6;max-width:280px;box-shadow:0 1px 3px rgba(0,0,0,.06)"><img src="${String(act.text).replace(/"/g,'&quot;')}" loading="lazy" style="display:block;max-width:280px;max-height:280px;object-fit:cover" alt="Photo"></a>`
+                  : (act.type === 'email' && typeof _sanitizeEmailBody === 'function'
+                    ? `<div style="font-size:13px;color:#374151;line-height:1.6;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'};overflow:hidden">${_sanitizeEmailBody(act.text)}</div>`
+                    : `<div style="font-size:13px;color:#374151;line-height:1.6;white-space:pre-wrap;background:#f9fafb;padding:10px 14px;border-radius:8px;border-left:3px solid ${ACOLBORDER[act.type] || '#e5e7eb'}">${act.text}</div>`)
+                ) : ''}
+              ${act.type === 'stage' ? `<div style="font-size:13px;color:#6b7280">${act.text}</div>` : ''}
+
+              <!-- Email tracking row (emails only) -->
+              ${act.type === 'email' ? ('<div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">'
+        + '<div class="etrack" style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;' + (act.opens > 0 ? 'background:#f0fdf4;color:#15803d;border:1px solid #86efac' : 'background:#f9fafb;color:#9ca3af;border:1px solid #e5e7eb') + '">'
+        + ' 👁 ' + (act.opens > 0 ? act.opens + '× opened' : 'Not yet opened')
+        + (act.opens > 0 && act.openedAt ? ' <span style="font-weight:400;opacity:.8">· ' + act.openedAt + '</span>' : '')
+        + '<div class="etrack-tip">' + emailTrackTip(act, getState().emailSent) + '</div>'
+        + '</div>'
+        + (act.clicked ? '<div style="display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd">🔗 Clicked</div>' : '')
+        + '<button onclick="emailReplyFromActivity(\'' + act.id + '\',\'' + entityId + '\',\'' + entityType + '\')" style="padding:3px 10px;border-radius:20px;border:1px solid #e5e7eb;background:#fff;font-size:11px;cursor:pointer;font-family:inherit;color:#6b7280">↩ Reply</button>'
+        + '</div>') : ''}
+
+              <!-- Task actions -->
+              ${act.type === 'task' || act.type === 'call' || act.type === 'meeting' ? `<div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
+                ${act.dueDate ? `<span style="font-size:11px;background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:20px;font-weight:500">📅 ${act.dueDate}${act.time ? ' ' + act.time : ''}</span>` : ''}
+                ${act.duration ? `<span style="font-size:11px;color:#6b7280;background:#f3f4f6;padding:2px 8px;border-radius:20px">⏱ ${act.duration < 60 ? act.duration + 'min' : act.duration / 60 + 'h'}</span>` : ''}
+                <button onclick="toggleActivityDone('${entityId}','${act.id}','${entityType}')" style="font-size:11px;padding:3px 12px;border-radius:20px;border:1px solid;cursor:pointer;font-family:inherit;font-weight:600;${act.done ? 'background:#dcfce7;border-color:#86efac;color:#15803d' : 'background:#f9fafb;border-color:#e5e7eb;color:#6b7280'}">${act.done ? '✓ Done' : 'Mark done'}</button>
+                ${act.calLink ? `<a href="${act.calLink}" target="_blank" style="font-size:11px;color:#0369a1;text-decoration:none;display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border:1px solid #bae6fd;border-radius:20px;background:#f0f9ff">📅 Calendar</a>` : ''}
+              </div>`: ''}
+            </div>
+          </div>`).join('')}
+      </div>`;
+
+  const scheduledActs = activities.filter(a => a.scheduled && !a.done);
+
+  return `
+  <div style="margin:-24px;background:#f8f9fa;min-height:calc(100vh - 56px)">
+
+    <!-- ── TOP BAR ── -->
+    <div style="background:#fff;border-bottom:1px solid #e5e7eb;padding:0 24px">
+      <div style="display:flex;align-items:center;gap:10px;padding:12px 0 8px;flex-wrap:wrap">
+        <button onclick="${backOnclick}" style="font-size:13px;color:#6b7280;background:none;border:none;cursor:pointer;font-family:inherit;font-weight:500;display:flex;align-items:center;gap:4px;flex-shrink:0" onmouseover="this.style.color='#c41230'" onmouseout="this.style.color='#6b7280'">
+          ← ${backLabel}
+        </button>
+        <span style="color:#e5e7eb">|</span>
+        <h1 style="font-size:17px;font-weight:800;margin:0;font-family:Syne,sans-serif;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${title}</h1>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+          <div style="display:flex;align-items:center;gap:6px;padding:4px 10px;background:${owner ? '#f3f4f6' : '#fef3c7'};border-radius:8px;border:${owner ? 'none' : '1px solid #fde68a'}">
+            <div style="width:22px;height:22px;background:${owner ? '#c41230' : '#f59e0b'};border-radius:50%;color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">${owner ? owner.split(' ').map(w => w[0]).join('').slice(0, 2) : '?'}</div>
+            <span style="font-size:12px;font-weight:${owner ? 500 : 700};color:${owner ? '#374151' : '#92400e'}">${owner || 'Unassigned'}</span>
+          </div>
+          ${wonLostHtml || ''}
+        </div>
+      </div>
+      <!-- Stage bar -->
+      ${stageBarHtml ? `<div style="display:flex;overflow-x:auto;border-top:1px solid #f0f0f0">${stageBarHtml}</div>` : ``}
+    </div>
+
+    <!-- ── BODY: Left sidebar + Right main ── -->
+    <div style="display:grid;grid-template-columns:300px 1fr;min-height:calc(100vh - 120px)">
+
+      <!-- ── LEFT SIDEBAR ── -->
+      <div style="background:#fff;border-right:1px solid #e5e7eb;overflow-y:auto;padding:0 0 40px">
+        ${leftSidebarHtml || ''}
+      </div>
+
+      <!-- ── RIGHT MAIN: Tabs + Feed ── -->
+      <div style="overflow-y:auto;padding:0 0 40px">
+
+        <!-- Focus section (scheduled upcoming) -->
+        ${scheduledActs.length > 0 ? `<div style="padding:14px 20px 0">
+          <div style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:#374151;margin-bottom:10px">
+            Focus <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          </div>
+          ${scheduledActs.slice(0, 3).map(act => `<div style="background:#fef9c3;border:1px solid #fde68a;border-radius:10px;padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:flex-start">
+            <div>
+              <div style="font-size:13px;font-weight:600;color:#92400e">${act.text.split('\n')[0]}</div>
+              <div style="font-size:12px;color:#b45309;margin-top:2px">📅 ${act.date} ${act.time || ''} · ${act.duration ? act.duration + 'min' : ''}</div>
+            </div>
+            <button onclick="toggleActivityDone('${entityId}','${act.id}','${entityType}')" style="font-size:11px;padding:3px 10px;border:1px solid #fcd34d;border-radius:20px;background:#fff;cursor:pointer;font-family:inherit;color:#92400e;font-weight:600;white-space:nowrap">Mark done</button>
+          </div>`).join('')}
+        </div>`: ''}
+
+        <!-- Tab bar -->
+        <div style="display:flex;border-bottom:1px solid #e5e7eb;background:#fff;position:sticky;top:0;z-index:10">
+          ${TABS.map(t => `<button onclick="detailTab='${t.id}';renderPage()" style="display:flex;align-items:center;gap:5px;padding:11px 16px;border:none;border-bottom:2px solid ${detailTab === t.id ? '#1a1a1a' : 'transparent'};background:none;font-size:13px;font-weight:${detailTab === t.id ? '600' : '400'};color:${detailTab === t.id ? '#1a1a1a' : '#6b7280'};cursor:pointer;font-family:inherit;white-space:nowrap">${t.icon} ${t.label}</button>`).join('')}
+          <div style="flex:1"></div>
+          <button onclick="openScheduleModal('${entityId}','${entityType}','call')" class="btn-r" style="font-size:12px;margin:8px 16px 8px auto;padding:5px 12px;align-self:center">+ Activity</button>
+        </div>
+
+        <!-- Inline form -->
+        <div style="background:#fff;border-bottom:1px solid ${detailTab === 'activity' ? 'transparent' : '#e5e7eb'}">
+          ${inlineForm}
+          ${detailTab === 'activity' ? renderInlineMapScheduler(entityId, entityType) : ''}
+        </div>
+
+        <!-- History header -->
+        <div style="padding:14px 20px 8px;display:flex;align-items:center;gap:8px">
+          <span style="font-size:13px;font-weight:700;color:#374151">History</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+          <span style="font-size:12px;color:#9ca3af">${activities.length} item${activities.length !== 1 ? 's' : ''}</span>
+        </div>
+
+        <!-- History feed -->
+        <div style="background:#fff;border-radius:0;margin:0 0 16px">
+          ${historyItems}
+        </div>
+
+        <!-- Gmail threads (if contact has email) -->
+        ${contact && contact.email ? renderGmailInbox(contact.email) : ''}
+
+        <!-- Calendar -->
+        ${renderCalendarWidget(entityId, entityType, contact ? contact.email : '')}
+
+      </div>
+    </div>
+  </div>
+  ${schedActivityModal ? renderScheduleModal() : ''}
+  ${gmailComposerOpen ? renderGmailComposer() : ''}
+  ${renderCalendarCreateModal()}`;
 }
 
 function getEntityFiles(entityType, entityId) {
