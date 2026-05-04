@@ -112,6 +112,22 @@ function advanceFactoryOrder(orderId) {
   if(!order)return; var idx=FACTORY_STATUS_ORDER.indexOf(order.status);
   if(idx<0||idx>=FACTORY_STATUS_ORDER.length-1)return;
   var nextStatus = FACTORY_STATUS_ORDER[idx+1];
+  // BOM AUTO-GENERATION: when advancing past 'Received' to 'BOM Generated',
+  // run the BOM engine on the linked job's CAD data and persist on order.bom.
+  // The engine returns null if no CAD data is reachable — in that case we
+  // still allow the advance but warn so the user knows to check the job.
+  if (nextStatus === 'bom_generated' && !order.bom && typeof generateBomForOrder === 'function') {
+    var bom = generateBomForOrder(orderId);
+    if (bom) {
+      setOrderBom(orderId, bom);
+      // Re-read the orders array since setOrderBom mutated localStorage.
+      orders = getFactoryOrders();
+      order = orders.find(function(o){return o.id === orderId;});
+      addToast('📋 BOM generated: ' + bom.totals.frameCount + ' frames · ' + bom.totals.profileLm + 'lm profile · ' + bom.totals.glassPanes + ' panes · ' + bom.totals.hardwareLines + ' hardware lines', 'success');
+    } else {
+      addToast('⚠️ BOM not generated — no CAD data found on this job. Advance still allowed.', 'warning');
+    }
+  }
   // GLASS GATE: Cannot advance past materials_ordered unless glass is ordered
   if (nextStatus === 'in_production' && (!order.glassStatus || order.glassStatus === 'not_ordered')) {
     addToast('\u26a0\ufe0f Glass must be ordered before starting production.', 'error');

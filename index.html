@@ -83,6 +83,11 @@
             // bridge file. Independent of the CAD bridge protocol — see
             // 04-cad-quote-helpers.js header.
             '04-cad-quote-helpers.js',
+            // BOM engine — computes profile/steel/glass/gasket/hardware
+            // from a job's CAD projectItems. Auto-runs when a factory order
+            // advances from 'received' to 'bom_generated'. See
+            // 04-cad-bom-extractor.js header for source-of-truth notes.
+            '04-cad-bom-extractor.js',
 
             // Layer 2: State & Auth
             '05-state-auth-rbac.js',

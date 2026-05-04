@@ -9,6 +9,29 @@
 
 // ── Event-delegation actions (07-shared-ui.js framework, 2026-05-03) ────────
 
+// Tracks which factory order's BOM detail row is expanded on the BOM page.
+// Module-level var so inline handlers can toggle via window scope.
+var bomExpandedOrderId = null;
+
+defineAction('factory-bom-toggle-expand', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  bomExpandedOrderId = (bomExpandedOrderId === orderId) ? null : orderId;
+  renderPage();
+});
+
+defineAction('factory-bom-regenerate', function(target, ev) {
+  var orderId = target.dataset.orderId;
+  if (typeof generateBomForOrder !== 'function') return;
+  var bom = generateBomForOrder(orderId);
+  if (!bom) {
+    addToast('Cannot regenerate — no CAD data on this order’s job.', 'error');
+    return;
+  }
+  setOrderBom(orderId, bom);
+  addToast('BOM regenerated.', 'success');
+  renderPage();
+});
+
 defineAction('factory-pages-show-glass-order', function(target, ev) {
   var orderId = target.dataset.orderId;
   showGlassOrderModal(orderId);
@@ -255,22 +278,44 @@ function renderFactoryBOM() {
   if (branch !== 'all') orders = orders.filter(function(o){return o.branch===branch;});
 
   var h = '<div style="margin-bottom:20px"><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:24px;margin:0">\ud83d\udccb BOM & Cut Sheets</h2>'
-    +'<p style="color:#6b7280;font-size:13px;margin:4px 0 0">Bill of Materials and cut sheet generation for factory orders</p></div>';
+    +'<p style="color:#6b7280;font-size:13px;margin:4px 0 0">Bill of Materials for factory orders \u2014 click a row to expand</p></div>';
 
   if (orders.length === 0) {
     h += '<div class="card" style="padding:40px;text-align:center;color:#9ca3af"><div style="font-size:36px;margin-bottom:8px">\ud83d\udccb</div>No factory orders yet. Send jobs from the Factory Dashboard after Final Sign Off.</div>';
   } else {
-    h += '<div class="card" style="padding:0;overflow:hidden"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th class="th">Job</th><th class="th">Client</th><th class="th">Frames</th><th class="th">Value</th><th class="th">Status</th><th class="th">BOM</th></tr></thead><tbody>';
+    h += '<div class="card" style="padding:0;overflow:hidden"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th class="th">Job</th><th class="th">Client</th><th class="th">Frames</th><th class="th">Value</th><th class="th">Status</th><th class="th">BOM Summary</th><th class="th"></th></tr></thead><tbody>';
     orders.forEach(function(o,i){
       var ps = getFactoryStatusObj(o.status);
-      var hasBOM = o.status !== 'received';
-      h += '<tr style="'+(i%2?'background:#fafafa':'')+'">'
+      var bom = o.bom || null;
+      var isExpanded = (bomExpandedOrderId === o.id);
+      var rowBg = i%2?'background:#fafafa':'';
+
+      var summaryCell;
+      if (bom && bom.totals) {
+        var t = bom.totals;
+        summaryCell = '<span style="font-size:11px;color:#374151">' + t.profileLm + 'lm profile \u00b7 '
+          + t.glassPanes + ' panes \u00b7 ' + t.hardwareLines + ' hw lines</span>';
+      } else if (o.status === 'received') {
+        summaryCell = '<span style="color:#9ca3af;font-size:11px">\u23f3 Generates on advance</span>';
+      } else {
+        summaryCell = '<span style="color:#f59e0b;font-size:11px">\u26a0 Not yet generated</span>';
+      }
+
+      h += '<tr style="'+rowBg+';cursor:pointer" data-action="factory-bom-toggle-expand" data-order-id="'+o.id+'">'
         +'<td class="td" style="font-weight:700;color:#c41230">'+o.jid+'</td>'
         +'<td class="td">'+o.customer+'</td>'
         +'<td class="td">'+o.frameCount+'</td>'
         +'<td class="td" style="font-weight:600">$'+Number(o.value||0).toLocaleString()+'</td>'
         +'<td class="td"><span class="bdg" style="background:'+ps.col+'20;color:'+ps.col+';border:1px solid '+ps.col+'40;font-size:10px">'+ps.label+'</span></td>'
-        +'<td class="td">'+(hasBOM?'<span style="color:#22c55e;font-weight:600">\u2705 Generated</span>':'<span style="color:#9ca3af">\u23f3 Pending</span>')+'</td></tr>';
+        +'<td class="td">'+summaryCell+'</td>'
+        +'<td class="td" style="color:#9ca3af;font-size:14px">'+(isExpanded?'\u25be':'\u25b8')+'</td>'
+        +'</tr>';
+
+      if (isExpanded) {
+        h += '<tr style="'+rowBg+'"><td colspan="7" class="td" style="padding:0">'
+          + _renderBomDetail(o, bom)
+          + '</td></tr>';
+      }
     });
     h += '</tbody></table></div>';
   }
@@ -280,6 +325,88 @@ function renderFactoryBOM() {
     +'<div style="font-size:12px;color:#6b7280">The full BOM engine with profile cut lengths, steel, glass, gasket, and hardware calculations is powered by Spartan CAD\'s pricing engine. BOMs are auto-generated when a factory order advances past "Received" status.</div></div>';
 
   return '<div>'+h+'</div>';
+}
+
+// Inline detail panel rendered beneath an expanded BOM row. Renders one
+// section per BOM category \u2014 profile / steel / glass / gasket / hardware \u2014
+// plus the regenerate button. Empty sections show a one-liner instead of an
+// empty table.
+function _renderBomDetail(order, bom) {
+  if (!bom) {
+    return '<div style="padding:16px;background:#fffbeb;border-top:1px solid #fde68a;font-size:12px;color:#92400e">'
+      + 'No BOM persisted for this order. '
+      + (order.status === 'received'
+          ? 'Advance to <strong>BOM Generated</strong> to auto-generate, or '
+          : '')
+      + '<button data-action="factory-bom-regenerate" data-order-id="'+order.id+'" class="btn-r" style="font-size:11px;padding:4px 10px;margin-left:6px">\ud83d\udd04 Generate now</button>'
+      + '</div>';
+  }
+
+  function _section(title, rows, emptyMsg) {
+    if (!rows || rows.length === 0) return '<div style="padding:8px 16px;color:#9ca3af;font-size:11px"><strong>'+title+':</strong> '+emptyMsg+'</div>';
+    return '<div style="padding:10px 16px"><div style="font-size:11px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">'+title+'</div>'
+      + '<table style="width:100%;border-collapse:collapse;font-size:11px;background:#fff;border:1px solid #f1f5f9;border-radius:6px;overflow:hidden">'
+      + rows
+      + '</table></div>';
+  }
+
+  var profileRows = (bom.profile || []).map(function(p){
+    return '<tr><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9">'+p.type.replace(/_/g,' ')
+      +'</td><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#6b7280">'+p.system
+      +'</td><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:600">'+(p.lengthMm/1000).toFixed(2)+' lm</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;text-align:right;color:#9ca3af">'+p.frames+' frames</td></tr>';
+  }).join('');
+
+  var steelRows = (bom.steel || []).map(function(s){
+    return '<tr><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9">'+s.name
+      +'</td><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#6b7280">'+s.code
+      +'</td><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:600">'+(s.lengthMm/1000).toFixed(2)+' lm</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#9ca3af">'+(s.notes||'')+'</td></tr>';
+  }).join('');
+
+  var glassRows = (bom.glass || []).map(function(g){
+    return '<tr><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9">'+g.spec
+      +'</td><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#6b7280">'+g.widthMm+' \u00d7 '+g.heightMm+' mm</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:600">'+g.qty+' panes</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f1f5f9"></td></tr>';
+  }).join('');
+
+  var gasketRows = (bom.gasket || []).map(function(g){
+    return '<tr><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9">'+g.name
+      +'</td><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#6b7280">'+g.code
+      +'</td><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:600">'+(g.lengthMm/1000).toFixed(2)+' lm</td>'
+      +'<td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#9ca3af">'+(g.role||'')+'</td></tr>';
+  }).join('');
+
+  var hardwareRows = (bom.hardware || []).map(function(h){
+    return '<tr><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9">'+h.name
+      +'</td><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#6b7280;font-family:monospace;font-size:10px">'+h.code
+      +'</td><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#6b7280">'+(h.supplier||'')
+      +'</td><td style="padding:6px 10px;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:600">'+h.qty+'</td></tr>';
+  }).join('');
+
+  var t = bom.totals || {};
+  var generated = bom.generatedAt ? new Date(bom.generatedAt).toLocaleString('en-AU') : '\u2014';
+
+  return '<div style="background:#fafafa;border-top:1px solid #e5e7eb;padding:0 0 12px">'
+    + '<div style="padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#fff;border-bottom:1px solid #f1f5f9">'
+      + '<div style="font-size:11px;color:#6b7280">Generated <strong style="color:#374151">'+generated+'</strong> \u00b7 source job <strong style="color:#374151">'+(bom.sourceJobId||'\u2014')+'</strong></div>'
+      + '<div style="display:flex;gap:14px;font-size:11px;color:#374151">'
+        + '<span><strong>'+(t.frameCount||0)+'</strong> frames</span>'
+        + '<span><strong>'+(t.profileLm||0)+'</strong> lm profile</span>'
+        + '<span><strong>'+(t.steelLm||0)+'</strong> lm steel</span>'
+        + '<span><strong>'+(t.glassPanes||0)+'</strong> panes</span>'
+        + '<span><strong>'+(t.gasketLm||0)+'</strong> lm gasket</span>'
+        + '<span><strong>'+(t.hardwareUnits||0)+'</strong> hw units</span>'
+      + '</div>'
+      + '<button data-action="factory-bom-regenerate" data-order-id="'+order.id+'" class="btn-w" style="font-size:11px;padding:4px 10px">\ud83d\udd04 Regenerate</button>'
+    + '</div>'
+    + _section('Profile cut lengths', profileRows, 'no profile data')
+    + _section('Steel reinforcement', steelRows, 'none required for these product types')
+    + _section('Glass', glassRows, 'no glass data')
+    + _section('Gasket', gasketRows, 'no gasket data')
+    + _section('Hardware', hardwareRows, 'no hardware kit found for these product types')
+  + '</div>';
 }
 
 function renderFactoryDispatch() {
