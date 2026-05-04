@@ -30,6 +30,57 @@ var _mobileEntityTab = 'activity';
 // sub-module reads it on first render. Reassigned without `var` in
 // 10-integrations.js and 08e on tab clicks / detail-id changes.
 var detailTab = 'activity';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Top-level state restored 2026-05-04 — these were declared in the pre-split
+// 08-sales-crm.js (let/const) and dropped during the 2026-05-02 monolith
+// split, but every one is still actively referenced across 08a-h. Using
+// `var` (not `let`/`const`) so inline event handlers in template strings —
+// e.g. `ondragstart="schDragEntryId='${en.id}'"`, `onclick="detailTab='..';
+// renderPage()"` — can resolve the names via the window scope chain.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Schedule-activity modal (08e renderEntityDetail + 08h scheduler)
+var schedActivityModal = false;
+var schedActivityData = { type: 'call', title: '', date: '', time: '09:00', duration: 30, entityId: '', entityType: '', notes: '' };
+
+// Mobile deal kanban filter (08a, 08d)
+var _mobileDealStageId = null;
+
+// Contacts page filters (08a, 08c)
+var cSearch = '', cBranch = 'all', cType = 'all';
+
+// Deals kanban + drag-drop (08a, 08d)
+var dPipeline = 'p1', dragDeal = null, dragOverStage = null;
+
+// Kanban filter chips (08a)
+var kFilterOwners = [], kFilterStages = [], kFilterSource = [], kFilterValMin = '', kFilterValMax = '', kFilterOpen = false;
+
+// Scheduler view + drag scheduling + modal (08h)
+var schView = 'week';
+var schOffset = 0;
+var schDayOffset = 0;
+var schInstFilter = 'all';
+var schDragEntryId = null;
+var schModalOpen = false;
+var schModalData = { jid: '', date: '', startTime: '08:00', durationH: 4, staffRequired: 2, assignedIds: [] };
+
+// Scheduler mock data (08h)
+var SCH_BASE_DATE = '2024-11-18';
+var INSTALLER_PROFILES = [];
+var SCHED_ENTRIES = [
+  { id: 'se1',  jid: 'j1', instId: 'i1', date: '2024-11-05', startTime: '07:00', durationH: 8 },
+  { id: 'se2',  jid: 'j1', instId: 'i2', date: '2024-11-05', startTime: '07:00', durationH: 8 },
+  { id: 'se3',  jid: 'j2', instId: 'i1', date: '2024-11-20', startTime: '07:30', durationH: 10 },
+  { id: 'se4',  jid: 'j2', instId: 'i3', date: '2024-11-20', startTime: '07:30', durationH: 10 },
+  { id: 'se5',  jid: 'j2', instId: 'i4', date: '2024-11-21', startTime: '07:30', durationH: 10 },
+  { id: 'se6',  jid: 'j4', instId: 'i1', date: '2024-11-25', startTime: '07:30', durationH: 12 },
+  { id: 'se7',  jid: 'j4', instId: 'i3', date: '2024-11-25', startTime: '07:30', durationH: 12 },
+  { id: 'se8',  jid: 'j4', instId: 'i4', date: '2024-11-26', startTime: '07:30', durationH: 12 },
+  { id: 'se9',  jid: 'j3', instId: 'i2', date: '2024-11-19', startTime: '08:00', durationH: 6 },
+  { id: 'se10', jid: 'j8', instId: 'i1', date: '2024-11-14', startTime: '07:00', durationH: 8 },
+  { id: 'se11', jid: 'j8', instId: 'i2', date: '2024-11-14', startTime: '07:00', durationH: 8 },
+];
 var _pendingMobileEmail = null;          // { entityId, entityType, to, subject, body, sending }
 var _pendingMobileNote = null;          // { entityId, entityType, text }
 var _pendingMobileSchedule = null;
