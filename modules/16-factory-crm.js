@@ -112,6 +112,36 @@ function _mirrorFactoryOrderToJob(order) {
   } catch(e) { console.warn('[Migration] Glazing migration skipped:', e); }
 })();
 
+// One-time migration: legacy short-name station ids → current FACTORY_STATIONS
+// ids. Frames pushed via the old cadFrameToFactoryItem initialised at
+// 'cutting' (legacy 6-stage); the kanban filters by 'frame_cutting'
+// (current 7-station). Same goes for the QC-pass that wrote 'dispatch' →
+// the current id is 'packing'. Both legacy ids would leave a frame in a
+// non-existent column. Translation here is the minimum to surface them on
+// the kanban; ambiguous legacy ids ('milling', 'reveals') are NOT touched
+// — they're not currently produced by any code path.
+(function migrateLegacyStationIds(){
+  try {
+    if (localStorage.getItem('spartan_station_ids_migration_v1') === 'done') return;
+    var items = JSON.parse(localStorage.getItem('spartan_factory_items')||'[]');
+    var legacyMap = { cutting: 'frame_cutting', dispatch: 'packing' };
+    var changed = 0;
+    items.forEach(function(it){
+      if (legacyMap[it.station]) { it.station = legacyMap[it.station]; changed++; }
+      if (Array.isArray(it.stationHistory)) {
+        it.stationHistory.forEach(function(h){
+          if (h && legacyMap[h.station]) h.station = legacyMap[h.station];
+        });
+      }
+    });
+    if (changed > 0) {
+      localStorage.setItem('spartan_factory_items', JSON.stringify(items));
+      console.log('[Migration] Renamed '+changed+' frame(s) from legacy station ids to current FACTORY_STATIONS ids');
+    }
+    localStorage.setItem('spartan_station_ids_migration_v1', 'done');
+  } catch(e) { console.warn('[Migration] Station-id migration skipped:', e); }
+})();
+
 function cadFrameToFactoryItem(frame, idx, orderJid, customer, suburb, due) {
   return {id:'fi_'+Date.now()+'_'+idx, orderId:orderJid,
     name:frame.name||((frame.productType||'').indexOf('door')>=0?'D':'W')+String(idx+1).padStart(2,'0'),
@@ -122,7 +152,7 @@ function cadFrameToFactoryItem(frame, idx, orderJid, customer, suburb, due) {
     installationType:frame.installationType||'retrofit',
     stationTimes:frame.stationTimes||null,
     installMinutes:frame.installMinutes||0, productionMinutes:frame.productionMinutes||0,
-    station:'cutting', rework:false, stationHistory:[{station:'cutting',at:new Date().toISOString()}]};
+    station:'frame_cutting', rework:false, stationHistory:[{station:'frame_cutting',at:new Date().toISOString()}]};
 }
 
 function pushJobToFactory(jobId) {

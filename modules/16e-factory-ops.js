@@ -72,8 +72,13 @@ function renderQCPage() {
 
   if (_qcActiveFrameId) return '<div>' + _renderQCChecklist(_qcActiveFrameId, items, qcStore) + '</div>';
 
-  // Frames eligible for QC: at reveals or dispatch station, not yet QC passed
-  var eligible = items.filter(function(i) { return (i.station === 'reveals' || i.station === 'dispatch') && !i.qcPassedAt; });
+  // Frames eligible for QC: parked at the QC station (moved up from Hardware)
+  // and not yet checklist-passed. Pre-2026-05-04 the filter used legacy ids
+  // ('reveals' / 'dispatch') that the current FACTORY_STATIONS list doesn't
+  // contain — the QC tab silently showed zero rows for any data created with
+  // the 7-station naming. The legacy ids were renamed by the station-id
+  // migration in 16-factory-crm.js so this filter now matches reality.
+  var eligible = items.filter(function(i) { return i.station === 'qc' && !i.qcPassedAt; });
   var passed   = items.filter(function(i) { return !!i.qcPassedAt; });
   var failed   = eligible.filter(function(i) { return qcStore[i.id] && (qcStore[i.id].failures || []).length > 0; });
 
@@ -88,7 +93,7 @@ function renderQCPage() {
   h += '</div>';
 
   if (!eligible.length) {
-    h += '<div class="card" style="padding:40px;text-align:center;color:#9ca3af"><div style="font-size:36px;margin-bottom:8px">✅</div><div style="font-size:14px;font-weight:600;color:#374151;margin-bottom:4px">No frames awaiting QC</div><div style="font-size:12px">Frames appear here when they reach the Reveals or Dispatch station.</div></div>';
+    h += '<div class="card" style="padding:40px;text-align:center;color:#9ca3af"><div style="font-size:36px;margin-bottom:8px">✅</div><div style="font-size:14px;font-weight:600;color:#374151;margin-bottom:4px">No frames awaiting QC</div><div style="font-size:12px">Frames appear here when they reach the QC station on the production board.</div></div>';
   } else {
     h += '<div class="card" style="padding:0;overflow:hidden;margin-bottom:12px">'
       + '<div style="padding:14px 20px;border-bottom:1px solid #f0f0f0"><h4 style="font-size:14px;font-weight:700;margin:0">Frames Awaiting QC (' + eligible.length + ')</h4></div>'
@@ -195,7 +200,7 @@ function qcFail(frameId, idx) {
 function qcPass(frameId) {
   var items = getFactoryItems();
   var updated = items.map(function(i) {
-    return i.id === frameId ? Object.assign({}, i, { qcPassedAt: new Date().toISOString(), station: 'dispatch' }) : i;
+    return i.id === frameId ? Object.assign({}, i, { qcPassedAt: new Date().toISOString(), station: 'packing' }) : i;
   });
   saveFactoryItems(updated);
   _qcActiveFrameId = null;
