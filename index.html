@@ -73,9 +73,11 @@
             '02a-mock-factory-data.js',
             '02b-mock-stock-data.js',
             '02c-mock-operator-data.js',
-            // 04-cad-integration.js removed 2026-05-02 — CRM-side CAD bridge
-            // is being rebuilt by the CAD dev; cad_modules/ is the canonical
-            // CAD layer going forward.
+            // CAD <-> CRM iframe bridge (2026-05-04, recovered from 5d6a960's
+            // post-rewrite implementation). Implements the M1 postMessage
+            // protocol from cad_modules/12-crm-postmessage-bridge.js. Defines
+            // window.openCadDesigner; payload defaults are M2-M5-tolerant.
+            '04-cad-bridge.js',
             // Quote management helpers (renderLeadQuoteList, newLeadQuote,
             // editLeadQuote, etc.) recovered 2026-05-04 from the pre-rewrite
             // bridge file. Independent of the CAD bridge protocol — see
