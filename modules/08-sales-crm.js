@@ -24,6 +24,12 @@
 //
 // Six tabs: activity / notes / email / sms / files / person.
 var _mobileEntityTab = 'activity';
+// Desktop detail-view tab (activity / notes / call / sms / email / files).
+// Shared between renderEntityDetail (08e) and the inline onclick handlers it
+// emits; declared here in the orchestrator so it's defined before any 08x
+// sub-module reads it on first render. Reassigned without `var` in
+// 10-integrations.js and 08e on tab clicks / detail-id changes.
+var detailTab = 'activity';
 var _pendingMobileEmail = null;          // { entityId, entityType, to, subject, body, sending }
 var _pendingMobileNote = null;          // { entityId, entityType, text }
 var _pendingMobileSchedule = null;
