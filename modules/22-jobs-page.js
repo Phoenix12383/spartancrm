@@ -8,6 +8,21 @@
 // JOBS PAGE — List + Detail
 // ══════════════════════════════════════════════════════════════════════════════
 
+// openCadDesigner stub — the implementation lived in modules/04-cad-integration.js
+// (deleted in 5081f3c; CAD bridge is being rewritten). The 8 inline onclicks
+// in this file reference it via window, so without a stub every CAD button on
+// a job throws ReferenceError. Toast a friendly heads-up until the rewrite
+// restores the real bridge. Only define if not already present, so the future
+// bridge module wins.
+if (typeof window.openCadDesigner !== 'function') {
+  window.openCadDesigner = function(entityType, entityId, mode) {
+    if (typeof addToast === 'function') {
+      addToast('CAD bridge is being rebuilt — check back soon.', 'warning');
+    }
+    return false;
+  };
+}
+
 function renderJobsPage() {
   var jid = getState().jobDetailId;
   if (jid) return renderJobDetail();
