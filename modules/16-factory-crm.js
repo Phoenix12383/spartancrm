@@ -11,14 +11,19 @@
 // FACTORY CRM — Native production management linked to Job CRM
 // ══════════════════════════════════════════════════════════════════════════════
 
+// 5-station kanban: frame, sash, and steel cutting were consolidated into
+// a single 'cutting' column on 2026-05-04 \u2014 for floor visibility, having
+// one station with all the saws sitting next to each other was clearer
+// than three near-identical columns. The new 'cutting' id is intentionally
+// distinct from the legacy 6-stage 'cutting' (which was renamed to
+// 'frame_cutting' by the v1 migration in this file); the v2 migration
+// further consolidates frame/sash/steel under the new id.
 var FACTORY_STATIONS = [
-  {id:'frame_cutting', name:'Frame Cutting', cap:20, icon:'\u2702\ufe0f'},
-  {id:'sash_cutting', name:'Sash Cutting', cap:20, icon:'\ud83e\ude9a'},
-  {id:'steel_cutting', name:'Steel Cutting', cap:15, icon:'\u2699\ufe0f'},
-  {id:'welding', name:'Welding', cap:12, icon:'\ud83d\udd25'},
-  {id:'hardware', name:'Hardware Assembly', cap:18, icon:'\ud83d\udd27'},
-  {id:'qc', name:'QC Inspection', cap:20, icon:'\u2705'},
-  {id:'packing', name:'Packing & Dispatch', cap:25, icon:'\ud83d\udce6'},
+  {id:'cutting',  name:'Cutting',            cap:50, icon:'\u2702\ufe0f'},
+  {id:'welding',  name:'Welding',            cap:12, icon:'\ud83d\udd25'},
+  {id:'hardware', name:'Hardware Assembly',  cap:18, icon:'\ud83d\udd27'},
+  {id:'qc',       name:'QC Inspection',      cap:20, icon:'\u2705'},
+  {id:'packing',  name:'Packing & Dispatch', cap:25, icon:'\ud83d\udce6'},
 ];
 var FACTORY_ORDER_STATUSES = [
   {key:'received', label:'Received', col:'#6b7280'},
@@ -120,6 +125,11 @@ function _mirrorFactoryOrderToJob(order) {
 // non-existent column. Translation here is the minimum to surface them on
 // the kanban; ambiguous legacy ids ('milling', 'reveals') are NOT touched
 // — they're not currently produced by any code path.
+//
+// NOTE: this migration's 'cutting' → 'frame_cutting' mapping is now a
+// stepping stone — the v2 migration below further consolidates
+// frame_cutting + sash_cutting + steel_cutting back into a single
+// 'cutting' id. Net effect for legacy data: cutting → frame_cutting → cutting.
 (function migrateLegacyStationIds(){
   try {
     if (localStorage.getItem('spartan_station_ids_migration_v1') === 'done') return;
@@ -142,6 +152,32 @@ function _mirrorFactoryOrderToJob(order) {
   } catch(e) { console.warn('[Migration] Station-id migration skipped:', e); }
 })();
 
+// One-time migration v2 (2026-05-04): consolidate frame_cutting +
+// sash_cutting + steel_cutting into a single 'cutting' column. Floor
+// manager call: three near-identical columns cluttered the kanban; one
+// "Cutting" column with all the saws is clearer for the floor.
+(function migrateConsolidateCutting(){
+  try {
+    if (localStorage.getItem('spartan_station_consolidate_cutting_v2') === 'done') return;
+    var items = JSON.parse(localStorage.getItem('spartan_factory_items')||'[]');
+    var consolidate = { frame_cutting: 'cutting', sash_cutting: 'cutting', steel_cutting: 'cutting' };
+    var changed = 0;
+    items.forEach(function(it){
+      if (consolidate[it.station]) { it.station = consolidate[it.station]; changed++; }
+      if (Array.isArray(it.stationHistory)) {
+        it.stationHistory.forEach(function(h){
+          if (h && consolidate[h.station]) h.station = consolidate[h.station];
+        });
+      }
+    });
+    if (changed > 0) {
+      localStorage.setItem('spartan_factory_items', JSON.stringify(items));
+      console.log('[Migration] Consolidated '+changed+' frame(s) from frame_cutting/sash_cutting/steel_cutting into Cutting column');
+    }
+    localStorage.setItem('spartan_station_consolidate_cutting_v2', 'done');
+  } catch(e) { console.warn('[Migration] Cutting-consolidation migration skipped:', e); }
+})();
+
 function cadFrameToFactoryItem(frame, idx, orderJid, customer, suburb, due) {
   return {id:'fi_'+Date.now()+'_'+idx, orderId:orderJid,
     name:frame.name||((frame.productType||'').indexOf('door')>=0?'D':'W')+String(idx+1).padStart(2,'0'),
@@ -152,7 +188,7 @@ function cadFrameToFactoryItem(frame, idx, orderJid, customer, suburb, due) {
     installationType:frame.installationType||'retrofit',
     stationTimes:frame.stationTimes||null,
     installMinutes:frame.installMinutes||0, productionMinutes:frame.productionMinutes||0,
-    station:'frame_cutting', rework:false, stationHistory:[{station:'frame_cutting',at:new Date().toISOString()}]};
+    station:'cutting', rework:false, stationHistory:[{station:'cutting',at:new Date().toISOString()}]};
 }
 
 function pushJobToFactory(jobId) {
