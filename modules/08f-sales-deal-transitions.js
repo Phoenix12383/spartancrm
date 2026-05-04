@@ -998,7 +998,162 @@ function markDealLost(dealId) {
   _requestLostTransition(dealId, null, { source: 'mark-button' });
 }
 
+// ── Create Job from Won Deal ────────────────────────────────────────────────
+// History: this function lived in the original 6,000-line 08-sales-crm.js
+// monolith. When that file was split into 08a–08h, createJobFromWonDeal
+// was lost in transit — every Won deal since the split has called it from
+// confirmDealToJob / convertDealToJob, hit a ReferenceError, and silently
+// failed (the catch block in the original swallowed it as a toast). The
+// downstream effect: the deal was correctly marked won, but no job ever
+// appeared in Jobs CRM, leaving deals stuck in won-but-no-jobRef limbo.
+// Restored 2026-05-04 from .claude/worktrees/.../08-sales-crm.js:5925.
+//
+// Source-of-design priority: the won quote (deal.wonQuoteId →
+// deal.quotes[]) takes precedence; falls back to deal.cadData mirror only
+// for legacy pre-Step-4 deals that were won before the multi-quote model.
+async function createJobFromWonDeal(deal, paymentMethod) {
+  if (!deal || deal.jobRef) return;
+  var branch = (deal.branch || 'VIC').toUpperCase();
+  var cu = (typeof getCurrentUser === 'function' ? getCurrentUser() : null) || { id: 'system', name: 'System' };
+  var pm = paymentMethod || deal.paymentMethod || 'cod';
+
+  try {
+    var jobNumber = await rpcNextJobNumber(branch);
+    var contact = (getState().contacts || []).find(function (c) { return c.id === deal.cid; });
+
+    var sourceQuote = null;
+    if (deal.wonQuoteId && Array.isArray(deal.quotes)) {
+      sourceQuote = deal.quotes.find(function (q) { return q.id === deal.wonQuoteId; }) || null;
+    }
+    var jobCadData, jobVal, sourceQuoteId;
+    if (sourceQuote) {
+      jobCadData = {
+        projectItems: sourceQuote.projectItems || [],
+        totalPrice: sourceQuote.totalPrice || 0,
+        savedAt: sourceQuote.savedAt || null,
+        quoteNumber: sourceQuote.quoteNumber || '',
+        projectName: (deal.cadData && deal.cadData.projectName) || deal.title || '',
+        totals: sourceQuote.totals || null,
+        // trimCutList from the won quote — carries through so factory's
+        // BOM-and-cutlist views see what the customer actually agreed to.
+        trimCutList: sourceQuote.trimCutList || null
+      };
+      jobVal = sourceQuote.totalPrice || deal.val || 0;
+      sourceQuoteId = sourceQuote.id;
+    } else {
+      jobCadData = deal.cadData || null;
+      jobVal = (deal.cadData && deal.cadData.totalPrice > 0) ? deal.cadData.totalPrice : (deal.val || 0);
+      sourceQuoteId = null;
+    }
+
+    // Time-totals seed for the new job. Capacity Planner reads these.
+    var seedTotals = (sourceQuote && sourceQuote.totals)
+      || (deal.cadData && deal.cadData.totals)
+      || null;
+    var seedInstallMin    = (seedTotals && typeof seedTotals.installMinutes === 'number') ? seedTotals.installMinutes : null;
+    var seedProductionMin = (seedTotals && typeof seedTotals.productionMinutes === 'number') ? seedTotals.productionMinutes : null;
+    var seedStationTimes  = (seedTotals && seedTotals.stationTimes && typeof seedTotals.stationTimes === 'object') ? seedTotals.stationTimes : null;
+
+    var nowIso  = new Date().toISOString();
+    var todayDt = nowIso.slice(0, 10);
+
+    var job = {
+      id: 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+      jobNumber: jobNumber,
+      dealId: deal.id,
+      contactId: deal.cid || null,
+      branch: branch,
+      legalEntity: (typeof JOB_LEGAL_ENTITIES !== 'undefined' && JOB_LEGAL_ENTITIES[branch]) || '',
+      title: deal.title || '',
+      val: jobVal,
+      cadData: jobCadData,
+      sourceQuoteId: sourceQuoteId,
+      cadSurveyData: null,
+      cadFinalData: null,
+      street: deal.street || '',
+      suburb: deal.suburb || '',
+      postcode: deal.postcode || '',
+      state: ({ VIC: 'VIC', ACT: 'ACT', SA: 'SA', TAS: 'TAS' })[branch] || 'VIC',
+      status: 'a_check_measure',
+      held: false,
+      holdReason: '',
+      cmBookedDate: null,
+      cmBookedTime: null,
+      cmAssignedTo: null,
+      cmCompletedAt: null,
+      cmDocUrl: null,
+      finalSignedAt: null,
+      finalSignedPdfUrl: null,
+      finalRenderedPdfUrl: null,
+      estimatedInstallMinutes: seedInstallMin,
+      estimatedProductionMinutes: seedProductionMin,
+      stationTimes: seedStationTimes,
+      installDate: null,
+      installTime: null,
+      installCrew: [],
+      installDurationHours: null,
+      installCompletedAt: null,
+      paymentMethod: pm,
+      orderSuffix: 'O',
+      tags: [],
+      notes: '',
+      activities: [],
+      created: nowIso,
+      updated: nowIso,
+    };
+
+    setState({ jobs: (getState().jobs || []).concat([job]) });
+    if (typeof dbInsert === 'function') dbInsert('jobs', jobToDb(job));
+
+    setState({ deals: getState().deals.map(function (d) {
+      return d.id === deal.id ? Object.assign({}, d, { jobRef: jobNumber }) : d;
+    })});
+    if (typeof dbUpdate === 'function') dbUpdate('deals', deal.id, { job_ref: jobNumber });
+
+    // Audit on both sides — deal gets "job created" note, job gets origin.
+    var dealAct = {
+      id: 'a' + Date.now() + '_dj', type: 'note',
+      text: '🏗️ Job ' + jobNumber + ' created from this deal',
+      date: todayDt, by: cu.name, done: false, dueDate: '',
+    };
+    if (typeof dbInsert === 'function' && typeof actToDb === 'function') {
+      dbInsert('activities', actToDb(dealAct, 'deal', deal.id));
+    }
+    var jobAct = {
+      id: 'a' + Date.now() + '_jc', type: 'note',
+      text: 'Job created from Won deal: ' + (deal.title || '') + (contact ? ' — ' + contact.fn + ' ' + contact.ln : ''),
+      date: todayDt, by: cu.name, done: false, dueDate: '',
+    };
+    if (typeof dbInsert === 'function' && typeof actToDb === 'function') {
+      dbInsert('activities', actToDb(jobAct, 'job', job.id));
+    }
+
+    // Progress-claim init + deposit invoice. COD = 5%, ZIP = 20%.
+    if (typeof initJobClaims === 'function') initJobClaims(job.id, job.val, pm);
+    var dueDate = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    if (typeof generateJobInvoice === 'function') {
+      if (pm === 'zip') {
+        generateJobInvoice(job.id, 'cl_dep', 20, '20% Deposit (Zip Finance) — ' + jobNumber + ' — ' + (deal.title || ''), dueDate);
+        if (typeof logJobAudit === 'function') logJobAudit(job.id, 'Job Created', 'Created from Won deal (ZIP MONEY). 20% deposit invoice auto-generated.');
+      } else {
+        generateJobInvoice(job.id, 'cl_dep', 5, '5% Deposit — ' + jobNumber + ' — ' + (deal.title || ''), dueDate);
+        if (typeof logJobAudit === 'function') logJobAudit(job.id, 'Job Created', 'Created from Won deal (COD). 5% deposit invoice auto-generated.');
+      }
+    }
+
+    addToast('Job ' + jobNumber + ' created — ready for check measure', 'success');
+    renderPage();
+    return job;
+  } catch (e) {
+    console.error('[jobs] createJobFromWonDeal failed:', e);
+    addToast('Failed to create job — ' + (e && e.message ? e.message : e), 'error');
+    return null;
+  }
+}
+window.createJobFromWonDeal = createJobFromWonDeal;
+
 function convertDealToJob(dealId) {
   var deal = getState().deals.find(function (d) { return d.id === dealId; });
   if (deal) createJobFromWonDeal(deal);
 }
+window.convertDealToJob = convertDealToJob;
