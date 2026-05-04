@@ -909,12 +909,15 @@ function renderJobDetail() {
       }
     }
     var vStatus_v = job.variationStatus || (hasMajorVar_v ? 'awaiting_quote' : 'none');
-    var variationResolved_v = (vStatus_v === 'signed' || vStatus_v === 'not_material' || vStatus_v === 'none');
+    // Option B: variation acceptance is folded into the Final Design DocuSign
+    // (the variation_acceptance clause auto-includes when hasVariation=true).
+    // So 'awaiting_signature' (variation recorded but no separate envelope
+    // sent) no longer blocks the Final send. Only 'awaiting_quote' (Sales
+    // Manager hasn't recorded an amount yet) is still a hard block.
+    var variationResolved_v = (vStatus_v !== 'awaiting_quote');
     var variationGateOpen = variationResolved_v;
     var variationGateReason = !variationResolved_v
-      ? (vStatus_v === 'awaiting_quote'
-        ? 'Major variances detected \u2014 generate a Variation Quote (or mark non-material) before sending the Final Design DocuSign.'
-        : 'Variation Quote sent \u2014 waiting for the customer to sign before the Final Design DocuSign can go out.')
+      ? 'Major variances detected \u2014 record a Variation amount (or mark non-material) before sending the Final Design DocuSign.'
       : '';
 
     tabContent = '<div class="card" style="padding:20px;margin-bottom:14px">'
@@ -1088,12 +1091,12 @@ function renderJobDetail() {
           var _devMode = (typeof isDevMode === 'function') && isDevMode();
 
           // Red 'Action required' banner only while the variation is unresolved.
-          // Once signed/non-material, drop it entirely — the green header up
-          // top already says everything that needs saying.
-          if (!_resolved) {
+          // Once recorded / signed / non-material, drop it entirely — the
+          // green header up top already says everything that needs saying.
+          if (_vStat === 'awaiting_quote') {
             tabContent += '<div style="margin-top:10px;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:12px;color:#7f1d1d">'
-              +'<strong>⚠ Action required (Manual §6.3):</strong> '+nMajor+' frame'+(nMajor!==1?'s':'')+' exceed both 20mm <em>and</em> 5% tolerance. '
-              +'The customer must sign a separate Variation DocuSign accepting the price change before the Final Design DocuSign can be sent.'
+              +'<strong>⚠ Action required:</strong> '+nMajor+' frame'+(nMajor!==1?'s':'')+' exceed both 20mm <em>and</em> 5% tolerance. '
+              +'Record the variation amount (or mark non-material). The customer accepts it as part of the Final Design DocuSign — no separate envelope.'
               +'</div>';
           }
 
@@ -1106,14 +1109,26 @@ function renderJobDetail() {
               +'⚖️ <strong>Variances marked non-material</strong> by Sales Manager — no Variation DocuSign required. Final Design DocuSign is unlocked.'
               +'</div>';
           } else if (_vStat === 'awaiting_signature') {
-            tabContent += '<div style="margin-top:10px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">'
-              +'<div style="flex:1;min-width:200px;font-size:12px;color:#1d4ed8">📨 <strong>Variation DocuSign sent</strong> · $'+(_vAmt||0).toLocaleString()+(_vSentAt?' · '+new Date(_vSentAt).toLocaleString('en-AU'):'')+(_vEnv?' · envelope '+_vEnv.slice(0,8)+'…':'')+'<div style="font-size:11px;color:#3b82f6;margin-top:2px">Waiting for customer to sign. Final Design DocuSign is locked until then.</div></div>'
-              +(isManager && _vEnv ? '<button onclick="sendVariationDocuSign(\''+job.id+'\')" class="btn-w" style="font-size:11px;padding:5px 10px">🔄 Resend</button>' : '')
-              +'</div>';
-          } else { // awaiting_quote (default — unresolved + not yet sent)
+            // Two sub-cases:
+            //   Legacy (variationEnvelopeId set) — separate Variation DocuSign
+            //   was sent before Option B; show the original "awaiting sig" UI.
+            //   Option B (no envelope) — variation is recorded only; customer
+            //   accepts it via the Final Design DocuSign.
+            if (_vEnv) {
+              tabContent += '<div style="margin-top:10px;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">'
+                +'<div style="flex:1;min-width:200px;font-size:12px;color:#1d4ed8">📨 <strong>Variation DocuSign sent (legacy)</strong> · $'+(_vAmt||0).toLocaleString()+(_vSentAt?' · '+new Date(_vSentAt).toLocaleString('en-AU'):'')+' · envelope '+_vEnv.slice(0,8)+'…<div style="font-size:11px;color:#3b82f6;margin-top:2px">Waiting for customer to sign the standalone Variation envelope.</div></div>'
+                +(isManager ? '<button onclick="sendVariationDocuSign(\''+job.id+'\')" class="btn-w" style="font-size:11px;padding:5px 10px">🔄 Resend</button>' : '')
+                +'</div>';
+            } else {
+              tabContent += '<div style="margin-top:10px;padding:12px 14px;background:#f0fdf4;border:1px solid #86efac;border-radius:6px;font-size:12px;color:#15803d">'
+                +'📐 <strong>Variation recorded</strong> · $'+(_vAmt||0).toLocaleString()+(job.variationNotes?' · '+job.variationNotes:'')
+                +'<div style="font-size:11px;color:#16a34a;margin-top:2px">The customer will accept this variation when they sign the Final Design DocuSign — send it when ready. The variation invoice will be raised automatically once they sign.</div>'
+                +'</div>';
+            }
+          } else { // awaiting_quote (default — unresolved + not yet recorded)
             tabContent += '<div style="margin-top:10px;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">'
               +'<div style="flex:1;min-width:200px;font-size:12px;color:#92400e">Sales Manager: choose how to resolve.</div>'
-              +(isManager ? '<button onclick="openVariationModal(\''+job.id+'\')" class="btn-r" style="font-size:12px;padding:6px 12px">📨 Generate &amp; Send Variation DocuSign</button>'
+              +(isManager ? '<button onclick="openVariationModal(\''+job.id+'\')" class="btn-r" style="font-size:12px;padding:6px 12px">📐 Record Variation</button>'
                           + '<button onclick="if(confirm(\'Mark variances as non-material? This means the price is not affected and no Variation DocuSign is needed.\')){var now=new Date().toISOString();setState({jobs:(getState().jobs||[]).map(function(j){return j.id===\''+job.id+'\'?Object.assign({},j,{variationStatus:\'not_material\',variationResolvedAt:now}):j;})});if(typeof dbUpdate===\'function\'){try{dbUpdate(\'jobs\',\''+job.id+'\',{variation_status:\'not_material\',variation_resolved_at:now});}catch(e){}}if(typeof logJobAudit===\'function\')logJobAudit(\''+job.id+'\',\'Variances Marked Non-Material\',\'Sales Manager judged no price impact\');addToast(\'⚖️ Variances marked non-material\',\'success\');renderPage();}" class="btn-w" style="font-size:12px;padding:6px 12px">⚖️ Mark Non-Material</button>'
                           : '<span style="font-size:11px;color:#92400e;font-style:italic">Only Sales Manager / admin can act on variances.</span>')
               +'</div>';
@@ -2109,19 +2124,36 @@ function saveVariationModalAndSend() {
   }
   var notes = (notesEl && notesEl.value) ? notesEl.value.trim() : '';
   var jobId = _variationModalForJobId;
-  // Stamp the amount + notes on the job, then trigger the real DocuSign send.
+  var nowIso = new Date().toISOString();
+  // Option B: record the variation only — no separate DocuSign envelope. The
+  // customer accepts it when they sign the Final Design DocuSign (the
+  // variation_acceptance clause auto-includes when hasVariation=true).
   setState({jobs: (getState().jobs||[]).map(function(j){
-    return j.id === jobId ? Object.assign({}, j, {variationAmount: amount, variationNotes: notes, hasVariation: true}) : j;
+    return j.id === jobId ? Object.assign({}, j, {
+      variationAmount: amount,
+      variationNotes: notes,
+      hasVariation: true,
+      variationStatus: 'awaiting_signature',
+      variationGeneratedAt: nowIso
+    }) : j;
   })});
   if (typeof dbUpdate === 'function') {
-    try { dbUpdate('jobs', jobId, {variation_amount: amount, variation_notes: notes, has_variation: true}); } catch(e){}
+    try {
+      dbUpdate('jobs', jobId, {
+        variation_amount: amount,
+        variation_notes: notes,
+        has_variation: true,
+        variation_status: 'awaiting_signature',
+        variation_generated_at: nowIso
+      });
+    } catch(e){}
+  }
+  if (typeof logJobAudit === 'function') {
+    logJobAudit(jobId, 'Variation Recorded', '$' + amount + (notes ? ' — ' + notes : '') + ' · will be accepted via Final Design DocuSign');
   }
   _variationModalForJobId = null;
-  if (typeof sendVariationDocuSign === 'function') {
-    sendVariationDocuSign(jobId);
-  } else {
-    renderPage();
-  }
+  addToast('Variation recorded — send Final Design DocuSign when ready', 'success');
+  renderPage();
 }
 window.openVariationModal = openVariationModal;
 window.closeVariationModal = closeVariationModal;
@@ -2138,7 +2170,7 @@ function renderVariationModal() {
   return '<div class="modal-bg" onclick="if(event.target===this)closeVariationModal()">'
     +'<div class="modal" style="max-width:480px">'
     +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
-    +'<div><h3 style="margin:0;font-size:15px;font-weight:700">📐 Generate Variation Quote</h3>'
+    +'<div><h3 style="margin:0;font-size:15px;font-weight:700">📐 Record Variation</h3>'
     +'<div style="font-size:11px;color:#6b7280;margin-top:2px">'+jobNum+' · '+customerName+'</div></div>'
     +'<button onclick="closeVariationModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:18px;line-height:1">×</button>'
     +'</div>'
@@ -2155,11 +2187,11 @@ function renderVariationModal() {
       +'<label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Reason / Notes <span style="color:#9ca3af;font-weight:400">(optional)</span></label>'
       +'<textarea class="inp" id="vmod_notes" rows="3" placeholder="e.g. Larger glass IGU on W01-W03 due to revised dimensions" style="font-size:13px;padding:9px 10px;width:100%;resize:vertical"></textarea>'
     +'</div>'
-    +'<div style="font-size:11px;color:#1d4ed8;background:#eff6ff;padding:8px 10px;border-radius:6px">ℹ️ A single-page Variation DocuSign will be emailed to the customer. The Final Design DocuSign stays locked until they sign this.</div>'
+    +'<div style="font-size:11px;color:#15803d;background:#f0fdf4;padding:8px 10px;border-radius:6px">ℹ️ The customer accepts this variation as part of the Final Design DocuSign — no separate email is sent. The variation invoice is raised automatically once they sign.</div>'
     +'</div>'
     +'<div style="padding:14px 22px;border-top:1px solid #f0f0f0;display:flex;justify-content:flex-end;gap:8px">'
     +'<button onclick="closeVariationModal()" class="btn-w" style="font-size:13px">Cancel</button>'
-    +'<button onclick="saveVariationModalAndSend()" class="btn-r" style="font-size:13px">📨 Send Variation DocuSign</button>'
+    +'<button onclick="saveVariationModalAndSend()" class="btn-r" style="font-size:13px">📐 Record Variation</button>'
     +'</div></div></div>';
 }
 window.renderVariationModal = renderVariationModal;

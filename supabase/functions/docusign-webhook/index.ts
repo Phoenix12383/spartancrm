@@ -129,7 +129,7 @@ Deno.serve(async (req) => {
   // (so a single job can have one of each in flight). Match either column.
   const { data: jobs, error: lookupErr } = await sb
     .from('jobs')
-    .select('id, docusign_envelope_id, variation_envelope_id, status')
+    .select('id, docusign_envelope_id, variation_envelope_id, status, has_variation')
     .or(`docusign_envelope_id.eq.${envelopeId},variation_envelope_id.eq.${envelopeId}`)
     .limit(1);
 
@@ -168,28 +168,37 @@ Deno.serve(async (req) => {
   }
   console.log('[docusign-webhook] dispatching event', event, 'as kind=', kind, 'for envelopeId=', envelopeId);
 
-  const updates: Record<string, unknown> = {
-    docusign_status: event,
-  };
+  // The shared docusign_status / docusign_completed_at columns track ONLY the
+  // Final Design envelope. Variation events used to write into them too,
+  // which polluted the Final Design badge — fixed here by scoping below.
+  const updates: Record<string, unknown> = {};
 
   // On completed → stamp signature time, transition status, attach signed PDF.
   if (event === 'envelope-completed') {
     const signedAt = payload.data?.envelopeSummary?.completedDateTime || new Date().toISOString();
-    updates.docusign_completed_at = signedAt;
 
     if (kind === 'variation') {
-      // Manual §6.3 — customer accepted the price variation. Unlocks the
-      // Final Design DocuSign send. No status transition (the job stays at
-      // c1 until the Final Design envelope is signed).
+      // Legacy path: customer signed a standalone Variation envelope. Only
+      // touch the variation_* columns — the shared docusign_* ones belong to
+      // the Final Design envelope.
       updates.variation_status = 'signed';
       updates.variation_signed_at = signedAt;
     } else {
-      // Final Design — Manual §6.6 — customer signed the binding contract.
-      // Stamp finalSignedAt and advance the job to c2. The CRM's normal
-      // transition gate is bypassed here because DocuSign already verified
-      // the signature on every clause.
+      // Final Design — customer signed the binding contract. Stamp
+      // finalSignedAt and advance the job to c2. CRM transition gate is
+      // bypassed here because DocuSign already verified every clause.
+      updates.docusign_status = event;
+      updates.docusign_completed_at = signedAt;
       updates.final_signed_at = signedAt;
       updates.status = 'c2_order_schedule_standard';
+      // Option B (variation folded into Final): when the Final envelope had
+      // a variation_acceptance clause active (job.has_variation === true),
+      // signing the Final IS signing the variation. Mark it accordingly so
+      // the existing variation invoice flow (ensureVariationClaim) fires.
+      if ((job as Record<string, unknown>).has_variation) {
+        updates.variation_status = 'signed';
+        updates.variation_signed_at = signedAt;
+      }
     }
 
     // Attach signed PDF if included in the payload.
@@ -224,13 +233,21 @@ Deno.serve(async (req) => {
       }
     }
   } else if (event === 'envelope-declined' || event === 'envelope-voided') {
-    updates.docusign_declined_at = new Date().toISOString();
     if (kind === 'variation') {
       // Customer declined / voided the variation. Roll back the in-progress
       // status so the Sales Manager can re-issue or mark non-material.
+      // Don't touch the shared docusign_declined_at — it belongs to the
+      // Final Design envelope.
       updates.variation_status = 'awaiting_quote';
+    } else {
+      updates.docusign_status = event;
+      updates.docusign_declined_at = new Date().toISOString();
+      // Final Design declined: keep job status at c1; SM sees decline + chases.
     }
-    // Final Design declined: keep status at c1; SM sees decline + chases.
+  } else {
+    // Other envelope events (sent / delivered / etc.) only update the shared
+    // status column when this is a Final Design envelope.
+    if (kind !== 'variation') updates.docusign_status = event;
   }
 
   const { error: updErr } = await sb.from('jobs').update(updates).eq('id', job.id);

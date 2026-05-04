@@ -307,17 +307,15 @@ function sendFinalDesignDocuSign(jobId) {
   if (!job.cadFinalData) {
     if (!confirm('Final Design has not been saved in CAD yet. Send DocuSign anyway? The PDF will use survey/original data.')) return;
   }
-  // Variation gate (Manual §6.3) — block the send if a major variance is
-  // unresolved. Production users see the disabled button; this is the
-  // last-line defence catching any code path (e.g. dev bypass buttons).
-  // Dev-mode override: the UI confirms before invoking, so we accept the
-  // call here and just log the bypass.
+  // Variation gate (Option B): block ONLY when Sales Manager hasn't recorded
+  // the variation amount yet. 'awaiting_signature' is allowed — the customer
+  // accepts the variation as part of the Final Design envelope (the
+  // variation_acceptance clause auto-includes when hasVariation=true).
   var _vStatus = job.variationStatus || 'none';
-  var _variationResolved = (_vStatus === 'signed' || _vStatus === 'not_material' || _vStatus === 'none');
-  if (!_variationResolved) {
+  if (_vStatus === 'awaiting_quote') {
     var _devOverride = (typeof isDevMode === 'function') && isDevMode();
     if (!_devOverride) {
-      addToast('🔒 Customer must accept the variation first (Manual §6.3). Generate a Variation Quote (or mark non-material) on the variance card.', 'error');
+      addToast('🔒 Record the variation amount first (or mark non-material) on the variance card.', 'error');
       return;
     }
     if (typeof logJobAudit === 'function') {
@@ -367,6 +365,29 @@ function sendFinalDesignDocuSign(jobId) {
       // Re-read job so the rest of the function sees the new status
       job = (getState().jobs || []).find(function(j){ return j.id === jobId; }) || job;
     }
+  }
+
+  // Belt-and-braces: clear any stale shared envelope columns before sending.
+  // The variation webhook used to write into these columns (pre-fix), so
+  // existing rows can have a phantom 'completed' status / signedAt that would
+  // bleed into the Final envelope's badge.
+  setState({ jobs: (getState().jobs || []).map(function(j){
+    return j.id === jobId ? Object.assign({}, j, {
+      docusignEnvelopeId:  null,
+      docusignStatus:      null,
+      docusignCompletedAt: null,
+      docusignDeclinedAt:  null
+    }) : j;
+  })});
+  if (typeof dbUpdate === 'function') {
+    try {
+      dbUpdate('jobs', jobId, {
+        docusign_envelope_id:  null,
+        docusign_status:       null,
+        docusign_completed_at: null,
+        docusign_declined_at:  null
+      });
+    } catch(e) { /* best-effort */ }
   }
 
   addToast('Sending DocuSign envelope…', 'info');
