@@ -31,10 +31,13 @@
 <script>
 const MODULE_FILES = [
   'modules/cad_modules/00-react-prelude.js',
+  'modules/cad_modules/00a-spartan-debug.js',
   'modules/cad_modules/01-data-products.js',
   'modules/cad_modules/02-frame-presets.js',
   'modules/cad_modules/03-aluplast-profiles.js',
   'modules/cad_modules/04-profile-catalog-helpers.js',
+  'modules/cad_modules/04b-profile-canonicaliser.js',
+  'modules/cad_modules/04c-profile-resolver-v2.js',
   'modules/cad_modules/05-siegware-handle.js',
   'modules/cad_modules/06-install-planning.js',
   'modules/cad_modules/06a-hardware-glass-kits.js',
@@ -59,11 +62,13 @@ const MODULE_FILES = [
   'modules/cad_modules/23a-milling-specs.js',
   'modules/cad_modules/24-materials-textures.js',
   'modules/cad_modules/25-geometry-helpers.js',
+  'modules/cad_modules/25a-extruder-v2.js',
   'modules/cad_modules/26-hardware-builders.js',
   'modules/cad_modules/27-sash-colonial.js',
   'modules/cad_modules/28-grid-layout.js',
   'modules/cad_modules/29-fly-screen.js',
   'modules/cad_modules/30-product-builders.js',
+  'modules/cad_modules/30a-product-builders-v2-shim.js',
   'modules/cad_modules/31-animations.js',
   'modules/cad_modules/32-cross-section-2d.js',
   'modules/cad_modules/33-dimension-badge.js',
@@ -72,8 +77,10 @@ const MODULE_FILES = [
   'modules/cad_modules/36-project-info-modal.js',
   'modules/cad_modules/37-dxf-parser.js',
   'modules/cad_modules/38-profile-manager.js',
+  'modules/cad_modules/38a-render3d-studio.js',
   'modules/cad_modules/39-main-app.js',
   'modules/cad_modules/40-smoke-tests-bootstrap.js',
+  'modules/cad_modules/41-build-storage.js',
 ];
 
 function showError(title, html) {
