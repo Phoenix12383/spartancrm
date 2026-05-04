@@ -229,7 +229,7 @@ function renderDealDetail() {
     ${renderDealInvoiceSection(d.id)}
 
     <!-- Spartan CAD Design — multi-quote (spec §3.2) -->
-    ${typeof renderDealQuoteList === 'function' ? renderDealQuoteList(d) : ''}
+    ${renderDealQuoteList(d)}
 
     <!-- Labels -->
     <div style="padding:16px">
@@ -355,7 +355,7 @@ function renderLeadDetail() {
     </div>
 
     <!-- Spartan CAD Design — multi-quote (spec §3.2) -->
-    ${typeof renderLeadQuoteList === 'function' ? renderLeadQuoteList(lead) : ''}
+    ${renderLeadQuoteList(lead)}
 
     <!-- Status change -->
     <div style="padding:16px;border-bottom:1px solid #f0f0f0">
