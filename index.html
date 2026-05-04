@@ -113,22 +113,18 @@
             '22-jobs-page.js',
             
             // Layer 7: Advanced Features
+            // Factory CRM — scoped to FACTORY-CRM-CONTRACT.md (Aluplast handshake,
+            // capacity planner, production board, BOM, dispatch, glass + profile
+            // ordering, QC). Stages 2-9 plus the v2 dashboard were removed
+            // 2026-05-04 as out-of-scope per that contract; Live Floor view +
+            // settings (Stage 10) is retained for the wall-display use case.
             '16-factory-crm.js',          // core: constants, persistence, mutators
             '16a-factory-glass.js',       // glass ordering subsystem (uses core)
             '16b-factory-profile.js',     // Aluplast profile ordering subsystem (uses core)
             '16c-factory-capacity.js',    // capacity engine + planner page (uses core)
             '16d-factory-pages.js',       // factory page renderers (uses everything above)
-            '16e-factory-ops.js',         // Stage 1 ops UI: Jobs to Review, QC checklist, Bay Management, Hold/Variation
-            '42-factory-dashboard-v2.js',
-            '40-factory-stage2-stock.js',
-            '43-factory-stage3-receiving.js',
-            '44-factory-stage4-orders-stocktake.js',
-            '45-factory-stage5-prodboard11.js',           // Stage 5
-            '46-factory-stage6-smartplanner.js',          // Stage 6
-            '47-factory-stage7-tablet-operator.js',       // Stage 7
-            '48-factory-stage8-service-rework.js',        // Stage 8
-            '49-factory-stage9-cost-reports.js',          // Stage 9
-            '50-factory-stage10-livefloor-settings.js',   // Stage 10
+            '16e-factory-ops.js',         // QC + ops (trimmed 2026-05-04)
+            '50-factory-stage10-livefloor-settings.js',   // Live Floor + Factory Settings
 
 
             // (The js/modules/factory/ v1.0 architecture was retired 2026-05-02 —
