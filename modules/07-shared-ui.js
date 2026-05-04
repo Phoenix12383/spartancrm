@@ -301,7 +301,7 @@ function renderMobileFAB() {
 }
 
 function renderTopBar(){
-  const {sidebarOpen,branch,notifs}=getState();
+  const {sidebarOpen,branch,notifs,crmMode}=getState();
   const native = typeof isNativeWrapper === 'function' && isNativeWrapper();
   // On native the sidebar is an overlay drawer — no left offset for content.
   const offset = native ? 0 : (sidebarOpen ? 220 : 64);
@@ -309,6 +309,12 @@ function renderTopBar(){
   const dev = (typeof isDevMode === 'function') && isDevMode();
   const devBadge = (dev && !native)
     ? `<span title="Dev mode is on — stand-in trigger buttons are visible. Add ?dev=0 to URL to disable." style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:11px;font-weight:700;color:#92400e;padding:4px 10px;cursor:help;letter-spacing:.5px">🧪 DEV</span>`
+    : '';
+  // Job CRM Back button — only renders when there's a navigation step to
+  // pop. Hidden on native (bottom nav handles back there) and outside Job CRM.
+  const _navHistLen = (typeof window._jobNavHistoryLength === 'function') ? window._jobNavHistoryLength() : 0;
+  const backBtn = (!native && crmMode === 'jobs' && _navHistLen > 0)
+    ? `<button onclick="jobNavGoBack()" title="Back to previous Job CRM view" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;font-weight:600;cursor:pointer;color:#374151;font-family:inherit" onmouseover="this.style.background='#f9fafb';this.style.borderColor='#d1d5db'" onmouseout="this.style.background='#fff';this.style.borderColor='#e5e7eb'">← Back</button>`
     : '';
   // Native: SPARTAN word-mark on the left as brand anchor. The drawer is
   // gone now that the bottom nav owns navigation, so no hamburger.
@@ -321,6 +327,7 @@ function renderTopBar(){
   return `<header id="topbar" style="position:fixed;top:${MODULE_BAR_HEIGHT}px;left:${offset}px;right:0;height:${TOPBAR_HEIGHT}px;background:${tbBg};border-bottom:${tbBorder};display:flex;align-items:center;padding:0 ${native ? '12' : '24'}px;gap:${native ? '8' : '16'}px;z-index:20;transition:left .2s">
     ${brandLeft}
     ${devBadge}
+    ${backBtn}
     ${native ? '' : `<div style="position:relative;flex:1;max-width:400px">
       <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:#9ca3af">${Icon({n:'search',size:14})}</span>
       <input id="topSearch" placeholder="Search contacts, deals, leads... (/)" style="width:100%;padding:7px 10px 7px 32px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;outline:none;font-family:inherit" oninput="handleTopSearch(this.value)" onfocus="document.getElementById('searchDrop').style.display='block'" onblur="setTimeout(()=>{const d=document.getElementById('searchDrop');if(d)d.style.display='none'},200)">

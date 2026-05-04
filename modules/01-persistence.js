@@ -1089,9 +1089,14 @@ function _dbWarnOnce(op, table, msg, showToast) {
 }
 function _isMissingTableError(msg) {
   if (!msg) return false;
-  // PostgREST schema-cache miss for unknown table.
-  return msg.indexOf("Could not find the table") >= 0
-      || msg.indexOf('schema cache') >= 0;
+  // PostgREST schema-cache miss for unknown TABLE only. Must match the
+  // table-specific phrase — DON'T fall back to a generic 'schema cache'
+  // check because column-not-found errors ALSO say
+  //   "Could not find the 'foo' column of 'jobs' in the schema cache"
+  // and we don't want a single bad-column UPDATE to flag the whole table
+  // as missing (which would silently skip every subsequent write to it
+  // for the rest of the session).
+  return msg.indexOf("Could not find the table") >= 0;
 }
 function dbInsert(table, row) {
   if (!_sb) return;

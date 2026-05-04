@@ -1218,6 +1218,50 @@ var _dbSyncTimer = null;
 //                    re-upsert, which echoes back as another realtime event,
 //                    which triggers another load — infinite feedback loop that
 //                    constantly wipes the DOM and kicks focus out of inputs.
+// Nav-history ring buffer — Job CRM only. Each entry is a snapshot of the
+// nav-relevant fields BEFORE a navigation event happened. The Back button in
+// the topbar pops from this stack and re-applies. Cleared when crmMode
+// switches away from 'jobs' (history is module-scoped).
+var _jobNavHistory = [];
+var _JOB_NAV_HISTORY_MAX = 30;
+// Set to true by jobNavGoBack so the back-applying setState doesn't itself
+// push another history entry (would create a loop).
+var _suppressJobNavHistory = false;
+function _isJobNavChange(prevState, patch) {
+  if (prevState.crmMode !== 'jobs' || _suppressJobNavHistory) return false;
+  // Switching away from Job CRM — don't push.
+  if (typeof patch.crmMode !== 'undefined' && patch.crmMode !== 'jobs') return false;
+  // Page changes (jobs list ↔ schedule ↔ capacity ↔ fleet ↔ etc.).
+  if (typeof patch.page !== 'undefined' && patch.page !== prevState.page) return true;
+  // Open / close a job detail.
+  if (typeof patch.jobDetailId !== 'undefined' && patch.jobDetailId !== prevState.jobDetailId) return true;
+  return false;
+}
+function _snapshotJobNav(state) {
+  return {
+    crmMode:       state.crmMode,
+    page:          state.page,
+    jobDetailId:   state.jobDetailId,
+    jobDetailTab:  state.jobDetailTab,
+    jobListFilter: state.jobListFilter,
+    jobListSearch: state.jobListSearch,
+    jobShowHeldOnly: state.jobShowHeldOnly
+  };
+}
+function jobNavGoBack() {
+  if (_jobNavHistory.length === 0) return;
+  var prev = _jobNavHistory.pop();
+  _suppressJobNavHistory = true;
+  try {
+    setState(prev);
+  } finally {
+    // Reset on next tick so the suppression doesn't leak into unrelated work.
+    setTimeout(function(){ _suppressJobNavHistory = false; }, 0);
+  }
+}
+window.jobNavGoBack = jobNavGoBack;
+window._jobNavHistoryLength = function(){ return _jobNavHistory.length; };
+
 const setState = (patch, opts) => {
   opts = opts || {};
   // Capture the pre-patch state so the debounced sync can diff against it and
@@ -1227,6 +1271,17 @@ const setState = (patch, opts) => {
   // reference. Without this diff, a one-lead change upsert-storms the whole
   // table (N writes + N realtime echoes + N dbLoadAll cycles).
   var prevState = _state;
+  // Job-CRM navigation history — push the prior snapshot before the patch
+  // applies so the Back button can restore it later. Skipped for setState
+  // calls that don't change page/jobDetailId.
+  if (_isJobNavChange(prevState, patch)) {
+    _jobNavHistory.push(_snapshotJobNav(prevState));
+    if (_jobNavHistory.length > _JOB_NAV_HISTORY_MAX) _jobNavHistory.shift();
+  }
+  // Clear history when leaving Job CRM entirely.
+  if (typeof patch.crmMode !== 'undefined' && patch.crmMode !== 'jobs' && prevState.crmMode === 'jobs') {
+    _jobNavHistory = [];
+  }
   // Skip listener notifications when every patch value is reference-equal to
   // the existing state. Guards against cascading re-renders when a caller
   // passes an unchanged slice.

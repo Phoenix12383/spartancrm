@@ -812,24 +812,150 @@ function renderJobDetail() {
       +(job.cmBookedTime?'<div style="font-size:11px;color:#9ca3af">'+job.cmBookedTime+'</div>':'')
       +'</div></div>';
 
-    // Scheduling fields
+    // ── Scheduling (single unified card) ────────────────────────────────────
+    // Section folds three things into one card: deposit-gate warning, smart
+    // suggestion, and the manual booked-date / time / assigned-to form.
     var depositGate = (typeof canBookCm === 'function') ? canBookCm(job.id) : {ok:true};
+    var schedulingInner = '';
+
+    if (!depositGate.ok && !job.cmBookedDate) {
+      schedulingInner += '<div style="padding:10px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
+        +'<div>⚠️ '+depositGate.reason+'</div>'
+        +'<button onclick="setState({jobDetailTab:\'progress_claims\'})" style="padding:6px 12px;background:#c41230;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:inherit">Go to Progress Claims →</button>'
+        +'</div>';
+    }
+
+    var _hasSuggestion = false;
+    if (!job.cmBookedDate && depositGate.ok && typeof suggestCmSlotForJob === 'function') {
+      var _sug = suggestCmSlotForJob(job.id);
+      if (_sug) {
+        _hasSuggestion = true;
+        var _instColour = (function(){
+          var insts = (typeof getInstallers === 'function') ? getInstallers() : [];
+          var i = insts.find(function(x){ return x.id === _sug.installerId; });
+          return (i && i.colour) || '#7c3aed';
+        })();
+        var _dateLabel = (function(){
+          try {
+            var d = new Date(_sug.date + 'T12:00');
+            return d.toLocaleDateString('en-AU', {weekday:'short', day:'numeric', month:'short'});
+          } catch(e) { return _sug.date; }
+        })();
+        window._cmSuggestionsForDetail = window._cmSuggestionsForDetail || {};
+        window._cmSuggestionsForDetail[job.id] = _sug;
+
+        schedulingInner += '<div style="padding:14px 16px;background:linear-gradient(135deg,#faf5ff 0%,#f3e8ff 100%);border:1.5px solid #c4b5fd;border-radius:10px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
+          +'<div style="display:flex;align-items:center;gap:10px;flex:1;min-width:240px">'
+          +'<div style="width:36px;height:36px;border-radius:50%;background:'+_instColour+';color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px">⚡</div>'
+          +'<div style="min-width:0">'
+          +'<div style="font-size:11px;font-weight:700;color:#6d28d9;text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">Smart Suggestion</div>'
+          +'<div style="font-size:14px;font-weight:700;color:#1f2937">'+_dateLabel+' · '+formatTime12(_sug.time)+' · '+_sug.installerName+'</div>'
+          +'<div style="font-size:11px;color:#6b7280;margin-top:2px">'+_sug.reason+'</div>'
+          +'</div></div>'
+          +'<button onclick="if(window._cmSuggestionsForDetail&&window._cmSuggestionsForDetail[\''+job.id+'\']){smartBookCm(\''+job.id+'\',window._cmSuggestionsForDetail[\''+job.id+'\']);renderPage();}" class="btn-r" style="background:#7c3aed;border-color:#7c3aed;font-size:13px;padding:9px 18px;gap:6px;font-weight:700">⚡ Accept &amp; Book</button>'
+          +'</div>';
+      }
+    }
+
+    // When booked: render a clean green confirmation strip up top, with the
+    // form below it slimmed to "edit booking" (smaller labels, lower-key colours).
+    if (job.cmBookedDate) {
+      var _bookedInst = (function(){
+        var insts = (typeof getInstallers === 'function') ? getInstallers() : [];
+        return insts.find(function(x){ return x.id === job.cmAssignedTo; }) || null;
+      })();
+      var _bookedInstColour = (_bookedInst && _bookedInst.colour) || '#9ca3af';
+      var _bookedInstName   = _bookedInst ? _bookedInst.name : 'Unassigned';
+      var _bookedDateLabel = (function(){
+        try {
+          var d = new Date(job.cmBookedDate + 'T12:00');
+          return d.toLocaleDateString('en-AU', {weekday:'short', day:'numeric', month:'short', year:'numeric'});
+        } catch(e) { return job.cmBookedDate; }
+      })();
+      var _bookedDaysUntil = (function(){
+        try {
+          var diff = (new Date(job.cmBookedDate + 'T12:00') - new Date()) / 86400000;
+          var d = Math.ceil(diff);
+          if (d === 0)  return 'today';
+          if (d === 1)  return 'in 1 day';
+          if (d > 1)    return 'in ' + d + ' days';
+          if (d === -1) return '1 day ago';
+          return Math.abs(d) + ' days ago';
+        } catch(e) { return ''; }
+      })();
+      var _isPast = (new Date(job.cmBookedDate + 'T12:00') < new Date()) && !cmDone;
+      var _stripBg = _isPast ? 'linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%)' : 'linear-gradient(135deg,#f0fdf4 0%,#dcfce7 100%)';
+      var _stripBorder = _isPast ? '#fde68a' : '#86efac';
+      var _stripIconBg = _isPast ? '#f59e0b' : '#16a34a';
+      var _stripIconChar = _isPast ? '\u23f0' : '\u2713';
+      var _stripLabelColour = _isPast ? '#92400e' : '#15803d';
+      var _stripLabelText = _isPast ? 'CM Overdue' : 'CM Booked';
+
+      schedulingInner += '<div style="margin-bottom:14px;padding:14px 16px;background:'+_stripBg+';border:1.5px solid '+_stripBorder+';border-radius:10px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
+        +'<div style="display:flex;align-items:center;gap:12px;flex:1;min-width:240px">'
+        +'<div style="width:36px;height:36px;border-radius:50%;background:'+_stripIconBg+';color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:16px;font-weight:700">'+_stripIconChar+'</div>'
+        +'<div style="min-width:0">'
+        +'<div style="font-size:10px;font-weight:700;color:'+_stripLabelColour+';text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px">'+_stripLabelText+'</div>'
+        +'<div style="font-size:14px;font-weight:700;color:#1f2937">'+_bookedDateLabel+(job.cmBookedTime?' \u00b7 '+formatTime12(job.cmBookedTime):'')+'</div>'
+        +'<div style="font-size:11px;color:#6b7280;margin-top:2px;display:flex;align-items:center;gap:6px">'
+        + (job.cmAssignedTo ? '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+_bookedInstColour+'"></span>' : '')
+        + _bookedInstName + (_bookedDaysUntil ? ' \u00b7 ' + _bookedDaysUntil : '')
+        +'</div></div></div>'
+        +'</div>';
+
+      // Slim "Edit booking" form for when the user wants to reschedule.
+      schedulingInner += '<div style="font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Edit booking</div>'
+        +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">'
+        +'<input type="date" class="inp" value="'+job.cmBookedDate+'" onchange="updateJobField(\''+job.id+'\',\'cmBookedDate\',this.value)" style="font-size:13px">'
+        +'<select class="sel" onchange="updateJobField(\''+job.id+'\',\'cmBookedTime\',this.value)" style="font-size:13px">'
+        +  '<option value="">Time\u2026</option>'
+        +  ['08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','13:00','13:30','14:00','14:30','15:00','15:30','16:00'].map(function(t){return '<option value="'+t+'"'+(job.cmBookedTime===t?' selected':'')+'>'+formatTime12(t)+'</option>';}).join('')
+        +'</select>'
+        +'<select class="sel" onchange="updateJobField(\''+job.id+'\',\'cmAssignedTo\',this.value)" style="font-size:13px">'
+        +  '<option value="">Unassigned</option>'
+        +  getInstallers().map(function(u){return '<option value="'+u.id+'"'+(job.cmAssignedTo===u.id?' selected':'')+'>'+u.name+'</option>';}).join('')
+        +'</select>'
+        +'</div>';
+    } else {
+      // Not booked yet \u2014 slim manual form. When a Smart Suggestion exists, the
+      // form is collapsed behind a "Pick manually" disclosure so the
+      // suggestion is the primary visual element. When there's no suggestion
+      // (no active installers, all booked, etc.), the form is the only way to
+      // book and stays open by default.
+      var manualFields = '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:10px">'
+        +'<input type="date" class="inp" '+(!depositGate.ok ? 'disabled' : '')+' value="" onchange="var g=canBookCm(\''+job.id+'\');if(!g.ok){addToast(g.reason,\'error\');this.value=\'\';return;}updateJobField(\''+job.id+'\',\'cmBookedDate\',this.value)" style="font-size:13px" placeholder="Date">'
+        +'<select class="sel" onchange="updateJobField(\''+job.id+'\',\'cmBookedTime\',this.value)" style="font-size:13px">'
+        +  '<option value="">Time\u2026</option>'
+        +  ['08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','13:00','13:30','14:00','14:30','15:00','15:30','16:00'].map(function(t){return '<option value="'+t+'"'+(job.cmBookedTime===t?' selected':'')+'>'+formatTime12(t)+'</option>';}).join('')
+        +'</select>'
+        +'<select class="sel" onchange="updateJobField(\''+job.id+'\',\'cmAssignedTo\',this.value)" style="font-size:13px">'
+        +  '<option value="">Unassigned</option>'
+        +  getInstallers().map(function(u){return '<option value="'+u.id+'"'+(job.cmAssignedTo===u.id?' selected':'')+'>'+u.name+'</option>';}).join('')
+        +'</select>'
+        +'</div>';
+
+      if (_hasSuggestion) {
+        // Disclosure \u2014 keeps the suggestion as the primary visual; manual
+        // override is one click away.
+        schedulingInner += '<details style="margin-top:14px">'
+          +'<summary style="cursor:pointer;font-size:11px;color:#6b7280;text-align:center;padding:6px 0;list-style:none;user-select:none" '
+          +'onmouseover="this.style.color=\'#374151\'" onmouseout="this.style.color=\'#6b7280\'">'
+          +'<span style="display:inline-flex;align-items:center;gap:6px"><span style="font-size:14px">\u2304</span>Pick a different slot manually</span>'
+          +'</summary>'
+          +manualFields
+          +'</details>';
+      } else {
+        // No suggestion (no active installers / all booked) \u2014 manual form is
+        // the only way to book, leave it visible.
+        schedulingInner += '<div style="font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:.06em;margin-top:14px;margin-bottom:4px">Pick a slot</div>'
+          +manualFields;
+      }
+    }
+
     tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
-      +'<h5 style="font-size:13px;font-weight:700;margin:0 0 10px">Scheduling</h5>'
-      +(!depositGate.ok && !job.cmBookedDate ? '<div style="padding:10px 14px;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;font-size:12px;color:#92400e;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:12px"><div>⚠️ '+depositGate.reason+'</div><button onclick="setState({jobDetailTab:\'progress_claims\'})" style="padding:6px 12px;background:#c41230;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:inherit">Go to Progress Claims →</button></div>' : '')
-      +'<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">'
-      +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Booked Date</label>'
-      +'<input type="date" class="inp" '+(!depositGate.ok && !job.cmBookedDate ? 'disabled' : '')+' value="'+(job.cmBookedDate||'')+'" onchange="var g=canBookCm(\''+job.id+'\');if(!g.ok){addToast(g.reason,\'error\');this.value=\''+(job.cmBookedDate||'')+'\';return;}updateJobField(\''+job.id+'\',\'cmBookedDate\',this.value)"></div>'
-      +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Time</label>'
-      +'<select class="sel" onchange="updateJobField(\''+job.id+'\',\'cmBookedTime\',this.value)">'
-      +'<option value="">Select\u2026</option>'
-      +['08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','13:00','13:30','14:00','14:30','15:00','15:30','16:00'].map(function(t){return '<option value="'+t+'"'+(job.cmBookedTime===t?' selected':'')+'>'+formatTime12(t)+'</option>';}).join('')
-      +'</select></div>'
-      +'<div><label style="font-size:11px;font-weight:600;color:#6b7280;display:block;margin-bottom:4px">Assigned To</label>'
-      +'<select class="sel" onchange="updateJobField(\''+job.id+'\',\'cmAssignedTo\',this.value)">'
-      +'<option value="">Unassigned</option>'
-      +getInstallers().map(function(u){return '<option value="'+u.id+'"'+(job.cmAssignedTo===u.id?' selected':'')+'>'+u.name+'</option>';}).join('')
-      +'</select></div></div></div>';
+      +'<h5 style="font-size:13px;font-weight:700;margin:0 0 12px">Scheduling</h5>'
+      +schedulingInner
+      +'</div>';
 
     // Site notes
     tabContent += '<div class="card" style="padding:16px;margin-bottom:14px">'
@@ -2133,18 +2259,21 @@ function saveVariationModalAndSend() {
       variationAmount: amount,
       variationNotes: notes,
       hasVariation: true,
-      variationStatus: 'awaiting_signature',
-      variationGeneratedAt: nowIso
+      variationStatus: 'awaiting_signature'
     }) : j;
   })});
   if (typeof dbUpdate === 'function') {
     try {
+      // Only write columns that exist in the jobs schema. An earlier version
+      // of this code included variation_generated_at, which doesn't exist —
+      // Postgres rejected the entire UPDATE so nothing persisted, the
+      // realtime echo skipped, and on refresh the row reverted to
+      // awaiting_quote. Generation time is captured in the audit log below.
       dbUpdate('jobs', jobId, {
         variation_amount: amount,
         variation_notes: notes,
         has_variation: true,
-        variation_status: 'awaiting_signature',
-        variation_generated_at: nowIso
+        variation_status: 'awaiting_signature'
       });
     } catch(e){}
   }
@@ -2241,11 +2370,12 @@ window.devMockGenerateVariation = function(jobId) {
       hasVariation: true,
       variationStatus: 'awaiting_signature',
       variationAmount: amount,
-      variationNotes: notes,
-      variationGeneratedAt: now,
+      variationNotes: notes
     }) : j;
   })});
-  if (typeof dbUpdate === 'function') { try { dbUpdate('jobs', jobId, { has_variation: true, variation_status: 'awaiting_signature', variation_amount: amount, variation_notes: notes, variation_generated_at: now }); } catch(e){} }
+  // variation_generated_at column doesn't exist; UPDATE would be rejected
+  // wholesale. Audit log below captures the timestamp.
+  if (typeof dbUpdate === 'function') { try { dbUpdate('jobs', jobId, { has_variation: true, variation_status: 'awaiting_signature', variation_amount: amount, variation_notes: notes }); } catch(e){} }
   if (typeof logJobAudit === 'function') logJobAudit(jobId, 'Variation Quote Generated', 'Dev mock — $' + amount + (notes ? ' — ' + notes : ''));
   addToast('📐 Variation Quote generated · $' + amount, 'success');
   renderPage();

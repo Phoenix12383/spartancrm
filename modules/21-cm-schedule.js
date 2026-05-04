@@ -11,6 +11,16 @@ var cmMapDate = new Date().toISOString().slice(0,10);
 var cmMapInstaller = 'all';
 var cmSuggestions = {}; // jobId → {installerId, date, time, reason}
 
+// Public — anything outside this module that wants a suggestion can call this.
+window.suggestCmSlotForJob = function(jobId) {
+  var jobs = getState().jobs || [];
+  var job = jobs.find(function(j){ return j.id === jobId; });
+  if (!job) return null;
+  var booked = jobs.filter(function(j){ return j.cmBookedDate; });
+  var insts = (typeof getInstallers === 'function') ? getInstallers().filter(function(i){ return i.active; }) : [];
+  return suggestCmSlot(job, booked, insts);
+};
+
 function suggestCmSlot(job, allBooked, installers) {
   var branch = job.branch || 'VIC';
   var suburb = (job.suburb || '').toLowerCase();
@@ -51,8 +61,12 @@ function suggestCmSlot(job, allBooked, installers) {
   return best;
 }
 
-function smartBookCm(jobId) {
-  var s = cmSuggestions[jobId];
+// Book a CM slot from a precomputed suggestion. Without an override, falls
+// back to the cmSuggestions map populated by renderCMMapPage. The job
+// detail page passes its own freshly-computed suggestion in directly so it
+// doesn't have to depend on the map renderer having run first.
+function smartBookCm(jobId, override) {
+  var s = override || cmSuggestions[jobId];
   if (!s) { addToast('No suggestion available', 'error'); return; }
   if (typeof canBookCm === 'function') {
     var gate = canBookCm(jobId);
@@ -63,7 +77,10 @@ function smartBookCm(jobId) {
   setState({ jobs: jobs.map(function(j){ return j.id === jobId ? Object.assign({}, j, upd) : j; }) });
   dbUpdate('jobs', jobId, { cm_booked_date: s.date, cm_booked_time: s.time, cm_assigned_to: s.installerId });
   delete cmSuggestions[jobId];
-  addToast('CM booked — ' + s.installerName + ' on ' + s.date, 'success');
+  if (typeof logJobAudit === 'function') {
+    logJobAudit(jobId, 'CM Smart-Booked', s.installerName + ' · ' + s.date + ' ' + s.time + (s.reason ? ' · ' + s.reason : ''));
+  }
+  addToast('✅ CM booked — ' + s.installerName + ' on ' + s.date + ' at ' + s.time, 'success');
 }
 
 // (Previous OSM-iframe mount helper removed — this page now uses real Google
@@ -358,4 +375,7 @@ function renderCMMapPage() {
     +chart
     +'</div>';
 }
+
+// Expose the booking helper so the Job Detail Check Measure tab can call it.
+window.smartBookCm = smartBookCm;
 

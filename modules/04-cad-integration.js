@@ -734,8 +734,10 @@ window.addEventListener('message', function(event) {
     if ('finalRenderedPdfUrl' in jobUpdates) dbPatch.final_rendered_pdf_url = jobUpdates.finalRenderedPdfUrl;
     dbUpdate('jobs', _cadModal.entityId, dbPatch);
 
-    // Storage upload + job_files row insert. Fire-and-forget: failure leaves
-    // the path on the row but no object behind it; user re-saves to retry.
+    // Storage upload + job_files row insert. Fire-and-forget on the network
+    // side; on failure we still write the job_files row but with a base64
+    // data_url fallback so the PDF is never lost (the legacy decode reader
+    // in 17-install-schedule.js handles either form transparently).
     function _afterUpload(fileId, jobIdLocal, filename, blob, category, path) {
       try { window._jobFileBlobs[fileId] = URL.createObjectURL(blob); } catch(e){}
       var files = (typeof getJobFiles === 'function') ? getJobFiles(jobIdLocal) : [];
@@ -754,17 +756,45 @@ window.addEventListener('message', function(event) {
         });
       }
     }
+    function _afterUploadFailed(fileId, jobIdLocal, filename, blob, category, b64) {
+      // Cache so the View button works in this session.
+      try { window._jobFileBlobs[fileId] = URL.createObjectURL(blob); } catch(e){}
+      var files = (typeof getJobFiles === 'function') ? getJobFiles(jobIdLocal) : [];
+      files.push({
+        id: fileId, name: filename, category: category,
+        uploadedBy: (getCurrentUser()||{name:'CAD'}).name,
+        uploadedAt: new Date().toISOString(),
+        storagePath: null
+      });
+      if (typeof saveJobFiles === 'function') saveJobFiles(jobIdLocal, files);
+      if (typeof _sb !== 'undefined' && _sb) {
+        dbInsert('job_files', {
+          id: fileId, job_id: jobIdLocal, name: filename,
+          category: category, uploaded_by: (getCurrentUser()||{name:'CAD'}).name,
+          storage_path: null,
+          data_url: 'data:application/pdf;base64,' + b64,
+        });
+      }
+    }
     var _entityIdForUpload = _cadModal.entityId;
     if (hasCmPdf && cmBlob && typeof uploadJobFileBlob === 'function') {
       uploadJobFileBlob(_entityIdForUpload, cmFileId, cmFilename, cmBlob).then(function(path){
-        if (!path) { addToast('CM PDF saved but Storage upload failed — re-save in CAD to retry', 'warning'); return; }
-        _afterUpload(cmFileId, _entityIdForUpload, cmFilename, cmBlob, 'check_measure', path);
+        if (path) {
+          _afterUpload(cmFileId, _entityIdForUpload, cmFilename, cmBlob, 'check_measure', path);
+        } else {
+          _afterUploadFailed(cmFileId, _entityIdForUpload, cmFilename, cmBlob, 'check_measure', msg.pdfs.checkMeasure.base64);
+          addToast('CM PDF saved (Storage upload failed — kept inline as fallback)', 'warning');
+        }
       });
     }
     if (hasFinalPdf && finalBlob && typeof uploadJobFileBlob === 'function') {
       uploadJobFileBlob(_entityIdForUpload, finalFileId, finalFilename, finalBlob).then(function(path){
-        if (!path) { addToast('Final PDF saved but Storage upload failed — re-save in CAD to retry', 'warning'); return; }
-        _afterUpload(finalFileId, _entityIdForUpload, finalFilename, finalBlob, 'contract', path);
+        if (path) {
+          _afterUpload(finalFileId, _entityIdForUpload, finalFilename, finalBlob, 'contract', path);
+        } else {
+          _afterUploadFailed(finalFileId, _entityIdForUpload, finalFilename, finalBlob, 'contract', msg.pdfs.finalDesign.base64);
+          addToast('Final PDF saved (Storage upload failed — kept inline as fallback)', 'warning');
+        }
       });
     }
 

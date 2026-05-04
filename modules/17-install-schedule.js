@@ -1532,7 +1532,16 @@ function getWeekDates(offset) {
   return dates;
 }
 function fmtShortDate(d) { return ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][d.getDay()===0?6:d.getDay()-1] + ' ' + d.getDate() + '/' + (d.getMonth()+1); }
-function isoDate(d) { return d.toISOString().slice(0,10); }
+// Local-time YYYY-MM-DD. toISOString() would shift to UTC, which silently
+// rolls the date back a day in Australian timezones — every consumer here
+// (week filter, day-cell match, header label) treats the Date as local, so
+// we have to keep that interpretation consistent.
+function isoDate(d) {
+  var y  = d.getFullYear();
+  var m  = String(d.getMonth() + 1).padStart(2, '0');
+  var dd = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + dd;
+}
 function isToday(d) { return isoDate(d) === isoDate(new Date()); }
 
 // Assign job to a date

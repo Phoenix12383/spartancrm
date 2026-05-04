@@ -155,9 +155,20 @@ function canTransition(job, toStatus) {
 
   // a_check_measure → c_awaiting_2nd_payment
   if (from === 'a_check_measure' && toStatus === 'c_awaiting_2nd_payment') {
-    var wins = (job.windows || []);
-    var validWins = wins.filter(function(w){ return w.widthMm > 0 && w.heightMm > 0; });
-    if (validWins.length === 0) return {ok:false, reason:'At least one window with valid dimensions is required.'};
+    // Accept frames from either source: the legacy manual job.windows[] OR
+    // the CAD-side cadSurveyData.projectItems[] (CAD save path stores
+    // width/height there, not on job.windows). Without the second branch,
+    // any CAD-only flow gets blocked here even when frames were measured.
+    var manualWins = (job.windows || []).filter(function(w){ return +w.widthMm > 0 && +w.heightMm > 0; });
+    var cadFrames = ((job.cadSurveyData && job.cadSurveyData.projectItems)
+                  || (job.cadFinalData  && job.cadFinalData.projectItems)
+                  || (job.cadData       && job.cadData.projectItems)
+                  || []).filter(function(f){
+      var w = +f.widthMm  || +f.width  || 0;
+      var h = +f.heightMm || +f.height || 0;
+      return w > 0 && h > 0;
+    });
+    if (manualWins.length === 0 && cadFrames.length === 0) return {ok:false, reason:'At least one frame with valid dimensions is required.'};
     if (!job.cmCompletedAt) return {ok:false, reason:'Check measure must be marked as completed.'};
     if (!job.cmDocUrl) return {ok:false, reason:'Check measure document must be uploaded.'};
     return {ok:true};
@@ -360,13 +371,22 @@ function markCmComplete(jobId) {
   if (!job) { addToast('Job not found', 'error'); return; }
   var wins = (job.windows||[]).filter(function(w){ return w.widthMm > 0 && w.heightMm > 0; });
   if (wins.length === 0) { addToast('Add at least one window with valid dimensions first.', 'error'); return; }
-  // Mandatory: CM file must be uploaded
+  // Mandatory: CM file must be present. Either job_files has a check_measure
+  // row (manual upload path, or async upload landed) OR job.cmDocUrl is set
+  // (CAD save just wrote the Storage path; row insert is in flight).
   var cmFiles = getJobFiles(jobId).filter(function(f){return f.category==='check_measure';});
-  if (cmFiles.length === 0) { addToast('Upload a Check Measure PDF/photo before completing. Go to Files tab and upload with category "Check Measure".', 'error'); return; }
+  var hasCmDocPointer = !!job.cmDocUrl;
+  if (cmFiles.length === 0 && !hasCmDocPointer) {
+    addToast('Upload a Check Measure PDF/photo before completing. Go to Files tab and upload with category "Check Measure".', 'error');
+    return;
+  }
   var cu = getCurrentUser() || {id:'system', name:'System'};
   var now = new Date().toISOString();
-  setState({ jobs: jobs.map(function(j){ return j.id === jobId ? Object.assign({}, j, {cmCompletedAt: now, cmDocUrl: cmFiles[0].id}) : j; }) });
-  dbUpdate('jobs', jobId, {cm_completed_at: now, cm_doc_url: cmFiles[0].id});
+  // Use the existing pointer when present; only overwrite cmDocUrl with the
+  // file_id form when the manual-upload path is the source.
+  var nextCmDocUrl = hasCmDocPointer ? job.cmDocUrl : cmFiles[0].id;
+  setState({ jobs: jobs.map(function(j){ return j.id === jobId ? Object.assign({}, j, {cmCompletedAt: now, cmDocUrl: nextCmDocUrl}) : j; }) });
+  dbUpdate('jobs', jobId, {cm_completed_at: now, cm_doc_url: nextCmDocUrl});
   // done:true — check measures are logged on completion, not scheduled ahead.
   // A "completions this period" KPI can now filter on type==='checkMeasure' && done===true.
   var act = {id:'a'+Date.now()+'_cm', type:'checkMeasure', subject:'Check measure completed', text:'Check measure completed — ' + wins.length + ' window(s) measured', date:now.slice(0,10), by:cu.name, done:true, dueDate:''};
@@ -391,15 +411,22 @@ function completeCmAndInvoice(jobId) {
   var jobs = getState().jobs || [];
   var job = jobs.find(function(j){return j.id===jobId;});
   if (!job) return;
-  // Require CM file
+  // Require CM file pointer. Either a job_files row (manual upload / async
+  // landed) OR job.cmDocUrl set by CAD save (Storage upload still in flight).
+  // Without the second branch, calling this right after a CAD save races the
+  // upload's row insert and the user gets stranded.
   var cmFiles = getJobFiles(jobId).filter(function(f){return f.category==='check_measure';});
-  if (cmFiles.length === 0) { addToast('Upload a Check Measure file before completing.','error'); return; }
+  if (cmFiles.length === 0 && !job.cmDocUrl) {
+    addToast('Upload a Check Measure file before completing.','error');
+    return;
+  }
   // Mark CM complete
   var cu = getCurrentUser() || {id:'system',name:'System'};
   var now = new Date().toISOString();
   setState({jobs: getState().jobs.map(function(j){return j.id===jobId?Object.assign({},j,{cmCompletedAt:now}):j;})});
   dbUpdate('jobs', jobId, {cm_completed_at:now});
-  logJobAudit(jobId, 'CM Completed', 'Check measure finalised. CM file: '+cmFiles[0].name);
+  var fileLabel = (cmFiles[0] && cmFiles[0].name) || 'CAD-generated PDF (' + (job.cmDocUrl || '') + ')';
+  logJobAudit(jobId, 'CM Completed', 'Check measure finalised. CM file: ' + fileLabel);
   // Trigger 45% invoice (for COD jobs)
   var pm = job.paymentMethod || 'cod';
   if (pm === 'cod') {
