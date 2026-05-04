@@ -1388,3 +1388,14 @@ const addToast = (msg, type='success') => {
   setState({toasts:[..._state.toasts,{id,msg,type}]});
   setTimeout(()=>setState({toasts:_state.toasts.filter(t=>t.id!==id)}), 3500);
 };
+
+// Expose state-management primitives on window. Top-level `const` declarations
+// in classic <script> tags don't attach to the global object, so inline event
+// handlers like `onclick="setState({leadDetailId:null})"` (still in use across
+// 13-leads-maps.js, 22-jobs-page.js, 17-install-schedule.js, etc. pending the
+// data-action migration) can't resolve them via the window scope chain. These
+// re-exports let the inline handlers find them. Remove once every inline
+// handler has been migrated to data-action.
+window.setState = setState;
+window.getState = getState;
+window.addToast = addToast;
