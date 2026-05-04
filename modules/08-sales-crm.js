@@ -6074,15 +6074,17 @@ async function createJobFromWonDeal(deal, paymentMethod) {
     };
     setState({ notifs: [notif, ...getState().notifs] });
 
-    // Initialize 4-stage progress claims and auto-generate 5% deposit invoice
+    // Initialise 4-stage progress claims. initJobClaims now also auto-fires
+    // the deposit invoice (so jobs created via any path — won deal, lazy
+    // render init, future console snippets — all get the deposit raised).
     initJobClaims(job.id, job.val, pm);
-    if (pm === 'zip') {
-      generateJobInvoice(job.id, 'cl_dep', 20, '20% Deposit (Zip Finance) — ' + jobNumber + ' — ' + (deal.title || ''), new Date(Date.now() + 7 * 24 * 3600000).toISOString().slice(0, 10));
-      logJobAudit(job.id, 'Job Created', 'Created from Won deal (ZIP MONEY). 20% deposit invoice auto-generated. Remaining 80% via Zip Money.');
-    } else {
-      generateJobInvoice(job.id, 'cl_dep', 5, '5% Deposit — ' + jobNumber + ' — ' + (deal.title || ''), new Date(Date.now() + 7 * 24 * 3600000).toISOString().slice(0, 10));
-      logJobAudit(job.id, 'Job Created', 'Created from Won deal (COD). 5% deposit invoice auto-generated.');
-    }
+    logJobAudit(
+      job.id,
+      'Job Created',
+      pm === 'zip'
+        ? 'Created from Won deal (ZIP MONEY). 20% deposit invoice auto-generated. Remaining 80% via Zip Money.'
+        : 'Created from Won deal (COD). 5% deposit invoice auto-generated.'
+    );
 
     addToast('Job ' + jobNumber + ' created \u2014 5% deposit invoice sent', 'success');
     return job;

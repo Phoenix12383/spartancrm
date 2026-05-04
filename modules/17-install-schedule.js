@@ -1496,7 +1496,28 @@ function initJobClaims(jobId, jobVal, paymentMethod) {
     ];
   }
   saveJobClaims(jobId, claims);
-  return claims;
+
+  // Auto-generate the deposit invoice. By the time initJobClaims runs, the
+  // deal has been won and a job exists — the deposit is always due. Single
+  // source of truth so jobs that initialise via the lazy-render path (when
+  // Progress Claims tab opens for the first time) don't get stuck with the
+  // deposit forever in 'pending'. createJobFromWonDeal can simply call this
+  // and rely on the deposit invoice being raised here.
+  try {
+    var depJob = (getState().jobs || []).find(function(j){ return j.id === jobId; });
+    var jn = depJob ? (depJob.jobNumber || '') : '';
+    var deal = depJob ? (getState().deals || []).find(function(d){ return d.id === depJob.dealId; }) : null;
+    var dealTitle = deal ? (deal.title || '') : '';
+    var dueDate = new Date(Date.now() + 7 * 24 * 3600000).toISOString().slice(0,10);
+    if (pm === 'zip') {
+      generateJobInvoice(jobId, 'cl_dep', 20, '20% Deposit (Zip Finance) — ' + jn + (dealTitle ? ' — ' + dealTitle : ''), dueDate);
+    } else {
+      generateJobInvoice(jobId, 'cl_dep', 5, '5% Deposit — ' + jn + (dealTitle ? ' — ' + dealTitle : ''), dueDate);
+    }
+  } catch(e) {
+    console.warn('[initJobClaims] deposit invoice auto-generate failed:', e);
+  }
+  return getJobClaims(jobId);
 }
 
 // Week date helpers
