@@ -441,7 +441,7 @@ const PRICING_DEFAULTS = {
     smart_slide_door: 160, vario_slide_door: 120, stacker_door: 120,
   },
   ancillaries: {
-    flyScreenPerUnit: 45, revealSetPerWindow: 35, revealSetPerDoor: 45,
+    flyScreenPerUnit: 45, flyScreenFramePerMetre: 5.50, revealSetPerWindow: 35, revealSetPerDoor: 45,
     sillPerWindow: 18, drainageCapsPerFrame: 2.50, cornerConnectors: 1.80,
     gasketPerMetre: 1.20, sealantPerUnit: 4.50, fixingsPerUnit: 6.00,
     deliveryPerUnit: 25.00,

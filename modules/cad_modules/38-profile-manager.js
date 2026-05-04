@@ -4,15 +4,36 @@
 // Pricing→Profile costs. One grid of profiles, with DXF import per row.
 // ═══════════════════════════════════════════════════════════════════════════
 
-function DXFPreviewSVG({ hull, chambers, overrides, accent, fill, stroke }) {
+function DXFPreviewSVG({ hull, chambers, overrides, accent, fill, stroke, orient }) {
   if (!hull) return null;
-  const W = hull.bbox.xmax || 70;
-  const H = hull.bbox.ymax || 70;
+  // WIP41: apply the same orientation transform that buildProfileShape uses
+  // in 3D, so the preview is exactly what gets extruded.
+  const srcW = hull.bbox.xmax || 70;
+  const srcH = hull.bbox.ymax || 70;
+  const o = orient || { rot: 0, flipX: false, flipY: false };
+  // Inline applyPolygonOrient (kept here so this file doesn't depend on load order)
+  const applyOrient = (pt) => {
+    let x = pt[0], y = pt[1], w = srcW, h = srcH;
+    const rot = (o.rot | 0);
+    if (rot === 90)       { const t90 = x; x = srcH - y; y = t90; w = srcH; h = srcW; }
+    else if (rot === 180) { x = srcW - x; y = srcH - y; }
+    else if (rot === 270) { const t27 = x; x = y; y = srcW - t27; w = srcH; h = srcW; }
+    if (o.flipX) x = w - x;
+    if (o.flipY) y = h - y;
+    return [x, y];
+  };
+  const rotSwaps = ((o.rot | 0) === 90 || (o.rot | 0) === 270);
+  const W = rotSwaps ? srcH : srcW;
+  const H = rotSwaps ? srcW : srcH;
   const pad = Math.max(2, Math.min(W, H) * 0.05);
   const path = (pts) => {
     if (!pts || !pts.length) return '';
-    let d = 'M' + pts[0][0].toFixed(2) + ',' + (H - pts[0][1]).toFixed(2);
-    for (let i = 1; i < pts.length; i++) d += 'L' + pts[i][0].toFixed(2) + ',' + (H - pts[i][1]).toFixed(2);
+    const t0 = applyOrient(pts[0]);
+    let d = 'M' + t0[0].toFixed(2) + ',' + (H - t0[1]).toFixed(2);
+    for (let i = 1; i < pts.length; i++) {
+      const ti = applyOrient(pts[i]);
+      d += 'L' + ti[0].toFixed(2) + ',' + (H - ti[1]).toFixed(2);
+    }
     return d + 'Z';
   };
   return (
@@ -33,6 +54,13 @@ function DXFImportModal({ T, dk, target, existing, onClose, onSave }) {
   const [stage, setStage] = useState('drop');
   const [parsed, setParsed] = useState(null);
   const [overrides, setOverrides] = useState({});
+  // WIP41: per-import orientation, applied identically by the preview SVG and
+  // (after save) by the 3D extruder. Default identity = use DXF as-drawn.
+  const [orient, setOrient] = useState({ rot: 0, flipX: false, flipY: false });
+  // WIP41: when a single DXF contains multiple profiles drawn side-by-side
+  // (assembly drawing — e.g. frame + sash + bead in one file), the parser
+  // returns each as a candidate and we route to a chooser stage first.
+  const [candidates, setCandidates] = useState([]);
   const [meta, setMeta] = useState({
     name: (existing && existing.name) || '',
     code: (existing && existing.code) || '',
@@ -59,6 +87,18 @@ function DXFImportModal({ T, dk, target, existing, onClose, onSave }) {
   const [error, setError] = useState(null);
   const [dragActive, setDragActive] = useState(false);
 
+  // WIP41: promote a single (hull, chambers) candidate to the preview stage.
+  // Used both directly when only one candidate is found, and from the select
+  // stage when the user picks one from many.
+  const promoteCandidate = (cand) => {
+    const norm = normalizePolygons(cand.hull, cand.chambers);
+    setParsed({ hull: norm.hull, chambers: norm.chambers, others: [] });
+    setMeta((m) => Object.assign({}, m, { sightlineMm: Math.round(norm.hull.bbox.xmax * 100) / 100, depthMm: Math.round(norm.hull.bbox.ymax * 100) / 100 }));
+    setOverrides({});
+    setOrient({ rot: 0, flipX: false, flipY: false });
+    setStage('preview');
+  };
+
   const handleFile = (file) => {
     setError(null);
     if (!file) return;
@@ -74,11 +114,15 @@ function DXFImportModal({ T, dk, target, existing, onClose, onSave }) {
         if (!out.polylines.length) { setError('No polylines found. Ensure the profile is exported as LWPOLYLINE or POLYLINE.'); return; }
         const classified = autoClassifyPolylines(out.polylines);
         if (!classified.hull) { setError('No closed polyline found. The outer hull must be a closed polygon.'); return; }
-        const norm = normalizePolygons(classified.hull, classified.chambers);
-        setParsed({ hull: norm.hull, chambers: norm.chambers, others: classified.others });
-        setMeta((m) => Object.assign({}, m, { sightlineMm: Math.round(norm.hull.bbox.xmax * 100) / 100, depthMm: Math.round(norm.hull.bbox.ymax * 100) / 100 }));
-        setOverrides({});
-        setStage('preview');
+        const cands = classified.candidates || [{ hull: classified.hull, chambers: classified.chambers }];
+        if (cands.length > 1) {
+          // Multi-profile DXF (assembly drawing) — let the user pick which one.
+          setCandidates(cands);
+          setStage('select');
+        } else {
+          setCandidates([]);
+          promoteCandidate(cands[0]);
+        }
       } catch (err) {
         setError('Failed to parse DXF: ' + (err && err.message ? err.message : err));
       }
@@ -94,7 +138,26 @@ function DXFImportModal({ T, dk, target, existing, onClose, onSave }) {
     if (!parsed) return;
     const hullVerts = parsed.hull.vertices;
     const chamberVerts = parsed.chambers.filter((_, i) => overrides[i] !== 'ignore').map((c) => c.vertices);
-    onSave(Object.assign({}, meta, { hull: hullVerts, chambers: chamberVerts }));
+    // WIP41:
+    //  - bboxSrcMm = the un-transformed (DXF as-drawn) bbox. Stored as
+    //    `bboxMm` because applyPolygonOrient() takes source dims as input.
+    //  - sightline/depth = the POST-orientation (visible) dims used by
+    //    pricing, cutlist, and the schematic. Swap when rot 90/270.
+    const rotSwaps = ((orient.rot | 0) === 90 || (orient.rot | 0) === 270);
+    const srcW = parsed.hull.bbox.xmax;
+    const srcH = parsed.hull.bbox.ymax;
+    const visibleW = rotSwaps ? srcH : srcW;
+    const visibleH = rotSwaps ? srcW : srcH;
+    onSave(Object.assign({}, meta, {
+      hull: hullVerts,
+      chambers: chamberVerts,
+      polygonOrient: orient,
+      // Source bbox — feeds the renderer's coordinate transform.
+      bboxSrcMm: { w: srcW, h: srcH },
+      // Visible dims — what the user sees, what pricing uses.
+      sightlineMm: Math.round(visibleW * 100) / 100,
+      depthMm: Math.round(visibleH * 100) / 100,
+    }));
   };
 
   const inp = { width:'100%', padding:'6px 8px', border:'1px solid '+T.border, borderRadius:3, fontSize:12, background:T.bgInput, color:T.text };
@@ -126,12 +189,78 @@ function DXFImportModal({ T, dk, target, existing, onClose, onSave }) {
             </div>
           )}
 
+          {/* WIP41: multi-candidate selection. Shows when the DXF contains
+              more than one PVC_OUTSIDE polyline (assembly drawing with
+              frame + sash + bead etc). Each thumbnail uses its own
+              normalised coords, dimensions, and chamber count so the user
+              can identify which one they want. */}
+          {stage === 'select' && candidates.length > 0 && (() => {
+            const previews = candidates.map((c) => normalizePolygons(c.hull, c.chambers));
+            return (
+              <div>
+                <div style={{ marginBottom:14, padding:'10px 12px', background:T.bgHover, borderRadius:4, border:'1px solid '+T.border }}>
+                  <div style={{ fontSize:12, fontWeight:600, color:T.text, marginBottom:4 }}>
+                    Found {candidates.length} profiles in this DXF
+                  </div>
+                  <div style={{ fontSize:10, color:T.textSub, lineHeight:1.5 }}>
+                    This looks like an assembly drawing with multiple profiles drawn side-by-side. Click the profile you want to import. Re-upload the same file to import another one separately.
+                  </div>
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))', gap:14 }}>
+                  {previews.map((p, i) => {
+                    const cand = candidates[i];
+                    return (
+                      <div key={i} onClick={() => promoteCandidate(cand)}
+                        style={{ background: dk ? '#0a0a10' : '#fafafa', border:'1px solid '+T.border, borderRadius:6, padding:10, cursor:'pointer', transition:'all 0.15s' }}
+                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = T.accent; e.currentTarget.style.background = T.bgHover; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.background = dk ? '#0a0a10' : '#fafafa'; }}>
+                        <div style={{ width:'100%', aspectRatio:'1', marginBottom:8 }}>
+                          <DXFPreviewSVG hull={p.hull} chambers={p.chambers} overrides={{}} accent={T.accent} fill={dk ? '#1a1a22' : '#f5f3ee'} stroke={dk ? '#ccc' : '#222'} orient={{ rot:0, flipX:false, flipY:false }}/>
+                        </div>
+                        <div style={{ fontSize:11, fontWeight:600, color:T.text, marginBottom:2 }}>Profile {String.fromCharCode(65 + i)}</div>
+                        <div style={{ fontSize:10, color:T.textSub }}>
+                          {Math.round(p.hull.bbox.xmax)} \u00d7 {Math.round(p.hull.bbox.ymax)} mm \u00b7 {p.chambers.length} chamber{p.chambers.length === 1 ? '' : 's'}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop:14, display:'flex', gap:8 }}>
+                  <button onClick={() => { setCandidates([]); setStage('drop'); }} style={{ padding:'6px 12px', fontSize:11, background:T.bgHover, color:T.text, border:'1px solid '+T.border, borderRadius:4, cursor:'pointer' }}>\u2190 Back</button>
+                </div>
+              </div>
+            );
+          })()}
+
           {stage === 'preview' && parsed && (
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:20 }}>
               <div>
-                <div style={{ fontSize:11, fontWeight:600, color:T.text, marginBottom:6 }}>Preview</div>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                  <div style={{ fontSize:11, fontWeight:600, color:T.text }}>Preview (= 3D output)</div>
+                  {(orient.rot !== 0 || orient.flipX || orient.flipY) && (
+                    <button onClick={() => setOrient({ rot: 0, flipX: false, flipY: false })}
+                      style={{ padding:'2px 8px', fontSize:9, background:'transparent', color:T.textSub, border:'1px solid '+T.border, borderRadius:3, cursor:'pointer' }}>Reset</button>
+                  )}
+                </div>
                 <div style={{ width:'100%', aspectRatio:'1', background: dk ? '#0a0a10' : '#fafafa', borderRadius:6, padding:8, border:'1px solid '+T.borderLight }}>
-                  <DXFPreviewSVG hull={parsed.hull} chambers={parsed.chambers} overrides={overrides} accent={T.accent} fill={dk ? '#1a1a22' : '#f5f3ee'} stroke={dk ? '#ccc' : '#222'}/>
+                  <DXFPreviewSVG hull={parsed.hull} chambers={parsed.chambers} overrides={overrides} accent={T.accent} fill={dk ? '#1a1a22' : '#f5f3ee'} stroke={dk ? '#ccc' : '#222'} orient={orient}/>
+                </div>
+                {/* WIP41: orientation controls. Whatever the user sets here is
+                    applied identically by the 3D extruder, so what's shown
+                    in this thumbnail is exactly what gets extruded. */}
+                <div style={{ marginTop:10, display:'flex', gap:6, flexWrap:'wrap' }}>
+                  <button onClick={() => setOrient((o) => Object.assign({}, o, { rot: ((o.rot || 0) + 90) % 360 }))}
+                    style={{ padding:'5px 10px', fontSize:10, background:T.bgCard, color:T.text, border:'1px solid '+T.border, borderRadius:3, cursor:'pointer' }}>
+                    \u21bb Rotate 90\u00b0{orient.rot ? ' (' + orient.rot + '\u00b0)' : ''}
+                  </button>
+                  <button onClick={() => setOrient((o) => Object.assign({}, o, { flipX: !o.flipX }))}
+                    style={{ padding:'5px 10px', fontSize:10, background: orient.flipX ? T.accent : T.bgCard, color: orient.flipX ? '#fff' : T.text, border:'1px solid '+(orient.flipX ? T.accent : T.border), borderRadius:3, cursor:'pointer' }}>
+                    \u2194 Flip X
+                  </button>
+                  <button onClick={() => setOrient((o) => Object.assign({}, o, { flipY: !o.flipY }))}
+                    style={{ padding:'5px 10px', fontSize:10, background: orient.flipY ? T.accent : T.bgCard, color: orient.flipY ? '#fff' : T.text, border:'1px solid '+(orient.flipY ? T.accent : T.border), borderRadius:3, cursor:'pointer' }}>
+                    \u2195 Flip Y
+                  </button>
                 </div>
                 <div style={{ marginTop:8, fontSize:10, color:T.textSub }}>
                   Hull: {parsed.hull.vertices.length} pts \u00b7 Chambers: {parsed.chambers.length} ({Object.values(overrides).filter((v) => v === 'ignore').length} ignored) \u00b7 BBox: {Math.round(parsed.hull.bbox.xmax)} \u00d7 {Math.round(parsed.hull.bbox.ymax)} mm
@@ -468,6 +597,41 @@ function ProfileEditor({ T, dk, profile, profileLinks, updCost, updPoly, updLink
           <div style={{ width:'100%', maxWidth:400, height:300, background: dk ? '#0a0a10' : '#fafafa', borderRadius:6, padding:16, border:'1px solid '+T.borderLight }}>
             <div style={{ width:'100%', height:'100%' }} dangerouslySetInnerHTML={{ __html: renderProfileSvg(m.polygon, { padPx: 4, fillCol: dk ? '#1a1a22' : '#f5f3ee', strokeCol: dk ? '#ccc' : '#222', exteriorEdge: m.polygon.colouredFaceSide || 'right', strokeWidth: 0.8 }) }}/>
           </div>
+          {/* WIP41: orientation controls for an already-imported profile.
+              Useful for: (a) profiles imported before this feature existed
+              that need flipX to match their previous look, and (b) fixing
+              orientation without re-uploading the DXF. Changes apply
+              immediately to both this preview and the 3D viewport. */}
+          {(() => {
+            const co = m.polygon.polygonOrient || { rot: 0, flipX: false, flipY: false };
+            const setO = (next) => updPoly(m.polyKey, 'polygonOrient', next);
+            const dirty = ((co.rot | 0) !== 0) || co.flipX || co.flipY;
+            return (
+              <div style={{ marginTop:12, padding:'10px 12px', background:T.bgHover, borderRadius:4, border:'1px solid '+T.border, maxWidth:400 }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                  <div style={{ fontSize:10, fontWeight:600, color:T.text }}>Orientation (preview = 3D output)</div>
+                  {dirty && (
+                    <button onClick={() => setO({ rot: 0, flipX: false, flipY: false })}
+                      style={{ padding:'2px 8px', fontSize:9, background:'transparent', color:T.textSub, border:'1px solid '+T.border, borderRadius:3, cursor:'pointer' }}>Reset</button>
+                  )}
+                </div>
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                  <button onClick={() => setO(Object.assign({}, co, { rot: ((co.rot || 0) + 90) % 360 }))}
+                    style={{ padding:'4px 10px', fontSize:10, background:T.bgCard, color:T.text, border:'1px solid '+T.border, borderRadius:3, cursor:'pointer' }}>
+                    \u21bb Rotate 90\u00b0{co.rot ? ' (' + co.rot + '\u00b0)' : ''}
+                  </button>
+                  <button onClick={() => setO(Object.assign({}, co, { flipX: !co.flipX }))}
+                    style={{ padding:'4px 10px', fontSize:10, background: co.flipX ? T.accent : T.bgCard, color: co.flipX ? '#fff' : T.text, border:'1px solid '+(co.flipX ? T.accent : T.border), borderRadius:3, cursor:'pointer' }}>
+                    \u2194 Flip X
+                  </button>
+                  <button onClick={() => setO(Object.assign({}, co, { flipY: !co.flipY }))}
+                    style={{ padding:'4px 10px', fontSize:10, background: co.flipY ? T.accent : T.bgCard, color: co.flipY ? '#fff' : T.text, border:'1px solid '+(co.flipY ? T.accent : T.border), borderRadius:3, cursor:'pointer' }}>
+                    \u2195 Flip Y
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
         </> : <div style={{ fontSize:11, color:T.textMuted }}>No DXF imported. Click <b>Import DXF</b> above to load real geometry. Until then, 3D and 2D fall back to flat extrusion.</div>}
       </div>}
 
@@ -638,12 +802,18 @@ function ProfileManager({ T, dk, appSettings, setAppSettings }) {
       code: data.code, name: data.name, system: data.system, role: data.role,
       description: data.description || '',
       usedByProductTypes: data.productTypes || [],
-      bboxMm: { w: data.sightlineMm, h: data.depthMm },
+      // WIP41: bboxMm = source (un-transformed) dims, since applyPolygonOrient
+      // takes source dims as input. orientedBbox() derives the visible
+      // post-orientation dims at render time.
+      bboxMm: data.bboxSrcMm || { w: data.sightlineMm, h: data.depthMm },
       depthMm: data.depthMm, sightlineMm: data.sightlineMm,
       weldAllowanceMm: data.weldAllowanceMm || 3,
       mitreAngleDeg: data.mitreAngleDeg || 45,
       colouredFaceSide: data.colouredFaceSide || 'right',
       requiresSteelReinforcement: !!data.requiresSteelReinforcement,
+      // WIP41: orientation chosen in the import modal — applied identically
+      // by renderProfileSvg (preview) and buildProfileShape (3D extrusion).
+      polygonOrient: data.polygonOrient || { rot: 0, flipX: false, flipY: false },
       outerHullMm: data.hull, chambersMm: data.chambers,
     };
     setAppSettings((s) => {

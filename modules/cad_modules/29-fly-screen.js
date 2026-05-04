@@ -24,16 +24,41 @@ function buildFlyScreen(openW, openH, profileDepth, mat, isExternal) {
     ? profileDepth / 2 + fsGap + fsFrameD / 2
     : -(profileDepth / 2 + fsGap + fsFrameD / 2);
 
-  // --- Frame material: MATCHES the window profile colour exactly ---
-  var frameCol = new THREE.Color('#FDFCFA');
-  if (mat && mat.color) frameCol = mat.color.clone();
-  // Slight aluminium tint: darken by 5% and add metalness
-  var fr = frameCol.r * 0.95, fg = frameCol.g * 0.95, fb = frameCol.b * 0.95;
-  const fsMat = new THREE.MeshPhysicalMaterial({
-    color: new THREE.Color(fr, fg, fb),
-    roughness: 0.35, metalness: 0.12,
-    clearcoat: 0.3, clearcoatRoughness: 0.4,
-  });
+  // --- Frame material: clone the actual window-profile material so the
+  //     fly screen frame matches whatever finish the user selected —
+  //     including photographic foil/aludec texture uploads, woodgrain,
+  //     and clearcoat. Cloning preserves the map/normalMap/roughnessMap
+  //     references so the GPU shares the same texture upload.
+  //
+  //     Reading `mat.color` was the previous approach but for textured
+  //     materials `color` defaults to white (the texture supplies the
+  //     colour), so the fly screen frame ended up flat white whenever
+  //     the user had a wood or photographic aludec colour selected.
+  var fsMat;
+  if (mat && typeof mat.clone === 'function') {
+    fsMat = mat.clone();
+    // Slight aluminium feel: nudge metalness up a touch and roughness
+    // down a touch, but only if the source isn't already metallic.
+    if (typeof fsMat.metalness === 'number' && fsMat.metalness < 0.1) {
+      fsMat.metalness = Math.min(1, fsMat.metalness + 0.08);
+    }
+    if (typeof fsMat.roughness === 'number') {
+      fsMat.roughness = Math.max(0.1, fsMat.roughness - 0.05);
+    }
+  } else {
+    // Fallback for the rare case mat isn't a real material — use a
+    // neutral aluminium-like default.
+    fsMat = new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color('#cfcfcf'),
+      roughness: 0.35, metalness: 0.2,
+      clearcoat: 0.3, clearcoatRoughness: 0.4,
+    });
+  }
+  // Track the source colour for the bevel/corner/flange tints. If the
+  // material has no `color` channel (texture-driven), use a neutral
+  // mid-grey so the inset edges still read as slightly darker frame.
+  var srcCol = (mat && mat.color) ? mat.color : new THREE.Color('#888');
+  var fr = srcCol.r, fg = srcCol.g, fb = srcCol.b;
 
   // Build frame extrusion - 4 pieces with visible channel groove
   var frameBoxes = [
@@ -44,10 +69,20 @@ function buildFlyScreen(openW, openH, profileDepth, mat, isExternal) {
   ];
   g.add(mergeMesh(frameBoxes, fsMat));
 
-  // Frame inner bevel/chamfer - slight darker inset around inner edge
-  var bevelMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(fr * 0.88, fg * 0.88, fb * 0.88), roughness: 0.5, metalness: 0.1,
-  });
+  // Frame inner bevel/chamfer — slightly darker/matter inset that reads
+  // as recessed. Clones the frame material so textured colours (wood,
+  // photographic aludec) carry through; we just bump roughness up a
+  // notch and dim the tint a little.
+  var bevelMat;
+  if (typeof fsMat.clone === 'function') {
+    bevelMat = fsMat.clone();
+    if (typeof bevelMat.roughness === 'number') bevelMat.roughness = Math.min(1, bevelMat.roughness + 0.15);
+    if (bevelMat.color) bevelMat.color = new THREE.Color(bevelMat.color.r * 0.88, bevelMat.color.g * 0.88, bevelMat.color.b * 0.88);
+  } else {
+    bevelMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(fr * 0.88, fg * 0.88, fb * 0.88), roughness: 0.5, metalness: 0.1,
+    });
+  }
   var bvW = 0.002, bvD = fsFrameD + 0.001;
   var ix = totalW / 2 - fsFrameW + bvW / 2;
   var iy = totalH / 2 - fsFrameW + bvW / 2;
@@ -62,10 +97,16 @@ function buildFlyScreen(openW, openH, profileDepth, mat, isExternal) {
   if (isExternal) {
     const flangeW = 0.003;
     const flangeD = 0.008;
-    const flangeMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(fr * 0.92, fg * 0.92, fb * 0.92),
-      roughness: 0.35, metalness: 0.15,
-    });
+    var flangeMat;
+    if (typeof fsMat.clone === 'function') {
+      flangeMat = fsMat.clone();
+      if (flangeMat.color) flangeMat.color = new THREE.Color(flangeMat.color.r * 0.92, flangeMat.color.g * 0.92, flangeMat.color.b * 0.92);
+    } else {
+      flangeMat = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(fr * 0.92, fg * 0.92, fb * 0.92),
+        roughness: 0.35, metalness: 0.15,
+      });
+    }
     const flangeZ = zPos - fsFrameD / 2 - flangeD / 2;
     g.add(mergeMesh([
       box(totalW - fsOverlap * 2, flangeW, flangeD, 0, totalH / 2 - fsOverlap - flangeW / 2, flangeZ),
@@ -158,19 +199,22 @@ function buildFlyScreen(openW, openH, profileDepth, mat, isExternal) {
     box(spW, meshH, spD, spIx, 0, zPos + fsFrameD / 2 - spD / 2 + 0.0005),
   ], splineMat));
 
-  // Pull tab - matches frame colour
-  var tabMat = new THREE.MeshPhysicalMaterial({
-    color: new THREE.Color(fr, fg, fb), roughness: 0.35, metalness: 0.12,
-    clearcoat: 0.3, clearcoatRoughness: 0.4,
-  });
+  // Pull tab — clones the frame material so it matches in texture/colour
+  var tabMat = (typeof fsMat.clone === 'function') ? fsMat.clone() : fsMat;
   g.add(mergeMesh([
     box(0.030, 0.010, fsFrameD + 0.003, 0, -totalH / 2 + 0.005, zPos),
   ], tabMat));
 
-  // Corner press-fit pieces - same colour as frame
-  var cornerMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(fr * 0.9, fg * 0.9, fb * 0.9), roughness: 0.4, metalness: 0.1,
-  });
+  // Corner press-fit pieces — same look as frame, slightly dimmed
+  var cornerMat;
+  if (typeof fsMat.clone === 'function') {
+    cornerMat = fsMat.clone();
+    if (cornerMat.color) cornerMat.color = new THREE.Color(cornerMat.color.r * 0.9, cornerMat.color.g * 0.9, cornerMat.color.b * 0.9);
+  } else {
+    cornerMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(fr * 0.9, fg * 0.9, fb * 0.9), roughness: 0.4, metalness: 0.1,
+    });
+  }
   var cornerSize = 0.009;
   var ccx = totalW / 2 - fsFrameW / 2, ccy = totalH / 2 - fsFrameW / 2;
   g.add(mergeMesh([

@@ -872,33 +872,18 @@ function calculateFramePrice(frame, pricingConfig) {
   stationBreakdown.S_dispatch = { mins: +disp_mins.toFixed(1), cost: +labourCost('S_dispatch', disp_mins).toFixed(2),
     detail: 'wrap + label + load' };
 
-  // Installation — WIP23 restructure. Reads installation type from the frame
-  // (falls through to legacy supplyOnly flag if not set). Looks up base time
-  // in the installTimes[type][productType] matrix. Bifold multiplies by
-  // panel count. supply_only zeroes the whole line. sealTrim + cleanup are
-  // universal add-ons for any non-supply-only frame.
-  var installationType = frame.installationType
-    || (frame.supplyOnly === true ? 'supply_only' : 'retrofit');
-  var inst_mins = 0;
-  var installDetail = '';
-  if (installationType === 'supply_only') {
-    installDetail = 'supply only - no install';
-  } else {
-    var itTable = st.S_install && st.S_install.installTimes && st.S_install.installTimes[installationType];
-    var itEntry = itTable && itTable[type];
-    var installBase = (itEntry && typeof itEntry.t === 'number') ? itEntry.t : 45;  // fallback
-    if (type === 'bifold_door') {
-      inst_mins = installBase * panels;
-      installDetail = installationType + ' · ' + panels + ' panel(s) × ' + installBase + ' min';
-    } else {
-      inst_mins = installBase;
-      installDetail = installationType + ' · ' + installBase + ' min base';
-    }
-    var sealT = ot('S_install','sealTrim');
-    var cleanT = ot('S_install','cleanup');
-    inst_mins += sealT + cleanT;
-    installDetail += ' + seal ' + sealT + 'min + cleanup ' + cleanT + 'min';
-  }
+  // Installation — WIP38 unification. The per-frame install minutes formula
+  // now lives in computeFrameInstallMinutes (06-install-planning.js) and is
+  // shared with autoCalcInstallPlanning. Both consumers stay in sync no
+  // matter which Settings UI tab the user edits: Install Times Matrix,
+  // S_install ops (sealTrim/cleanup), Install Planning baseMinutes (now
+  // additive per property type), or floor add-on. supply_only correctly
+  // returns 0 here too — no install line at all.
+  var _instCalc = (typeof computeFrameInstallMinutes === 'function')
+    ? computeFrameInstallMinutes(frame, pc)
+    : { minutes: 0, detail: '', supplyOnly: supplyOnly, parts: {} };
+  var inst_mins = _instCalc.minutes;
+  var installDetail = _instCalc.detail;
   var inst_cost = labourCost('S_install', inst_mins);
   stationBreakdown.S_install = { mins: +inst_mins.toFixed(1), cost: +inst_cost.toFixed(2),
     detail: installDetail };

@@ -253,7 +253,7 @@ function Schematic2D({ productType, widthMm, heightMm, panelCount, openingStyle,
     // Grid layout cell-type indicators
     if (ap.cellType) {
       if (ap.cellType === "fixed") return <g key={idx} stroke="#999" strokeWidth={0.75}><line x1={ap.x+ins} y1={ap.y+ins} x2={ap.x+ap.w-ins} y2={ap.y+ap.h-ins}/><line x1={ap.x+ap.w-ins} y1={ap.y+ins} x2={ap.x+ins} y2={ap.y+ap.h-ins}/></g>;
-      if (ap.cellType === "awning") return <g key={idx} stroke={col} strokeWidth={1.5} fill="none"><line x1={ap.x+ins} y1={ap.y+ap.h-ins} x2={cx} y2={ap.y+ins}/><line x1={ap.x+ap.w-ins} y1={ap.y+ap.h-ins} x2={cx} y2={ap.y+ins}/></g>;
+      if (ap.cellType === "awning") return <g key={idx} stroke={col} strokeWidth={1.5} fill="none"><line x1={ap.x+ins} y1={ap.y+ins} x2={cx} y2={ap.y+ap.h-ins}/><line x1={ap.x+ap.w-ins} y1={ap.y+ins} x2={cx} y2={ap.y+ap.h-ins}/></g>;
       if (ap.cellType === "casement_l" || ap.cellType === "casement") return <g key={idx} stroke={col} strokeWidth={1.5} fill="none"><line x1={ap.x+ap.w-ins} y1={ap.y+ins} x2={ap.x+ins} y2={cy}/><line x1={ap.x+ap.w-ins} y1={ap.y+ap.h-ins} x2={ap.x+ins} y2={cy}/></g>;
       if (ap.cellType === "casement_r") return <g key={idx} stroke={col} strokeWidth={1.5} fill="none"><line x1={ap.x+ins} y1={ap.y+ins} x2={ap.x+ap.w-ins} y2={cy}/><line x1={ap.x+ins} y1={ap.y+ap.h-ins} x2={ap.x+ap.w-ins} y2={cy}/></g>;
       if (ap.cellType === "tilt_turn") return <g key={idx} fill="none"><line x1={ap.x+ins} y1={ap.y+ap.h-ins} x2={cx} y2={ap.y+ins} stroke={col} strokeWidth={1} strokeDasharray="4,3"/><line x1={ap.x+ap.w-ins} y1={ap.y+ap.h-ins} x2={cx} y2={ap.y+ins} stroke={col} strokeWidth={1} strokeDasharray="4,3"/><line x1={ap.x+ap.w-ins} y1={ap.y+ins} x2={ap.x+ins} y2={cy} stroke={col} strokeWidth={1.5}/><line x1={ap.x+ap.w-ins} y1={ap.y+ap.h-ins} x2={ap.x+ins} y2={cy} stroke={col} strokeWidth={1.5}/></g>;
@@ -262,7 +262,7 @@ function Schematic2D({ productType, widthMm, heightMm, panelCount, openingStyle,
     if (productType === "fixed_window") return <g key={idx} stroke="#999" strokeWidth={0.75}><line x1={ap.x+ins} y1={ap.y+ins} x2={ap.x+ap.w-ins} y2={ap.y+ap.h-ins}/><line x1={ap.x+ap.w-ins} y1={ap.y+ins} x2={ap.x+ins} y2={ap.y+ap.h-ins}/></g>;
     if (productType === "awning_window") {
       if (ap.zone === "bottom") return <g key={idx} stroke="#999" strokeWidth={0.75}><line x1={ap.x+ins} y1={ap.y+ins} x2={ap.x+ap.w-ins} y2={ap.y+ap.h-ins}/><line x1={ap.x+ap.w-ins} y1={ap.y+ins} x2={ap.x+ins} y2={ap.y+ap.h-ins}/></g>;
-      return <g key={idx} stroke={col} strokeWidth={1.5} fill="none"><line x1={ap.x+ins} y1={ap.y+ap.h-ins} x2={cx} y2={ap.y+ins}/><line x1={ap.x+ap.w-ins} y1={ap.y+ap.h-ins} x2={cx} y2={ap.y+ins}/></g>;
+      return <g key={idx} stroke={col} strokeWidth={1.5} fill="none"><line x1={ap.x+ins} y1={ap.y+ins} x2={cx} y2={ap.y+ap.h-ins}/><line x1={ap.x+ap.w-ins} y1={ap.y+ins} x2={cx} y2={ap.y+ap.h-ins}/></g>;
     }
     if (productType === "casement_window") {
       const isLH = openingStyle === "left_hand" || (openingStyle === "both" && idx === 0);

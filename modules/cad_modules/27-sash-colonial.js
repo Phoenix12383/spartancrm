@@ -83,7 +83,7 @@ function buildSash(sW, sH, mat, type, isLever = false, glassSpec, colonialGrid, 
     var _catSash = null;
     try {
       _catSash = (typeof buildSashFrameFromCatalog === 'function')
-        ? buildSashFrameFromCatalog(sW, sH, _sashEntry, mat, sashRebSide, sashZ)
+        ? buildSashFrameFromCatalog(sW, sH, _sashEntry, mat, sashRebSide, sashZ, matInt)
         : null;
     } catch (e) { console.warn('[cad] buildSashFrameFromCatalog threw:', e); _sdbg.extrudeError = String(e); }
     _sdbg.catalogChildren = _catSash && _catSash.children ? _catSash.children.length : 0;

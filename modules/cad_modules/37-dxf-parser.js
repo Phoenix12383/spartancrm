@@ -70,9 +70,17 @@ function parseDxfPolylines(text) {
 }
 
 // Auto-classify polylines: largest closed = hull, smaller closed inside = chambers.
+// WIP41: also returns a `candidates` array so assembly DXFs (multiple profiles
+// drawn side-by-side, e.g. a section view with frame + sash + bead) can be
+// disambiguated by the user. Each candidate is one (hull, chambers) pair.
+//
+// The first candidate (largest area, ideally on a PVC_OUTSIDE layer) is
+// promoted to top-level `hull` / `chambers` for back-compat with existing
+// callers that don't know about `candidates`.
 function autoClassifyPolylines(polys) {
   var closed = polys.filter(function(p) { return p.closed; });
-  if (closed.length === 0) return { hull: null, chambers: [], others: polys.filter(function(p){return !p.closed;}), bbox: null };
+  var others = polys.filter(function(p){return !p.closed;});
+  if (closed.length === 0) return { hull: null, chambers: [], others: others, bbox: null, candidates: [] };
   function bboxOf(pts) {
     var xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
     for (var k = 0; k < pts.length; k++) {
@@ -82,24 +90,82 @@ function autoClassifyPolylines(polys) {
     }
     return { xmin: xmin, ymin: ymin, xmax: xmax, ymax: ymax, area: (xmax - xmin) * (ymax - ymin) };
   }
-  var withBbox = closed.map(function(p) { return Object.assign({}, p, { bbox: bboxOf(p.vertices) }); });
-  withBbox.sort(function(a, b) { return b.bbox.area - a.bbox.area; });
-  var hull = withBbox[0];
-  var chambers = [];
-  var others = polys.filter(function(p){return !p.closed;});
-  for (var n = 1; n < withBbox.length; n++) {
-    var c = withBbox[n];
-    if (c.bbox.xmin >= hull.bbox.xmin - 0.01 && c.bbox.ymin >= hull.bbox.ymin - 0.01 &&
-        c.bbox.xmax <= hull.bbox.xmax + 0.01 && c.bbox.ymax <= hull.bbox.ymax + 0.01) {
-      chambers.push(c);
-    } else {
-      others.push(c);
-    }
+  function bboxContains(outer, inner) {
+    return inner.xmin >= outer.xmin - 0.01 && inner.ymin >= outer.ymin - 0.01 &&
+           inner.xmax <= outer.xmax + 0.01 && inner.ymax <= outer.ymax + 0.01;
   }
-  return { hull: hull, chambers: chambers, others: others, bbox: hull.bbox };
+  // Layer-name hints: 'hull' (PVC_OUTSIDE), 'chamber' (PVC_INSIDE), 'accessory'
+  // (glass, gasket, steel reinforcement, hatch — never extruded as profile),
+  // or null (unknown — fall back to area-based classification).
+  function classifyLayer(layer) {
+    if (!layer) return null;
+    var L = String(layer).toUpperCase();
+    if (L.indexOf('PVC_OUTSIDE') >= 0) return 'hull';
+    if (L.indexOf('PVC_INSIDE') >= 0)  return 'chamber';
+    if (L.indexOf('GLASS') >= 0 || L.indexOf('GASKET') >= 0 || L.indexOf('STEEL') >= 0 || L.indexOf('HATCH') >= 0) return 'accessory';
+    return null;
+  }
+  var withBbox = closed.map(function(p) { return Object.assign({}, p, { bbox: bboxOf(p.vertices), _kind: classifyLayer(p.layer) }); });
+  withBbox.sort(function(a, b) { return b.bbox.area - a.bbox.area; });
+
+  // Build candidate hulls: a closed polyline is a hull if (a) its layer kind
+  // is 'hull', OR (b) layer kind is null/unknown AND no larger non-accessory
+  // polyline strictly contains its bbox. 'chamber' and 'accessory' polys are
+  // never hulls. Accessories are also never attached as chambers.
+  var candidates = [];
+  for (var i = 0; i < withBbox.length; i++) {
+    var p = withBbox[i];
+    if (p._kind === 'chamber' || p._kind === 'accessory') continue;
+    // Is this contained by an earlier (larger) hull-eligible polyline?
+    var contained = false;
+    for (var k = 0; k < i; k++) {
+      var q = withBbox[k];
+      if (q._kind === 'chamber' || q._kind === 'accessory') continue;
+      if (bboxContains(q.bbox, p.bbox)) { contained = true; break; }
+    }
+    if (contained) continue;
+    candidates.push({ hull: p, chambers: [], _idx: i });
+  }
+  // Now attach every non-hull, non-accessory closed polyline to whichever
+  // candidate hull contains it. Prefer the smallest containing hull.
+  for (var j = 0; j < withBbox.length; j++) {
+    var poly = withBbox[j];
+    if (poly._kind === 'accessory') { others.push(poly); continue; }
+    if (candidates.some(function(c){ return c._idx === j; })) continue;
+    var bestC = null, bestArea = Infinity;
+    for (var ci = 0; ci < candidates.length; ci++) {
+      var cand = candidates[ci];
+      if (bboxContains(cand.hull.bbox, poly.bbox) && cand.hull.bbox.area < bestArea) {
+        bestC = cand; bestArea = cand.hull.bbox.area;
+      }
+    }
+    if (bestC) bestC.chambers.push(poly);
+    else others.push(poly);
+  }
+  // Strip the temp index. Sort candidates by area, largest first.
+  candidates = candidates.map(function(c){ return { hull: c.hull, chambers: c.chambers }; });
+  candidates.sort(function(a, b) { return b.hull.bbox.area - a.hull.bbox.area; });
+
+  // Back-compat: top-level hull/chambers = first candidate.
+  var first = candidates[0] || null;
+  return {
+    hull: first ? first.hull : null,
+    chambers: first ? first.chambers : [],
+    others: others,
+    bbox: first ? first.hull.bbox : null,
+    candidates: candidates,
+  };
 }
 
 // Translate hull and chambers so hull bbox sits at (0,0).
+//
+// As of WIP44: also runs extractOuterSilhouette on the hull when chambers
+// are present, replacing the raw "polyline that snakes through chamber
+// walls" with a clean outer-perimeter trace. This is the auto-detection
+// the user expects: import a DXF, see only the outer silhouette in the
+// preview AND in the 3D extrusion. Original chamber polylines stay intact
+// so chamber detail is still available where needed (Profile Manager
+// detail view, milling-aware rebate depths, etc.).
 function normalizePolygons(hull, chambers) {
   if (!hull) return { hull: hull, chambers: chambers };
   var dx = -hull.bbox.xmin;
@@ -114,10 +180,178 @@ function normalizePolygons(hull, chambers) {
     }
     return { xmin: xmin, ymin: ymin, xmax: xmax, ymax: ymax, area: (xmax - xmin) * (ymax - ymin) };
   }
+  // First translate everything to origin
+  var hullVerts = tx(hull.vertices);
+  var chamberDefs = chambers.map(function(c) { var v = tx(c.vertices); return Object.assign({}, c, { vertices: v, bbox: bboxOf(v) }); });
+
+  // Then auto-extract the outer silhouette using chamber boundaries to
+  // identify chamber-wall trace segments. The original hull is kept under
+  // `rawVertices` for any caller that wants the as-drawn polyline (e.g.
+  // chamber-aware milling-rebate calculations that need the full path).
+  var chamberVerts = chamberDefs.map(function(c){ return c.vertices; });
+  var silhouette = (typeof extractOuterSilhouette === 'function')
+    ? extractOuterSilhouette(hullVerts, chamberVerts, 0.5)
+    : hullVerts;
+
   return {
-    hull: Object.assign({}, hull, { vertices: tx(hull.vertices), bbox: { xmin: 0, ymin: 0, xmax: hull.bbox.xmax + dx, ymax: hull.bbox.ymax + dy, area: hull.bbox.area } }),
-    chambers: chambers.map(function(c) { var v = tx(c.vertices); return Object.assign({}, c, { vertices: v, bbox: bboxOf(v) }); }),
+    hull: Object.assign({}, hull, {
+      vertices: silhouette,
+      rawVertices: hullVerts,
+      bbox: { xmin: 0, ymin: 0, xmax: hull.bbox.xmax + dx, ymax: hull.bbox.ymax + dy, area: hull.bbox.area }
+    }),
+    chambers: chamberDefs,
   };
+}
+
+// ─── extractOuterSilhouette ─────────────────────────────────────────────────
+// Aluplast-style DXF profiles are typically drawn as ONE giant closed
+// polyline that traces the entire cross-section in a single continuous
+// stroke — outer wall, glazing rebate, hardware groove, AND every chamber
+// wall that it can reach without lifting the pen. Plot it raw and you get
+// a visible scribble winding through chamber territory. autoClassifyPolylines
+// puts that polyline into outerHullMm and the genuine separate inner
+// chamber polylines into chambersMm.
+//
+// This function reconstructs the true outer perimeter by walking the hull
+// and dropping any segment whose midpoint sits ON a chamber edge (within
+// `tolMm`). Those segments are by definition chamber-wall traces and not
+// part of the outer silhouette. Adjacent chamber-wall segments collapse
+// into one straight-line "shortcut" across the chamber, then a final
+// colinear-point cleanup yields the clean perimeter.
+//
+// Critically, real outer notches (glazing rebates, weather-seal pockets,
+// hardware grooves opening to the outside) are PRESERVED — those segments
+// don't lie on chamber boundaries so they survive the filter.
+//
+// Falls through gracefully:
+//   - No chambers ⇒ returns the input hull unchanged
+//   - All segments coincident with chambers (degenerate) ⇒ returns input hull
+//   - Output would be < 3 points ⇒ returns input hull
+//
+// Default tolerance (0.5mm) is loose enough to catch chamber walls drawn
+// with sub-mm DXF rounding and tight enough to leave real notches intact.
+function extractOuterSilhouette(hullPts, chambersPts, tolMm) {
+  var TOL = tolMm != null ? tolMm : 0.5;
+  if (!hullPts || hullPts.length < 4) return hullPts || [];
+  if (!chambersPts || chambersPts.length === 0) return hullPts;
+
+  function pointSegDist(p, a, b) {
+    var dx = b[0] - a[0], dy = b[1] - a[1];
+    var L2 = dx * dx + dy * dy;
+    if (L2 < 1e-12) {
+      var ddx = p[0] - a[0], ddy = p[1] - a[1];
+      return Math.sqrt(ddx * ddx + ddy * ddy);
+    }
+    var t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    var qx = a[0] + t * dx, qy = a[1] + t * dy;
+    var ex = p[0] - qx, ey = p[1] - qy;
+    return Math.sqrt(ex * ex + ey * ey);
+  }
+  function midpointOnAnyChamberEdge(a, b) {
+    var mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    for (var c = 0; c < chambersPts.length; c++) {
+      var ch = chambersPts[c];
+      if (!ch || ch.length < 2) continue;
+      var n = ch.length;
+      // Stop one short if the polyline duplicates the closing point.
+      var endIdx = (n > 2 && ch[0][0] === ch[n - 1][0] && ch[0][1] === ch[n - 1][1]) ? n - 1 : n;
+      for (var i = 0; i < endIdx; i++) {
+        var ca = ch[i], cb = ch[(i + 1) % n];
+        if (pointSegDist([mx, my], ca, cb) < TOL) return true;
+      }
+    }
+    return false;
+  }
+
+  // Walk the hull, accumulating only segments that aren't chamber traces.
+  // Whenever we drop a segment (or run of segments), the next kept segment's
+  // start auto-fills the gap as a straight line — i.e. the chamber excursion
+  // is "shortcut" by the next outer-wall segment.
+  var keep = [hullPts[0]];
+  var droppedAny = false;
+  for (var i = 0; i < hullPts.length - 1; i++) {
+    var a = hullPts[i], b = hullPts[i + 1];
+    if (midpointOnAnyChamberEdge(a, b)) {
+      droppedAny = true;
+      continue;
+    }
+    // Make sure 'a' is on the kept list (might have been dropped by the
+    // previous iteration).
+    var last = keep[keep.length - 1];
+    if (last[0] !== a[0] || last[1] !== a[1]) keep.push(a);
+    keep.push(b);
+  }
+  if (!droppedAny) return hullPts;
+  if (keep.length < 3) return hullPts;
+
+  // Collapse colinear midpoints (so a 4-corner outer rect with no notches
+  // returns 4 points, not the 8-12 it might have post-shortcut).
+  function colinearCleanup(pts, tol) {
+    if (pts.length < 3) return pts;
+    var out = [pts[0]];
+    for (var k = 1; k < pts.length - 1; k++) {
+      var aa = out[out.length - 1], bb = pts[k], cc = pts[k + 1];
+      if (pointSegDist(bb, aa, cc) > tol) out.push(bb);
+    }
+    out.push(pts[pts.length - 1]);
+    return out;
+  }
+  // Drop the closing-duplicate if any
+  if (keep.length > 3) {
+    var f = keep[0], l = keep[keep.length - 1];
+    if (Math.abs(f[0] - l[0]) < 1e-3 && Math.abs(f[1] - l[1]) < 1e-3) keep.pop();
+  }
+  var cleaned = colinearCleanup(keep, 0.1);
+
+  // Second pass: detect "tip spike" excursions left over when the chamber
+  // polyline was traced without its entry/exit edges (rare but possible
+  // with badly classified DXFs). A tip spike is a vertex where both edges
+  // are extremely short AND nearly opposite-direction AND the start/end
+  // points of the two edges are very close to each other (< 1mm).
+  // This catches degenerate excursions while leaving real notches intact —
+  // a real glazing rebate has its corners at well-separated positions and
+  // wouldn't be flagged.
+  function removeTipSpikes(pts) {
+    if (pts.length < 5) return pts;
+    var changed = true;
+    var working = pts.slice();
+    var maxIter = 10;
+    while (changed && maxIter-- > 0) {
+      changed = false;
+      var n = working.length;
+      var out = [];
+      for (var i = 0; i < n; i++) {
+        var prev = working[(i - 1 + n) % n];
+        var cur  = working[i];
+        var next = working[(i + 1) % n];
+        var prevNextDx = next[0] - prev[0];
+        var prevNextDy = next[1] - prev[1];
+        var prevNextDist = Math.sqrt(prevNextDx * prevNextDx + prevNextDy * prevNextDy);
+        if (prevNextDist < 1.0) {       // prev and next are within 1mm of each other
+          var d1x = cur[0] - prev[0], d1y = cur[1] - prev[1];
+          var d2x = next[0] - cur[0], d2y = next[1] - cur[1];
+          var len1 = Math.sqrt(d1x*d1x + d1y*d1y);
+          var len2 = Math.sqrt(d2x*d2x + d2y*d2y);
+          if (len1 > 0.1 && len2 > 0.1) {
+            var dot = (d1x*d2x + d1y*d2y) / (len1 * len2);
+            if (dot < -0.85) {           // nearly perfectly opposite
+              changed = true;
+              continue;                  // skip cur — collapses the spike
+            }
+          }
+        }
+        out.push(cur);
+      }
+      working = out;
+    }
+    return working;
+  }
+  var despike = removeTipSpikes(cleaned);
+  despike = colinearCleanup(despike, 0.1);
+
+  if (despike.length < 3) return hullPts;
+  return despike;
 }
 
 // ─── parseDxfAssembly ──────────────────────────────────────────────────────
@@ -212,25 +446,56 @@ function parseDxfAssembly(text) {
       }
       sink.push({ kind: 'line', layer: llayer, vertices: [[x1, y1], [x2, y2]] });
     } else if (typeName === 'HATCH') {
-      // Capture only the boundary polyline data; ignore fill pattern. DXF
-      // group codes 91 (numPaths), 92 (path-type flags), 93 (numEdges/verts),
-      // 10/20 for vertices on a polyline boundary path.
+      // Capture only boundary polyline path vertices; ignore the rest of
+      // the HATCH entity (pattern definition, elevation point, etc.).
+      //
+      // HATCH structure (relevant subset):
+      //   8  = layer
+      //   91 = number of boundary paths      ← starts boundary section
+      //   92 = path-type flag (bit 1 set means this path is a polyline)
+      //   72 = polyline has bulge (only if path type bit 1)
+      //   73 = polyline is closed             (only if path type bit 1)
+      //   93 = vertex count                   ← starts vertex list
+      //   10/20 = vertex coords × 93 times
+      //   42 = bulge per vertex (interleaved if 72 said yes)
+      //   97 = source-boundary-objects count   ← ends vertex list
+      //   75 = hatch style                    ← starts pattern section
+      //   76 = pattern type
+      //   ...code 10/20 here is pattern definition data — must skip
+      //
+      // Strategy: we only add 10/20 pairs to verts when the most recent
+      // numeric "section header" code was 93 (vertex count). After 97 or
+      // 75 appears, we're out of the boundary path's vertex region.
       var hlayer = '0', hverts = [];
+      var inVertexList = false;
       while (i < lines.length) {
         var q = readPair();
         if (!q) break;
         if (q.code === 0) { i -= 2; break; }
         if (q.code === 8) hlayer = q.val;
-        else if (q.code === 10) {
+        else if (q.code === 93) inVertexList = true;
+        else if (q.code === 97 || q.code === 75 || q.code === 78 || q.code === 76 || q.code === 91) {
+          // 97 = source boundary objects count (after vertices)
+          // 75/76/78 = pattern style/type/lines
+          // 91 reset (next path) — vertex list also ends
+          inVertexList = false;
+        }
+        else if (q.code === 10 && inVertexList) {
           var hx = parseFloat(q.val);
           var nxt = readPair();
           if (nxt && nxt.code === 20) hverts.push([hx, parseFloat(nxt.val)]);
+          else if (nxt) i -= 2;  // not a code-20 pair, give it back
         }
       }
       if (hverts.length >= 3) sink.push({ kind: 'polyline', layer: hlayer, vertices: hverts, closed: true, hatch: true });
     } else if (typeName === 'INSERT') {
       // Block reference — record it; pass 2 will expand it.
-      var blockName = '', ix = 0, iy = 0, sx = 1, sy = 1, ilayer = '0';
+      // Group codes:
+      //   2  = block name
+      //   10/20 = insert anchor (X,Y) in WCS
+      //   41/42 = X/Y scale
+      //   50 = rotation in degrees (counter-clockwise, around the insert anchor)
+      var blockName = '', ix = 0, iy = 0, sx = 1, sy = 1, rot = 0, ilayer = '0';
       while (i < lines.length) {
         var q = readPair();
         if (!q) break;
@@ -241,8 +506,9 @@ function parseDxfAssembly(text) {
         else if (q.code === 20) iy = parseFloat(q.val);
         else if (q.code === 41) sx = parseFloat(q.val) || 1;
         else if (q.code === 42) sy = parseFloat(q.val) || 1;
+        else if (q.code === 50) rot = parseFloat(q.val) || 0;
       }
-      sink.push({ kind: 'insert', layer: ilayer, blockName: blockName, dx: ix, dy: iy, sx: sx, sy: sy });
+      sink.push({ kind: 'insert', layer: ilayer, blockName: blockName, dx: ix, dy: iy, sx: sx, sy: sy, rot: rot });
     } else {
       // Unknown / unhandled entity — skip group codes until the next 0-code.
       while (i < lines.length) {
@@ -265,14 +531,19 @@ function parseDxfAssembly(text) {
       } else if (p.val === 'ENDSEC') { inSection = null; currentBlock = null; continue; }
       if (inSection === 'BLOCKS') {
         if (p.val === 'BLOCK') {
-          var bname = '';
+          // BLOCK header carries:
+          //   2 = name, 10/20 = base point (relative origin for the block's
+          //   primitives — INSERT effectively translates by (insertPoint − basePoint))
+          var bname = '', bx = 0, by = 0;
           while (i < lines.length) {
             var q = readPair();
             if (!q) break;
             if (q.code === 0) { i -= 2; break; }
             if (q.code === 2) bname = q.val;
+            else if (q.code === 10) bx = parseFloat(q.val);
+            else if (q.code === 20) by = parseFloat(q.val);
           }
-          currentBlock = { name: bname, primitives: [] };
+          currentBlock = { name: bname, primitives: [], baseX: bx, baseY: by };
           blocks[bname] = currentBlock;
           continue;
         } else if (p.val === 'ENDBLK') { currentBlock = null; continue; }
@@ -298,29 +569,76 @@ function parseDxfAssembly(text) {
   }
 
   // ─── Pass 2 — expand INSERT references recursively ─────────────────────
+  // DXF block-instancing model: an INSERT positions a BLOCK at an anchor
+  // point in WCS, scaled and rotated. The block's primitives are drawn in
+  // the block's local coordinate system, with the block's base point
+  // (group codes 10/20 on the BLOCK header) acting as the origin.
+  //
+  // The transform applied to each primitive vertex is:
+  //   (1) Subtract block base point → primitive relative to block origin
+  //   (2) Scale by sx/sy
+  //   (3) Rotate by rot degrees CCW around origin
+  //   (4) Translate by INSERT insert point (in WCS)
+  //
+  // Nested INSERTs compose: the parent transform is applied AFTER the
+  // child's transform — so we represent the cumulative transform as a 2x3
+  // affine matrix [a, b, c, d, e, f] meaning x' = a*x + c*y + e,
+  // y' = b*x + d*y + f. Composition is matrix multiplication.
   var resolved = [];
-  function expand(prims, dx, dy, sx, sy, depth) {
+  function applyMatrix(m, x, y) {
+    return [m[0]*x + m[2]*y + m[4], m[1]*x + m[3]*y + m[5]];
+  }
+  function multiplyMatrices(A, B) {
+    // A * B — A is the parent transform (applied last to the child's coords)
+    // Returned matrix M such that applyMatrix(M, v) = applyMatrix(A, applyMatrix(B, v))
+    return [
+      A[0]*B[0] + A[2]*B[1],
+      A[1]*B[0] + A[3]*B[1],
+      A[0]*B[2] + A[2]*B[3],
+      A[1]*B[2] + A[3]*B[3],
+      A[0]*B[4] + A[2]*B[5] + A[4],
+      A[1]*B[4] + A[3]*B[5] + A[5],
+    ];
+  }
+  function insertMatrix(insert, baseX, baseY) {
+    // Compose: T(insert) * R(rot) * S(sx,sy) * T(-base)
+    var rad = (insert.rot || 0) * Math.PI / 180;
+    var c = Math.cos(rad), s = Math.sin(rad);
+    var sx = insert.sx, sy = insert.sy;
+    // S(sx,sy) * T(-base) = [sx, 0, 0, sy, -sx*baseX, -sy*baseY]
+    var SBT = [sx, 0, 0, sy, -sx*baseX, -sy*baseY];
+    // R * SBT
+    var RSBT = [
+      c*SBT[0] - s*SBT[1],
+      s*SBT[0] + c*SBT[1],
+      c*SBT[2] - s*SBT[3],
+      s*SBT[2] + c*SBT[3],
+      c*SBT[4] - s*SBT[5],
+      s*SBT[4] + c*SBT[5],
+    ];
+    // T(insert) * RSBT
+    return [RSBT[0], RSBT[1], RSBT[2], RSBT[3], RSBT[4] + insert.dx, RSBT[5] + insert.dy];
+  }
+  var IDENTITY = [1, 0, 0, 1, 0, 0];
+  function expand(prims, parentMatrix, depth) {
     if (depth > 8) return;  // safety net for circular refs
     for (var n = 0; n < prims.length; n++) {
       var pr = prims[n];
       if (pr.kind === 'insert') {
         var blk = blocks[pr.blockName];
         if (!blk) continue;
-        // Compose transforms: parent translate first, then this insert
-        var nx = dx + pr.dx * sx;
-        var ny = dy + pr.dy * sy;
-        var nsx = sx * pr.sx, nsy = sy * pr.sy;
-        expand(blk.primitives, nx, ny, nsx, nsy, depth + 1);
+        var local = insertMatrix(pr, blk.baseX || 0, blk.baseY || 0);
+        var combined = multiplyMatrices(parentMatrix, local);
+        expand(blk.primitives, combined, depth + 1);
       } else {
-        // Apply transform to vertices
         var newVerts = pr.vertices.map(function(v) {
-          return [v[0] * sx + dx, v[1] * sy + dy];
+          return applyMatrix(parentMatrix, v[0], v[1]);
         });
         resolved.push({ kind: pr.kind, layer: pr.layer, vertices: newVerts, closed: pr.closed, hatch: pr.hatch });
       }
     }
   }
-  expand(topPrimitives, 0, 0, 1, 1, 0);
+  expand(topPrimitives, IDENTITY, 0);
 
   // ─── Compute bounding box + layer counts ───────────────────────────────
   var xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
@@ -570,14 +888,28 @@ function measureAssembly(parsed) {
   var clusters = [];
   allPvc.forEach(function(p) {
     var pb = bboxOfList([p]);
+    var pbArea = pb.w * pb.h;
     var matched = false;
     for (var i = 0; i < clusters.length; i++) {
       var cb = bboxOfList(clusters[i].polys);
-      var overlap = !(pb.xmax+5 < cb.xmin || pb.xmin > cb.xmax+5 || pb.ymax+5 < cb.ymin || pb.ymin > cb.ymax+5);
-      if (overlap) {
-        clusters[i].polys.push(p);
-        matched = true;
-        break;
+      // Bbox-overlap clustering with a minimum-fraction threshold.
+      // Frame and sash on a head section have overlapping bboxes (each
+      // square-ish, sitting diagonally) yet are clearly distinct profile
+      // pieces. Merge only when the overlap covers >50% of the smaller
+      // bbox — that catches genuine adjacency (a small bead poly nestled
+      // INSIDE the sash's bounding box) without falsely merging frame
+      // with sash.
+      var ox = Math.min(pb.xmax, cb.xmax) - Math.max(pb.xmin, cb.xmin);
+      var oy = Math.min(pb.ymax, cb.ymax) - Math.max(pb.ymin, cb.ymin);
+      if (ox > 0 && oy > 0) {
+        var overlapArea = ox * oy;
+        var cbArea = cb.w * cb.h;
+        var smallerArea = Math.min(pbArea, cbArea);
+        if (smallerArea > 0 && overlapArea / smallerArea > 0.5) {
+          clusters[i].polys.push(p);
+          matched = true;
+          break;
+        }
       }
     }
     if (!matched) clusters.push({ polys: [p] });
@@ -597,20 +929,31 @@ function measureAssembly(parsed) {
     // overlap is the sash.
     var c0 = topClusters[0], c1 = topClusters[1];
     if (glassBbox) {
-      // The sash holds the glass — so the glass rebate's Y-range (or X-range
-      // for jamb sections) should fall WITHIN the sash's bbox along the
-      // axis perpendicular to the section direction. Compute the fraction
-      // of the glass's perpendicular axis that overlaps each cluster.
-      function perpOverlap(cb) {
-        // Try both axes — the larger fractional overlap wins
-        var oxFrac = Math.max(0, Math.min(cb.xmax, glassBbox.xmax) - Math.max(cb.xmin, glassBbox.xmin)) / glassBbox.w;
-        var oyFrac = Math.max(0, Math.min(cb.ymax, glassBbox.ymax) - Math.max(cb.ymin, glassBbox.ymin)) / glassBbox.h;
-        return Math.max(oxFrac, oyFrac);
+      // The sash physically encloses (or is adjacent to) part of the glass
+      // channel. Compute how much of the glass bbox falls INSIDE each
+      // cluster's bbox, measured as overlap area in mm². The cluster with
+      // the larger glass-area-inside wins. If neither overlaps the glass
+      // (rare — happens when section drawing has glass fully separated
+      // from PVC), fall back to centroid distance.
+      function glassAreaInside(cb) {
+        var ox = Math.max(0, Math.min(cb.xmax, glassBbox.xmax) - Math.max(cb.xmin, glassBbox.xmin));
+        var oy = Math.max(0, Math.min(cb.ymax, glassBbox.ymax) - Math.max(cb.ymin, glassBbox.ymin));
+        return ox * oy;
       }
       var sash, frame;
-      var ov0 = perpOverlap(c0.bbox), ov1 = perpOverlap(c1.bbox);
-      if (ov0 > ov1) { sash = c0; frame = c1; }
-      else { sash = c1; frame = c0; }
+      var area0 = glassAreaInside(c0.bbox), area1 = glassAreaInside(c1.bbox);
+      if (area0 === 0 && area1 === 0) {
+        var glassCx = (glassBbox.xmin + glassBbox.xmax) / 2;
+        var glassCy = (glassBbox.ymin + glassBbox.ymax) / 2;
+        function dist(c) {
+          var ccx = (c.bbox.xmin + c.bbox.xmax) / 2;
+          var ccy = (c.bbox.ymin + c.bbox.ymax) / 2;
+          return Math.hypot(ccx - glassCx, ccy - glassCy);
+        }
+        if (dist(c0) < dist(c1)) { sash = c0; frame = c1; }
+        else                     { sash = c1; frame = c0; }
+      } else if (area0 > area1) { sash = c0; frame = c1; }
+      else                       { sash = c1; frame = c0; }
 
       // Section orientation: head/sill sections have frame above sash (or
       // vice-versa) — both profiles run HORIZONTALLY across the window,
@@ -690,5 +1033,291 @@ function bboxOfPrim(p) {
     if (v[0]>xmax) xmax=v[0]; if (v[1]>ymax) ymax=v[1];
   }
   return { xmin:xmin, ymin:ymin, xmax:xmax, ymax:ymax, w:xmax-xmin, h:ymax-ymin };
+}
+
+// ─── measureMullionSection ────────────────────────────────────────────────
+// Extracts cut-relevant dimensions from a mullion cross-section DXF (the
+// view through a vertical mullion at its midpoint, with sash on each side).
+// Inwards-opening systems and outwards-opening systems get separate DXFs
+// because the rebate location flips, but the measurement logic is the same.
+//
+// Returns:
+//   mullionSightlineMm — visible face width of the mullion
+//   mullionDepthMm     — depth of the mullion profile
+//   sashMullionGapMm   — gasket-line air gap between sash edge and mullion
+//                        face (analogous to frameSashGapMm but at the
+//                        mullion location)
+//
+// Strategy: find the largest PVC cluster — that's the mullion. The sashes
+// on either side are the next two clusters (smaller, lateral). Sightline
+// = mullion bbox dim along section direction; gap = distance from mullion
+// face to sash bbox edge.
+function measureMullionSection(parsed) {
+  if (!parsed || !parsed.primitives || !parsed.primitives.length) return null;
+
+  // Median centroid (same robust approach as measureAssembly)
+  var centroids = [];
+  parsed.primitives.forEach(function(p) {
+    var pb = bboxOfPrim(p);
+    if (pb.w > 200 || pb.h > 200) return;
+    centroids.push([(pb.xmin + pb.xmax) / 2, (pb.ymin + pb.ymax) / 2]);
+  });
+  if (centroids.length < 3) return null;
+  var xs = centroids.map(function(c){return c[0];}).sort(function(a,b){return a-b;});
+  var ys = centroids.map(function(c){return c[1];}).sort(function(a,b){return a-b;});
+  var cx = xs[Math.floor(xs.length / 2)];
+  var cy = ys[Math.floor(ys.length / 2)];
+
+  // Bucket by layer within the section
+  var byLayer = {};
+  parsed.primitives.forEach(function(p) {
+    var pb = bboxOfPrim(p);
+    var pcx = (pb.xmin + pb.xmax) / 2;
+    var pcy = (pb.ymin + pb.ymax) / 2;
+    if (Math.abs(pcx - cx) > 400 || Math.abs(pcy - cy) > 400) return;
+    if (pb.w > 600 || pb.h > 600) return;
+    if (!byLayer[p.layer]) byLayer[p.layer] = [];
+    byLayer[p.layer].push(p);
+  });
+
+  function bboxOfList(prims) {
+    if (!prims || !prims.length) return null;
+    var xmin=Infinity, ymin=Infinity, xmax=-Infinity, ymax=-Infinity;
+    prims.forEach(function(p) {
+      p.vertices.forEach(function(v) {
+        if (v[0]<xmin) xmin=v[0]; if (v[1]<ymin) ymin=v[1];
+        if (v[0]>xmax) xmax=v[0]; if (v[1]>ymax) ymax=v[1];
+      });
+    });
+    return { xmin:xmin, ymin:ymin, xmax:xmax, ymax:ymax, w:xmax-xmin, h:ymax-ymin };
+  }
+
+  // Build PVC clusters — same approach as measureAssembly
+  var pvcOutsideKeys = Object.keys(byLayer).filter(function(l) {
+    return /^PVC_OUTSIDE/i.test(l) || /^PVC_EXTERIOR/i.test(l);
+  });
+  var allPvc = [];
+  pvcOutsideKeys.forEach(function(l) { allPvc = allPvc.concat(byLayer[l] || []); });
+  if (!allPvc.length) {
+    Object.keys(byLayer).forEach(function(l) {
+      if (/^PVC/i.test(l)) allPvc = allPvc.concat(byLayer[l] || []);
+    });
+  }
+  var clusters = [];
+  allPvc.forEach(function(p) {
+    var pb = bboxOfList([p]);
+    var pbArea = pb.w * pb.h;
+    var matched = false;
+    for (var i = 0; i < clusters.length; i++) {
+      var cb = bboxOfList(clusters[i].polys);
+      // Bbox-overlap clustering with a minimum-fraction threshold.
+      // Frame and sash on a head section have overlapping bboxes (each
+      // square-ish, sitting diagonally) yet are clearly distinct profile
+      // pieces. Merge only when the overlap covers >50% of the smaller
+      // bbox — that catches genuine adjacency (a small bead poly nestled
+      // INSIDE the sash's bounding box) without falsely merging frame
+      // with sash.
+      var ox = Math.min(pb.xmax, cb.xmax) - Math.max(pb.xmin, cb.xmin);
+      var oy = Math.min(pb.ymax, cb.ymax) - Math.max(pb.ymin, cb.ymin);
+      if (ox > 0 && oy > 0) {
+        var overlapArea = ox * oy;
+        var cbArea = cb.w * cb.h;
+        var smallerArea = Math.min(pbArea, cbArea);
+        if (smallerArea > 0 && overlapArea / smallerArea > 0.5) {
+          clusters[i].polys.push(p);
+          matched = true;
+          break;
+        }
+      }
+    }
+    if (!matched) clusters.push({ polys: [p] });
+  });
+  clusters.forEach(function(c) { c.bbox = bboxOfList(c.polys); c.area = c.bbox.w * c.bbox.h; });
+  clusters.sort(function(a, b) { return b.area - a.area; });
+
+  var mullionSightlineMm = null, mullionDepthMm = null, sashMullionGapMm = null;
+  if (clusters.length >= 1) {
+    // Largest cluster = mullion (typically central, biggest profile in a
+    // mullion section). Sash clusters flank it on left and right.
+    var mullion = clusters[0];
+    // Detect orientation by comparing the mullion's W vs H to the bbox of
+    // all clusters. If the mullion's W > H, it's drawn horizontally
+    // (cross-section read horizontally) and sightline = W; otherwise H.
+    // Heuristic: a mullion section is conventionally drawn horizontal,
+    // so the smaller dim is sightline.
+    var allClustersBbox = bboxOfList([].concat.apply([], clusters.map(function(c){return c.polys;})));
+    var orientHorizontal = allClustersBbox.w > allClustersBbox.h;
+    if (orientHorizontal) {
+      mullionSightlineMm = Math.round(mullion.bbox.w * 10) / 10;
+      mullionDepthMm     = Math.round(mullion.bbox.h * 10) / 10;
+    } else {
+      mullionSightlineMm = Math.round(mullion.bbox.h * 10) / 10;
+      mullionDepthMm     = Math.round(mullion.bbox.w * 10) / 10;
+    }
+
+    // Sash-mullion gap: distance from mullion face to nearest sash cluster
+    // edge along the section axis. Use the closest sash cluster, find the
+    // gap on the side facing the mullion.
+    if (clusters.length >= 2) {
+      var sash = clusters[1];
+      var gapAlongSection;
+      if (orientHorizontal) {
+        // Sash sits left or right of mullion — measure horizontal gap
+        gapAlongSection = Math.min(
+          Math.abs(mullion.bbox.xmin - sash.bbox.xmax),
+          Math.abs(mullion.bbox.xmax - sash.bbox.xmin)
+        );
+      } else {
+        gapAlongSection = Math.min(
+          Math.abs(mullion.bbox.ymin - sash.bbox.ymax),
+          Math.abs(mullion.bbox.ymax - sash.bbox.ymin)
+        );
+      }
+      // Sanity-bound: gap should be small (1-15mm). If we got a large
+      // number, the clustering picked up something that isn't really a
+      // sash — ignore.
+      if (gapAlongSection >= 0 && gapAlongSection < 30) {
+        sashMullionGapMm = Math.round(gapAlongSection * 10) / 10;
+      }
+    }
+  }
+
+  return {
+    mullionSightlineMm: mullionSightlineMm,
+    mullionDepthMm:     mullionDepthMm,
+    sashMullionGapMm:   sashMullionGapMm,
+  };
+}
+
+// ─── measureIntersection ──────────────────────────────────────────────────
+// Extracts the coupling-block allowance from a mullion-transom intersection
+// DXF. The intersection drawing typically shows the T-junction where a
+// horizontal transom meets a vertical mullion — the coupling block sits
+// between them and takes up some material.
+//
+// The allowance = the depth of material the transom loses on each side
+// where it meets a mullion. For most Aluplast systems this is 8-15mm.
+// We measure it as the distance from the mullion outer face to the nearest
+// transom outer face on the side where they meet.
+//
+// Returns:
+//   couplingAllowanceMm — material consumed by each transom-end coupling.
+//                         Subtracted from transom cut length: 1 allowance
+//                         for each transom end that meets a mullion.
+function measureIntersection(parsed) {
+  if (!parsed || !parsed.primitives || !parsed.primitives.length) return null;
+
+  var centroids = [];
+  parsed.primitives.forEach(function(p) {
+    var pb = bboxOfPrim(p);
+    if (pb.w > 200 || pb.h > 200) return;
+    centroids.push([(pb.xmin + pb.xmax) / 2, (pb.ymin + pb.ymax) / 2]);
+  });
+  if (centroids.length < 3) return null;
+  var xs = centroids.map(function(c){return c[0];}).sort(function(a,b){return a-b;});
+  var ys = centroids.map(function(c){return c[1];}).sort(function(a,b){return a-b;});
+  var cx = xs[Math.floor(xs.length / 2)];
+  var cy = ys[Math.floor(ys.length / 2)];
+
+  var byLayer = {};
+  parsed.primitives.forEach(function(p) {
+    var pb = bboxOfPrim(p);
+    var pcx = (pb.xmin + pb.xmax) / 2;
+    var pcy = (pb.ymin + pb.ymax) / 2;
+    if (Math.abs(pcx - cx) > 400 || Math.abs(pcy - cy) > 400) return;
+    if (pb.w > 600 || pb.h > 600) return;
+    if (!byLayer[p.layer]) byLayer[p.layer] = [];
+    byLayer[p.layer].push(p);
+  });
+
+  function bboxOfList(prims) {
+    if (!prims || !prims.length) return null;
+    var xmin=Infinity, ymin=Infinity, xmax=-Infinity, ymax=-Infinity;
+    prims.forEach(function(p) {
+      p.vertices.forEach(function(v) {
+        if (v[0]<xmin) xmin=v[0]; if (v[1]<ymin) ymin=v[1];
+        if (v[0]>xmax) xmax=v[0]; if (v[1]>ymax) ymax=v[1];
+      });
+    });
+    return { xmin:xmin, ymin:ymin, xmax:xmax, ymax:ymax, w:xmax-xmin, h:ymax-ymin };
+  }
+
+  var pvcOutsideKeys = Object.keys(byLayer).filter(function(l) {
+    return /^PVC_OUTSIDE/i.test(l) || /^PVC_EXTERIOR/i.test(l);
+  });
+  var allPvc = [];
+  pvcOutsideKeys.forEach(function(l) { allPvc = allPvc.concat(byLayer[l] || []); });
+  if (!allPvc.length) {
+    Object.keys(byLayer).forEach(function(l) {
+      if (/^PVC/i.test(l)) allPvc = allPvc.concat(byLayer[l] || []);
+    });
+  }
+  var clusters = [];
+  allPvc.forEach(function(p) {
+    var pb = bboxOfList([p]);
+    var pbArea = pb.w * pb.h;
+    var matched = false;
+    for (var i = 0; i < clusters.length; i++) {
+      var cb = bboxOfList(clusters[i].polys);
+      // Bbox-overlap clustering with a minimum-fraction threshold.
+      // Frame and sash on a head section have overlapping bboxes (each
+      // square-ish, sitting diagonally) yet are clearly distinct profile
+      // pieces. Merge only when the overlap covers >50% of the smaller
+      // bbox — that catches genuine adjacency (a small bead poly nestled
+      // INSIDE the sash's bounding box) without falsely merging frame
+      // with sash.
+      var ox = Math.min(pb.xmax, cb.xmax) - Math.max(pb.xmin, cb.xmin);
+      var oy = Math.min(pb.ymax, cb.ymax) - Math.max(pb.ymin, cb.ymin);
+      if (ox > 0 && oy > 0) {
+        var overlapArea = ox * oy;
+        var cbArea = cb.w * cb.h;
+        var smallerArea = Math.min(pbArea, cbArea);
+        if (smallerArea > 0 && overlapArea / smallerArea > 0.5) {
+          clusters[i].polys.push(p);
+          matched = true;
+          break;
+        }
+      }
+    }
+    if (!matched) clusters.push({ polys: [p] });
+  });
+  clusters.forEach(function(c) { c.bbox = bboxOfList(c.polys); c.area = c.bbox.w * c.bbox.h; });
+  clusters.sort(function(a, b) { return b.area - a.area; });
+
+  // T-junction has at minimum two clusters: the mullion (vertical bar) and
+  // the transom (horizontal bar). The coupling block, if drawn separately,
+  // would be a small third cluster between them.
+  var couplingAllowanceMm = null;
+  if (clusters.length >= 2) {
+    var c0 = clusters[0], c1 = clusters[1];
+    // The shorter cluster (against its longest dim) is likely the mullion
+    // section — the one perpendicular to the transom. Their outer faces
+    // should be in contact (or with a small block between them); the
+    // distance between c0 and c1 along their meeting axis is the allowance.
+    var gapX = Math.max(0, Math.min(
+      Math.abs(c0.bbox.xmin - c1.bbox.xmax),
+      Math.abs(c0.bbox.xmax - c1.bbox.xmin)
+    ));
+    var gapY = Math.max(0, Math.min(
+      Math.abs(c0.bbox.ymin - c1.bbox.ymax),
+      Math.abs(c0.bbox.ymax - c1.bbox.ymin)
+    ));
+    var gap = Math.min(gapX, gapY);
+    // Sanity bound: coupling allowances are 0-30mm. Anything outside that
+    // range is probably a misclustered DXF; return null and let the user
+    // enter the value manually.
+    if (gap >= 0 && gap < 30) {
+      couplingAllowanceMm = Math.round(gap * 10) / 10;
+    }
+  }
+
+  return {
+    couplingAllowanceMm: couplingAllowanceMm,
+  };
+}
+
+if (typeof window !== 'undefined') {
+  window.measureMullionSection = measureMullionSection;
+  window.measureIntersection = measureIntersection;
 }
 

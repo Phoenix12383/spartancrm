@@ -139,66 +139,266 @@ function makeBumpMap(roughness, cat) {
   return tex;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// PARAMETER AMPLIFICATION — DRAMATIC EDITION (rev 2)
+// ─────────────────────────────────────────────────────────────────────────
+// Why this exists: the colour-editor sliders are 0..1 but Three.js material
+// fields don't always show a visually-obvious change across that range.
+// The original 1.5×/1.8× amplification was a first pass; users still found
+// adjustments too subtle (especially Clearcoat and EnvMapIntensity).
+//
+// This rev pushes the curves harder so dragging a slider produces a
+// dramatic visible difference at every step:
+//
+//   ROUGHNESS
+//     Applied through an S-curve remap (centred at 0.5) that pushes values
+//     toward both extremes. Drag toward 0 → mirror-glossy quickly; drag
+//     toward 1 → fully matte quickly. Mid-range stays close to identity so
+//     the slider still feels linear in the middle.
+//
+//   METALNESS
+//     Amplified 2.2× (was 1.5×) clamped to Three.js' [0,1] cap. Even small
+//     metalness slider movements now read clearly; setting 0.45 looks
+//     fully metallic.
+//
+//   CLEARCOAT
+//     Power-curve amplification: pow(cc, 0.55) × 1.05. Small low values
+//     (cc=0.1) lift to ~0.30, producing immediately visible sheen, while
+//     high values still saturate at 1.0 for a true mirror coat. The +0.15
+//     floor was removed — users wanted the option of "no clearcoat at all"
+//     and the curve gives enough lift at low values without it.
+//
+//   CLEARCOAT ROUGHNESS
+//     Power-curve pow(ccr, 1.4) — pushes low values toward 0 so the coat
+//     reads as more mirror-like, more dramatically.
+//
+//   ENVMAPINTENSITY
+//     Amplified 2.5× (was 1.8×) and then multiplied by the global
+//     renderQuality.envIntensityMult so a single render-quality slider
+//     scales reflections globally. Read from window.__renderQualityEnvMult
+//     (set by the React bridge in 39-main-app.js).
+//
+//   SHEEN (NEW)
+//     Velvety grazing-angle glow. New colour-editor field `sn` drives
+//     mat.sheen / mat.sheenColor. Adds depth to woodgrain and dark
+//     finishes without affecting the base reflectance.
+//
+//   REFLECTIVITY / SPECULAR INTENSITY
+//     Couplings widened so the metalness slider has a stronger pull on
+//     non-metallic look as well.
+// ─────────────────────────────────────────────────────────────────────────
+
+// S-curve that pushes values away from the midpoint — small movements
+// near 0 or 1 produce big visual changes, while the middle of the range
+// stays close to identity. Output range [0,1].
+function _ampRoughnessCurve(r) {
+  if (r <= 0) return 0;
+  if (r >= 1) return 1;
+  // Symmetric power-curve halves: lift the low half down toward zero and
+  // pull the high half up toward one. Steepness 1.6 chosen so r=0.25
+  // maps to ~0.10 (very glossy) and r=0.75 maps to ~0.90 (very matte).
+  if (r <= 0.5) return 0.5 * Math.pow(r * 2, 1.6);
+  return 1 - 0.5 * Math.pow((1 - r) * 2, 1.6);
+}
+
+// Read the global env-intensity multiplier set by the renderQuality
+// bridge in 39-main-app.js. Defaults to 1.0 when not set so colours
+// behave identically to the legacy code if the panel is untouched.
+function _globalEnvMult() {
+  try {
+    var v = (typeof window !== 'undefined') ? window.__renderQualityEnvMult : null;
+    return (typeof v === 'number' && isFinite(v) && v >= 0) ? v : 1.0;
+  } catch (e) { return 1.0; }
+}
+
+// Compute the amplified material parameters from a colourDef. Returns a
+// plain object the three branches below can spread into the material
+// constructor. Centralising this avoids the previous 3-way drift where
+// each branch had its own (slightly different) amplification block.
+function _ampMaterialParams(colourDef) {
+  var rough0 = colourDef.r   != null ? colourDef.r   : 0.5;
+  var metal0 = colourDef.m   != null ? colourDef.m   : 0.0;
+  var cc0    = colourDef.cc  != null ? colourDef.cc  : 0.0;
+  var ccr0   = colourDef.ccr != null ? colourDef.ccr : 0.5;
+  var envI0  = colourDef.envI!= null ? colourDef.envI: 0.4;
+  var sn0    = colourDef.sn  != null ? colourDef.sn  : 0.0;
+
+  var gMult = _globalEnvMult();
+
+  return {
+    rough:        _ampRoughnessCurve(rough0),
+    metal:        Math.min(1.0, metal0 * 2.2),
+    clearcoat:    Math.min(1.0, Math.pow(cc0, 0.55) * 1.05),
+    ccRough:      Math.pow(ccr0, 1.4),
+    envI:         envI0 * 2.5 * gMult,
+    sheen:        Math.max(0, Math.min(1, sn0)),
+    // Reflectivity scales 0.05..1.0 across metalness slider — drops to a
+    // visible-low when metal=0, climbs to full mirror at metal=1.
+    reflectivity: 0.05 + Math.min(1.0, metal0 * 2.2) * 0.95,
+    // Specular intensity — wider range than before so even at metal=0.2
+    // the highlight visibly tightens.
+    specular:     0.2 + Math.min(1.0, metal0 * 2.2) * 1.6,
+  };
+}
+
+// Load a base64 data URL (or any URL) into a THREE.Texture asynchronously.
+// The texture is returned immediately (with needsUpdate flipped on once the
+// image loads) so the material that consumed it can decorate UV settings
+// up-front. Returns null when the URL is missing/empty.
+function _loadDataUrlTexture(url) {
+  if (!url) return null;
+  var img = new Image();
+  // Force CORS-safe loading for data URLs (no-op) and external URLs (safer).
+  try { img.crossOrigin = 'anonymous'; } catch (e) {}
+  var tex = new THREE.Texture(img);
+  img.onload = function () { tex.needsUpdate = true; };
+  img.onerror = function () { /* leave default white — material still renders */ };
+  img.src = url;
+  return tex;
+}
+
+// Apply category-appropriate UV wrapping/tiling to an arbitrary texture.
+// Wood scans should run along the long axis (vertical); aludec uses small
+// tiled square scans repeated.
+function _wrapTextureForCategory(tex, cat) {
+  if (!tex) return tex;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  if (cat === 'wood') tex.repeat.set(1, 3);
+  else if (cat === 'aludec') tex.repeat.set(2, 4);
+  else tex.repeat.set(1, 1);
+  return tex;
+}
+
 function makeProfileMat(colourDef) {
   if (!colourDef) colourDef = { hex: '#FDFCFA', cat: 'smooth', r: 0.20, m: 0.0, cc: 0.5, ccr: 0.08, envI: 0.6 };
-  const rough = colourDef.r !== undefined ? colourDef.r : 0.5;
-  const metal = colourDef.m !== undefined ? colourDef.m : 0.0;
-  const cc = colourDef.cc !== undefined ? colourDef.cc : 0.0;
-  const ccr = colourDef.ccr !== undefined ? colourDef.ccr : 0.5;
-  const envI = colourDef.envI !== undefined ? colourDef.envI : 0.4;
+  var amp = _ampMaterialParams(colourDef);
+  // Photographic upload overrides — the colour editor's "Photographic foil
+  // textures" panel stores base64 dataUrls under colourDef.texturePack.
+  // Honoured only for wood and aludec (the categories the editor allows
+  // uploads for). When albedo is present, the procedural canvas texture
+  // is skipped and the upload becomes the colour map. Optional normal +
+  // roughness uploads layer on top.
+  var tp = (colourDef.texturePack && typeof colourDef.texturePack === 'object') ? colourDef.texturePack : null;
+  var hasUploadedAlbedo = !!(tp && tp.albedo);
 
-  // Wood: procedural colour texture from hex + grain style + subtle texture maps
+  // Wood: photographic foil scan if uploaded, otherwise procedural grain.
   if (colourDef.cat === 'wood') {
-    const roughMap = makeRoughnessMap(rough, 'wood');
-    const bumpMap = makeBumpMap(rough, 'wood');
-    const bumpScale = 0.004 + rough * 0.012;
-    const tex = makeWoodTexture(colourDef.hex, colourDef.grain || 'fine', colourDef);
-    tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(1, 3);
-    return new THREE.MeshPhysicalMaterial({
-      map: tex, roughness: rough, metalness: metal,
-      roughnessMap: roughMap,
-      bumpMap: bumpMap, bumpScale: bumpScale,
-      clearcoat: cc, clearcoatRoughness: ccr,
-      envMapIntensity: envI, side: THREE.DoubleSide,
-    });
-  }
-
-  // Aludec: satin uPVC finish with subtle micro-texture (visible up close only)
-  if (colourDef.cat === 'aludec') {
-    // Ultra-fine roughness variation — breaks CG flatness without visible pattern
-    var mtCvs = document.createElement('canvas');
-    mtCvs.width = 128; mtCvs.height = 128;
-    var mtCtx = mtCvs.getContext('2d');
-    var mtId = mtCtx.createImageData(128, 128);
-    var baseR = Math.round(rough * 255);
-    for (var mi2 = 0; mi2 < mtId.data.length; mi2 += 4) {
-      var v = baseR + Math.round((Math.random() - 0.5) * 12); // ±6 variation (~2.5%)
-      mtId.data[mi2] = mtId.data[mi2+1] = mtId.data[mi2+2] = Math.max(0, Math.min(255, v));
-      mtId.data[mi2+3] = 255;
+    var rough0w = colourDef.r != null ? colourDef.r : 0.5;
+    var bumpMapW = makeBumpMap(rough0w, 'wood');
+    var bumpScaleW = 0.004 + rough0w * 0.012;
+    var albedoW;
+    if (hasUploadedAlbedo) {
+      albedoW = _wrapTextureForCategory(_loadDataUrlTexture(tp.albedo), 'wood');
+    } else {
+      albedoW = makeWoodTexture(colourDef.hex, colourDef.grain || 'fine', colourDef);
+      _wrapTextureForCategory(albedoW, 'wood');
     }
-    mtCtx.putImageData(mtId, 0, 0);
-    var mtTex = new THREE.CanvasTexture(mtCvs);
-    mtTex.wrapS = THREE.RepeatWrapping; mtTex.wrapT = THREE.RepeatWrapping;
-    mtTex.repeat.set(3, 3);
-    return new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(colourDef.hex),
-      roughness: rough, metalness: 0.0,
-      roughnessMap: mtTex,
-      clearcoat: cc, clearcoatRoughness: ccr,
-      envMapIntensity: envI,
-      side: THREE.DoubleSide,
-    });
+    // Normal and roughness uploads override the procedural maps when
+    // present — otherwise we fall back to the canvas-generated ones.
+    var roughMapW = (tp && tp.roughness)
+      ? _wrapTextureForCategory(_loadDataUrlTexture(tp.roughness), 'wood')
+      : makeRoughnessMap(rough0w, 'wood');
+    var matOptsW = {
+      map: albedoW, roughness: amp.rough, metalness: amp.metal,
+      roughnessMap: roughMapW,
+      bumpMap: bumpMapW, bumpScale: bumpScaleW,
+      clearcoat: amp.clearcoat, clearcoatRoughness: amp.ccRough,
+      envMapIntensity: amp.envI, side: THREE.DoubleSide,
+    };
+    if (tp && tp.normal) {
+      matOptsW.normalMap = _wrapTextureForCategory(_loadDataUrlTexture(tp.normal), 'wood');
+      matOptsW.normalScale = new THREE.Vector2(0.6, 0.6);
+    }
+    var matW = new THREE.MeshPhysicalMaterial(matOptsW);
+    if (amp.sheen > 0 && 'sheen' in matW) {
+      // r128: sheen is a Color (greyscale = intensity); newer Three.js
+      // accepts a number. Setting both is safe — the unused field is
+      // silently ignored.
+      try {
+        if (matW.sheen && matW.sheen.isColor) {
+          matW.sheen.setRGB(amp.sheen, amp.sheen, amp.sheen);
+        } else {
+          matW.sheen = amp.sheen;
+        }
+      } catch (e) {}
+    }
+    return matW;
   }
 
-  // Smooth uPVC / any other category — clean plastic, soft reflections only
-  return new THREE.MeshPhysicalMaterial({
-    color: new THREE.Color(colourDef.hex), roughness: rough, metalness: metal,
-    clearcoat: cc, clearcoatRoughness: ccr,
-    envMapIntensity: envI, reflectivity: 0.3,
-    specularIntensity: 0.3, specularColor: new THREE.Color(0xffffff),
+  // Aludec: photographic powder-coat scan if uploaded, otherwise procedural.
+  if (colourDef.cat === 'aludec') {
+    var rough0a = colourDef.r != null ? colourDef.r : 0.5;
+    var matOptsA;
+    if (hasUploadedAlbedo) {
+      // Photographic mode — uploaded scan replaces both colour and roughness.
+      var albedoA = _wrapTextureForCategory(_loadDataUrlTexture(tp.albedo), 'aludec');
+      var roughMapA = (tp && tp.roughness)
+        ? _wrapTextureForCategory(_loadDataUrlTexture(tp.roughness), 'aludec')
+        : null;
+      matOptsA = {
+        map: albedoA,
+        roughness: amp.rough, metalness: 0.0,
+        clearcoat: amp.clearcoat, clearcoatRoughness: amp.ccRough,
+        envMapIntensity: amp.envI,
+        side: THREE.DoubleSide,
+      };
+      if (roughMapA) matOptsA.roughnessMap = roughMapA;
+      if (tp.normal) {
+        matOptsA.normalMap = _wrapTextureForCategory(_loadDataUrlTexture(tp.normal), 'aludec');
+        matOptsA.normalScale = new THREE.Vector2(0.4, 0.4);
+      }
+    } else {
+      // Procedural mode — ultra-fine roughness variation breaks CG flatness
+      // without producing a visible pattern at viewing distance.
+      var mtCvs = document.createElement('canvas');
+      mtCvs.width = 128; mtCvs.height = 128;
+      var mtCtx = mtCvs.getContext('2d');
+      var mtId = mtCtx.createImageData(128, 128);
+      var baseR = Math.round(rough0a * 255);
+      for (var mi2 = 0; mi2 < mtId.data.length; mi2 += 4) {
+        var v = baseR + Math.round((Math.random() - 0.5) * 12); // ±6 variation (~2.5%)
+        mtId.data[mi2] = mtId.data[mi2+1] = mtId.data[mi2+2] = Math.max(0, Math.min(255, v));
+        mtId.data[mi2+3] = 255;
+      }
+      mtCtx.putImageData(mtId, 0, 0);
+      var mtTex = new THREE.CanvasTexture(mtCvs);
+      mtTex.wrapS = THREE.RepeatWrapping; mtTex.wrapT = THREE.RepeatWrapping;
+      mtTex.repeat.set(3, 3);
+      matOptsA = {
+        color: new THREE.Color(colourDef.hex),
+        roughness: amp.rough, metalness: 0.0,
+        roughnessMap: mtTex,
+        clearcoat: amp.clearcoat, clearcoatRoughness: amp.ccRough,
+        envMapIntensity: amp.envI,
+        side: THREE.DoubleSide,
+      };
+    }
+    var matA = new THREE.MeshPhysicalMaterial(matOptsA);
+    if (amp.sheen > 0 && 'sheen' in matA) {
+      try {
+        if (matA.sheen && matA.sheen.isColor) matA.sheen.setRGB(amp.sheen, amp.sheen, amp.sheen);
+        else matA.sheen = amp.sheen;
+      } catch (e) {}
+    }
+    return matA;
+  }
+
+  // Smooth uPVC / any other category — clean plastic, soft reflections only.
+  var matS = new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color(colourDef.hex), roughness: amp.rough, metalness: amp.metal,
+    clearcoat: amp.clearcoat, clearcoatRoughness: amp.ccRough,
+    envMapIntensity: amp.envI, reflectivity: amp.reflectivity,
+    specularIntensity: amp.specular, specularColor: new THREE.Color(0xffffff),
     side: THREE.DoubleSide,
   });
+  if (amp.sheen > 0 && 'sheen' in matS) {
+    try {
+      if (matS.sheen && matS.sheen.isColor) matS.sheen.setRGB(amp.sheen, amp.sheen, amp.sheen);
+      else matS.sheen = amp.sheen;
+    } catch (e) {}
+  }
+  return matS;
 }
 
 // Photorealistic procedural woodgrain canvas texture
@@ -485,19 +685,37 @@ function makeWoodPreviewDataURL(colourDef, pw, ph) {
   return cvs.toDataURL();
 }
 
-// Glazing bead material
+// Glazing bead material — slightly glossier than the frame (smaller profile,
+// catches more light) but otherwise tracks the colour. Uses the same
+// _ampMaterialParams curves as makeProfileMat so colour-slider drama is
+// consistent across frame + bead.
 function makeBeadMat(colourDef) {
   if (!colourDef) colourDef = { hex: '#FDFCFA', cat: 'smooth', r: 0.20, m: 0.0, cc: 0.4, ccr: 0.1 };
-  const rough = Math.max(0.15, (colourDef.r || 0.3) - 0.1);
-  const cc = Math.min(1.0, (colourDef.cc || 0.3) + 0.15);
+  var amp = _ampMaterialParams(colourDef);
+  // Beads read slightly glossier than the frame: pull roughness down a touch
+  // and lift clearcoat a touch. Both clamped so we can't overflow.
+  var beadRough = Math.max(0.05, amp.rough - 0.08);
+  var beadCc    = Math.min(1.0, amp.clearcoat + 0.10);
   const matOpts = {
-    color: new THREE.Color(colourDef.hex), roughness: rough, metalness: colourDef.m || 0.0,
-    clearcoat: cc, clearcoatRoughness: colourDef.ccr || 0.3, reflectivity: 0.4, side: THREE.DoubleSide,
+    color: new THREE.Color(colourDef.hex),
+    roughness: beadRough,
+    metalness: amp.metal,
+    clearcoat: beadCc, clearcoatRoughness: amp.ccRough,
+    envMapIntensity: amp.envI,
+    reflectivity: amp.reflectivity,
+    side: THREE.DoubleSide,
   };
   if (colourDef.cat === 'wood') {
-    matOpts.roughnessMap = makeRoughnessMap(rough, 'wood');
+    matOpts.roughnessMap = makeRoughnessMap(beadRough, 'wood');
   }
-  return new THREE.MeshPhysicalMaterial(matOpts);
+  var beadMat = new THREE.MeshPhysicalMaterial(matOpts);
+  if (amp.sheen > 0 && 'sheen' in beadMat) {
+    try {
+      if (beadMat.sheen && beadMat.sheen.isColor) beadMat.sheen.setRGB(amp.sheen, amp.sheen, amp.sheen);
+      else beadMat.sheen = amp.sheen;
+    } catch (e) {}
+  }
+  return beadMat;
 }
 
 // Subtle surface noise for profile meshes

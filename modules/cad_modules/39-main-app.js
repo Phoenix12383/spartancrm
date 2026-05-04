@@ -3,6 +3,144 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────────
+// Emergency storage shim — runs immediately at script-eval time. If
+// 41-build-storage.js is not deployed (modules/ folder missing the file),
+// this provides a minimal localStorage-only fallback so Save still works.
+// The full 41-build-storage.js (when deployed) installs FIRST in module
+// order if its filename sorts before 39, but actually 41 > 39 so this
+// shim runs first; 41's IIFE checks `if (window.SpartanBuildStorage) return`
+// and would skip. We override that by force-installing from 41 — but 41
+// pre-checks too. Solution: this shim ONLY installs if the global is
+// missing AT INSTALL TIME, AND 41 is loaded LATER in the bundle and
+// will overwrite. To make that work, 41 needs to ALWAYS install (not
+// pre-check). For now (until 41 is patched), the shim is a defensive
+// last-resort and you should still deploy 41 for full features (Supabase
+// sync, snapshots, JSON export, search index, etc.).
+//
+// The shim provides ONLY: loadIndex, saveBuild, loadBuild, deleteBuild,
+// getActiveBuildId, setActiveBuildId, newLocalBuildId, buildIdFromCrm,
+// listSnapshots (returns []), storageUsageBytes. Cloud sync functions
+// return "not configured". Snapshot/JSON/restore are no-ops.
+//
+// Keep this small — full implementation lives in 41-build-storage.js.
+(function installEmergencyShim() {
+  if (typeof window === 'undefined') return;
+  if (window.SpartanBuildStorage && window.SpartanBuildStorage._fullImpl) return;
+  // Only install if no full impl is present. The full impl in 41 sets
+  // _fullImpl: true on its export object. If a previous shim is here,
+  // we let it stay (it's harmless).
+  if (window.SpartanBuildStorage) return;
+  console.log('[SpartanCAD] Installing emergency build-storage shim. For full features (Supabase sync, snapshots, JSON export), deploy 41-build-storage.js.');
+  var BUILD_PREFIX    = 'spartan_cad_build_';
+  var INDEX_KEY       = 'spartan_cad_builds_index';
+  var ACTIVE_KEY      = 'spartan_cad_active_build_id';
+  function loadIndex() {
+    try { var raw = localStorage.getItem(INDEX_KEY); return raw ? (JSON.parse(raw) || []) : []; }
+    catch (e) { return []; }
+  }
+  function writeIndex(a) { try { localStorage.setItem(INDEX_KEY, JSON.stringify(a || [])); } catch (e) {} }
+  function upsertRow(buildId, summary) {
+    var idx = loadIndex();
+    var pos = -1;
+    for (var i = 0; i < idx.length; i++) if (idx[i].buildId === buildId) { pos = i; break; }
+    var row = Object.assign({ buildId: buildId }, summary);
+    if (pos >= 0) idx[pos] = row; else idx.unshift(row);
+    writeIndex(idx);
+    return row;
+  }
+  function loadBuild(id) {
+    if (!id) return null;
+    try { var raw = localStorage.getItem(BUILD_PREFIX + id); return raw ? JSON.parse(raw) : null; }
+    catch (e) { return null; }
+  }
+  function saveBuild(id, payload) {
+    if (!id) throw new Error('saveBuild: buildId required');
+    var s = JSON.stringify(payload || {});
+    try { localStorage.setItem(BUILD_PREFIX + id, s); }
+    catch (e) {
+      var err = new Error('Local save failed: ' + (e.name === 'QuotaExceededError' ? 'storage full' : (e.message || 'unknown')));
+      err.code = e.name; err.cause = e; throw err;
+    }
+    var summary = {
+      customerName:  (payload && payload.customerName) || '',
+      address:       (payload && payload.address) || '',
+      jobNumber:     (payload && payload.jobNumber) || '',
+      quoteNumber:   (payload && payload.quoteNumber) || '',
+      designId:      (payload && payload.designId) || '',
+      lastSaved:     Date.now(),
+      phase:         (payload && payload.phase) || 'design',
+      frameCount:    (payload && Array.isArray(payload.projectItems)) ? payload.projectItems.length : 0,
+      snapshotCount: 0,
+      sizeBytes:     s.length,
+    };
+    upsertRow(id, summary);
+    return summary;
+  }
+  function deleteBuild(id) {
+    if (!id) return;
+    try { localStorage.removeItem(BUILD_PREFIX + id); } catch (e) {}
+    var idx = loadIndex().filter(function(r) { return r.buildId !== id; });
+    writeIndex(idx);
+    if (getActiveBuildId() === id) setActiveBuildId(null);
+  }
+  function getActiveBuildId() { try { return localStorage.getItem(ACTIVE_KEY) || null; } catch (e) { return null; } }
+  function setActiveBuildId(id) { try { if (id) localStorage.setItem(ACTIVE_KEY, id); else localStorage.removeItem(ACTIVE_KEY); } catch (e) {} }
+  function newLocalBuildId() { return 'local_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8); }
+  function buildIdFromCrm(crmLink) {
+    if (!crmLink || !crmLink.design || !crmLink.design.id) return null;
+    return 'crm_' + crmLink.design.id;
+  }
+  function storageUsageBytes() {
+    var total = 0;
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (!k) continue;
+        if (k.indexOf(BUILD_PREFIX) === 0 || k === INDEX_KEY) {
+          var v = localStorage.getItem(k) || '';
+          total += k.length + v.length;
+        }
+      }
+    } catch (e) {}
+    return total;
+  }
+  // No-ops / "not configured" for advanced features
+  var notImpl = function(){ return null; };
+  var promiseNotConfigured = function(){ return Promise.resolve({ ok: false, reason: 'not configured' }); };
+  window.SpartanBuildStorage = {
+    _isShim: true,            // marker for diagnostic logging
+    loadIndex:                 loadIndex,
+    saveBuild:                 saveBuild,
+    loadBuild:                 loadBuild,
+    deleteBuild:               deleteBuild,
+    listSnapshots:             function(){ return []; },
+    saveSnapshot:              notImpl,
+    loadSnapshot:              notImpl,
+    deleteSnapshot:            function(){},
+    getActiveBuildId:          getActiveBuildId,
+    setActiveBuildId:          setActiveBuildId,
+    newLocalBuildId:           newLocalBuildId,
+    buildIdFromCrm:            buildIdFromCrm,
+    promoteLocalToCrm:         function(localId, crmDesignId) {
+      if (!localId || !crmDesignId) return null;
+      var crmId = 'crm_' + crmDesignId;
+      var p = loadBuild(localId);
+      if (p) { p.designId = crmDesignId; saveBuild(crmId, p); deleteBuild(localId); }
+      return crmId;
+    },
+    downloadAllBuildsJSON:     function(){ alert('Backup download requires the full 41-build-storage.js module. Please deploy it.'); return null; },
+    restoreBuildsFromJSON:     function(){ return { imported: 0, skipped: 0, errors: ['Restore requires full 41-build-storage.js. Please deploy it.'] }; },
+    storageUsageBytes:         storageUsageBytes,
+    syncBuildToSupabase:       promiseNotConfigured,
+    listBuildsFromSupabase:    function(){ return Promise.resolve({ ok: false, reason: 'shim', rows: [] }); },
+    loadBuildFromSupabase:     function(){ return Promise.resolve(null); },
+    mergeSupabaseIndex:        function(){ return Promise.resolve({ ok: false, reason: 'shim', added: 0, updated: 0 }); },
+    deleteBuildFromSupabase:   function(){ return Promise.resolve({ ok: false }); },
+    MAX_SNAPSHOTS_PER_BUILD: 0,
+  };
+})();
+
+// ─────────────────────────────────────────────────────────────────────────
 // WIP36 profile catalog migration — converts any legacy
 // profileCosts['x_white'] / ['x_colour'] pairs into unified entries with
 // perMetreWhite / perMetreColour / perMetreBilateral fields. Idempotent —
@@ -59,6 +197,19 @@ function SpartanCADPreview() {
   const [productType, setProductType] = useState("awning_window");
   const [colour, setColour] = useState("white_body");
   const [colourVersion, setColourVersion] = useState(0);
+  // sceneEpoch is bumped by the THREE init useEffect every time it builds a
+  // fresh renderer/scene AFTER the first mount (e.g. on render-quality
+  // changes that require a full teardown). The geometry rebuild useEffect
+  // lists this in its deps so it re-runs after the new scene is in place —
+  // without depending on React's multi-effect firing order, which is fragile
+  // across React versions and Strict Mode. Without this signal, changing any
+  // render-quality setting would leave an empty viewport because the old
+  // productGroup is held by the disposed old scene.
+  const [sceneEpoch, setSceneEpoch] = useState(0);
+  // initRanOnce skips the epoch bump on first mount (the rebuild useEffect
+  // already fires on initial mount via its other deps; bumping on first
+  // mount would cause an unnecessary double-build with a brief flash).
+  const initRanOnce = useRef(false);
   const syncColours = (newList) => { COLOURS.length = 0; newList.forEach(c => COLOURS.push(c)); setColourVersion(v => v + 1); };
   const [colourInt, setColourInt] = useState("white_body");
   const [colTarget, setColTarget] = useState("ext");
@@ -168,6 +319,27 @@ function SpartanCADPreview() {
       //   notes: '',
       // }
     },
+    // ─── Mullion / transom assembly catalog (GLOBAL) ──────────────────────
+    // Three uploads at the system level — separate from per-product-type
+    // assemblies because mullion profiles are typically the same across
+    // every product in a system family. Split by opening direction because
+    // the rebate / gasket geometry flips between inwards-opening (T&T,
+    // French door) and outwards-opening (awning, casement).
+    //
+    // The third slot is the mullion-transom intersection: a section through
+    // the T-junction where a horizontal transom butts into a vertical
+    // mullion. Used to extract the coupling-block allowance that shortens
+    // every transom cut.
+    //
+    // A frame's opening direction is auto-detected from its product type
+    // (see getOpeningDirection() in the cutter module). Once detected, the
+    // appropriate mullion slot's metrics are mixed into the per-type metrics
+    // when the cuts are computed.
+    mullionAssemblies: {
+      inwards: null,    // { assembly, metricsExtracted, metricsOverride, notes }
+      outwards: null,   // { assembly, metricsExtracted, metricsOverride, notes }
+      intersection: null, // { assembly, metricsExtracted, metricsOverride, notes }
+    },
     statuses: [
       {id:'st1',name:'New Enquiry',colour:'#3B82F6',checks:'None'},
       {id:'st2',name:'Quote Sent',colour:'#EAB308',checks:'None'},
@@ -195,6 +367,68 @@ function SpartanCADPreview() {
     termsAndConditions: [{id:'tc1',name:'Standard Terms',text:SPARTAN_TC_TEXT}],
     signing: {client:'visible',installer:'visible',salesMgr:'hidden',windowSignOff:false},
     pageSetup: {paperSize:'A4',orientation:'portrait',margins:{top:15,bottom:15,left:15,right:15},headerHeight:30,footerHeight:15},
+    // 3D renderer settings — user-tunable from Settings → 3D Renderer →
+    // Render quality. Defaults preserve existing visual behaviour: flat
+    // grey HDRI, exposure 1.8, no shadows, no RectAreaLight. Users opt
+    // into the enhanced lighting from the settings panel.
+    //
+    // Each field is read by the THREE init useEffect on mount and any
+    // change tears down + re-initialises the renderer. Bridged values
+    // (envIntensityMult) are also mirrored to window so the catalog
+    // material builder can read them synchronously.
+    renderQuality: {
+      // ─── Tone & exposure ───────────────────────────────────────────
+      toneExposure: 1.8,         // 0.5–2.5; multiplied into renderer.toneMappingExposure
+      toneMapping: 'aces',       // 'aces' | 'cineon' | 'reinhard' | 'linear' | 'none'
+      // ─── Environment & background ──────────────────────────────────
+      hdriStyle: 'flat',         // 'flat' (current grey) | 'studio' (procedural softbox)
+      hdriRotation: 0,           // 0–360° — rotates the studio HDRI around vertical axis
+      backgroundMode: 'theme',   // 'theme' (matches dark/light) | 'solid' | 'hdri'
+      backgroundColor: '#fafafa',// solid colour when backgroundMode='solid'
+      envIntensityMult: 1.0,     // 0.25–3.0; global multiplier on every material's envMapIntensity
+      // ─── Lighting balance ──────────────────────────────────────────
+      ambientIntensity: 0.30,    // 0–2 — overall fill (was hard-coded 0.30)
+      hemiIntensity: 1.00,       // 0–2 — sky/ground hemi (was hard-coded 1.00)
+      fillIntensity: 1.00,       // 0–2 — multiplier on the four directional fills
+      // ─── Shadows ───────────────────────────────────────────────────
+      shadows: false,            // toggle PCFSoft shadow maps + ground plane
+      shadowSoftness: 4,         // shadow.radius (0–10)
+      shadowMapSize: 2048,       // 1024 | 2048 | 4096
+      // ─── Highlight (RectAreaLight) ─────────────────────────────────
+      rectAreaLight: false,      // toggle the elongated softbox highlight
+      rectAreaIntensity: 3,      // 0–10
+      // ─── Camera ────────────────────────────────────────────────────
+      cameraFov: 32,             // 18–60° (default 32 matches legacy)
+      // ─── Post-processing (custom shader pass after FXAA) ───────────
+      saturation: 1.0,           // 0–2 — 1.0 unchanged; <1 desaturate, >1 punchy
+      contrast: 1.0,             // 0.5–1.8 — 1.0 unchanged; >1 deeper blacks
+    },
+    // Per-product-type fly-screen configuration. Drives the additional-
+    // profiles cutlist: when a window has a fly screen attached, four
+    // frame cuts are emitted per opening sash, sized as
+    //   horizontal cut: sashW − deductWidthMm
+    //   vertical cut:   sashH − deductHeightMm
+    // The deductions account for the gasket clearance + corner-joiner
+    // overlap on the fly screen frame extrusion. Each window product type
+    // gets its own deductions because gasket profiles and screen-channel
+    // recess depths differ.
+    //
+    // Sliding windows have multiple sashes but only the OPENING sash gets
+    // a fly screen — the cutlist generator handles that explicitly.
+    // Fixed windows default to disabled (no opening sash).
+    //
+    // profileSku: catalog key for the fly-screen frame extrusion. Defaults
+    // to 'flyscreen_alum_15x7' (15mm × 7mm aluminium, the most common
+    // residential profile). barLengthMm defaults to 5800mm (typical
+    // aluminium extrusion bar length). These can be retargeted by the
+    // user per type.
+    flyScreenConfig: {
+      awning_window:    { enabled: true,  deductWidthMm: 8, deductHeightMm: 8, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+      casement_window:  { enabled: true,  deductWidthMm: 8, deductHeightMm: 8, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+      tilt_turn_window: { enabled: true,  deductWidthMm: 6, deductHeightMm: 6, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+      fixed_window:     { enabled: false, deductWidthMm: 0, deductHeightMm: 0, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+      sliding_window:   { enabled: true,  deductWidthMm: 5, deductHeightMm: 5, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+    },
     // Products — editable, syncs to CAD live
     editColours: COLOURS.map(c => ({...c})),
     editGlass: GLASS_OPTIONS.map(g => ({...g})),
@@ -547,6 +781,30 @@ function SpartanCADPreview() {
   React.useEffect(function(){ crmInitRef.current = crmInit; }, [crmInit]);
   React.useEffect(function(){ appSettingsRef.current = appSettings; }, [appSettings]);
 
+  // ─── Pre-save flush refs (dimension-commit fix) ───────────────────────
+  // Mirrors the editor's per-frame React state into refs so onRequestSave
+  // can flush it into projectItems[activeFrameIdx] before serialising.
+  // Fixes the bug where typing a new dimension (or any other editor field)
+  // in the right-hand panel and clicking Save posted the previous
+  // (template-default) value, because the local width/height/etc. useState
+  // was never written back to projectItems until the user switched frames
+  // or returned to the dashboard.
+  //
+  // saveCurrentFrameStateRef is assigned during render (below, immediately
+  // after saveCurrentFrameState is defined) — useEffect would run too late
+  // to keep the closure fresh for a same-tick onRequestSave call.
+  //
+  // currentViewRef gates the flush: it must only run when the user is
+  // actually in the design-editor view ('editor'). Survey / check-measure
+  // mode mutates projectItems[idx].width directly via applyDimToFrame —
+  // we must NOT clobber those writes with stale editor-local useState
+  // left over from a prior editor visit.
+  const saveCurrentFrameStateRef = React.useRef(null);
+  const activeFrameIdxRef = React.useRef(-1);
+  const currentViewRef = React.useRef('dashboard');
+  React.useEffect(function(){ activeFrameIdxRef.current = activeFrameIdx; }, [activeFrameIdx]);
+  React.useEffect(function(){ currentViewRef.current = currentView; }, [currentView]);
+
   // ─── M3: multi-quote state ─────────────────────────────────────────────
   // currentQuoteId tracks the user's active quote selection. Seeded from
   // init.activeQuoteId on hydrate; diverges once the user switches quotes
@@ -632,6 +890,463 @@ function SpartanCADPreview() {
     }
     setQuoteDirty(true);
   }, [siteChecklist]);
+
+  // Project info dirty effect — when the customer name, address, phone,
+  // email etc. change, mark the quote dirty so the auto-save fires and
+  // the search index gets the updated values. Without this, editing a
+  // customer name in the project-info modal wouldn't update the search
+  // index until something else changed too. Same skip-ref pattern as
+  // above so hydration / load doesn't trip it.
+  const skipNextProjectInfoDirtyRef = React.useRef(true);
+  React.useEffect(function() {
+    if (skipNextProjectInfoDirtyRef.current) {
+      skipNextProjectInfoDirtyRef.current = false;
+      return;
+    }
+    setQuoteDirty(true);
+  }, [projectInfo]);
+
+  // ═══ Build storage (local-first second copy, separate from CRM) ═════════
+  // Auto-saves the live build to localStorage 2s after the last edit.
+  // Manual snapshots, search, and the Builds panel read from the same
+  // SpartanBuildStorage namespace defined in 41-build-storage.js.
+  //
+  // The local copy is INTENDED to coexist with the CRM/Supabase save path —
+  // it's a defensive backup, not a replacement. When the CRM hydrates a
+  // design, we snapshot the current local state (`pre_crm_hydrate`) before
+  // applying the incoming payload, so accidental clobbering can be undone.
+  const [activeBuildId, setActiveBuildId] = useState(function() {
+    return (window.SpartanBuildStorage && window.SpartanBuildStorage.getActiveBuildId()) || null;
+  });
+  const [showBuildsPanel, setShowBuildsPanel] = useState(false);
+  const [showBuildSearch, setShowBuildSearch] = useState(false);
+  const [buildsLastSavedTs, setBuildsLastSavedTs] = useState(0);  // refresh trigger for index display
+  const [buildSaveError, setBuildSaveError] = useState(null);     // surfaced on the top bar when save fails
+  const [buildSearchQuery, setBuildSearchQuery] = useState('');   // search dropdown input
+  const [saveFlashAt, setSaveFlashAt] = useState(0);              // brief "Saved" indicator timestamp
+  // When saveFlashAt is set, force a re-render 2 seconds later so the
+  // "Saved" pill goes back to "Save". No setInterval — single-shot timer
+  // each save. Cleanup cancels if the component unmounts or another
+  // save lands within the window.
+  React.useEffect(function() {
+    if (!saveFlashAt) return;
+    var t = setTimeout(function() { setSaveFlashAt(function(v){ return v === saveFlashAt ? 0 : v; }); }, 2100);
+    return function() { clearTimeout(t); };
+  }, [saveFlashAt]);
+
+  // ─── Cloud auto-merge on boot ───────────────────────────────────────
+  // When the app first loads, pull any builds from Supabase that aren't
+  // yet in the local index. This is what makes builds saved on Device A
+  // appear in Search on Device B without the user clicking anything.
+  // Async + non-blocking — UI is fully responsive while this happens.
+  // Only runs once per session (ref guard prevents StrictMode double-run).
+  const cloudMergedRef = React.useRef(false);
+  React.useEffect(function() {
+    if (cloudMergedRef.current) return;
+    if (!window.SpartanBuildStorage || typeof window.SpartanBuildStorage.mergeSupabaseIndex !== 'function') return;
+    cloudMergedRef.current = true;
+    // Defer slightly so it doesn't fight the initial CRM hydration for
+    // network bandwidth. Fire-and-forget; failure is silent.
+    var t = setTimeout(function() {
+      window.SpartanBuildStorage.mergeSupabaseIndex().then(function(r) {
+        if (r && r.ok && (r.added > 0 || r.updated > 0)) {
+          if (typeof console !== 'undefined') console.log('[SpartanCAD] Cloud sync on boot: ' + r.added + ' added, ' + r.updated + ' updated.');
+          setBuildsLastSavedTs(Date.now());
+        }
+      }).catch(function(){ /* silent */ });
+    }, 1500);
+    return function() { clearTimeout(t); };
+  }, []);
+
+  // Bridge ref pattern — auto-save reads the latest values via refs so the
+  // debounced timer doesn't capture stale closure state.
+  const buildSaveStateRef = React.useRef({});
+  React.useEffect(function() {
+    buildSaveStateRef.current = {
+      projectItems:           projectItemsBridgeRef.current,
+      measurementsByFrameId:  measurementsBridgeRef.current,
+      siteChecklist:          siteChecklistBridgeRef.current,
+      crmLink:                crmLink,
+      activeQuoteId:          activeQuoteIdRef.current,
+    };
+  });
+
+  // Build a serialisable payload from the live React state — what we
+  // actually write to localStorage. Lean: no big derived data, no React
+  // refs, no functions.
+  function buildLocalSavePayload() {
+    var s = buildSaveStateRef.current;
+    var crm = s.crmLink || {};
+    var pi = projectInfo || {};
+    // Stitch the multi-part address into one human-readable string. The
+    // search index uses this for substring matching, and the Builds panel
+    // displays it on each row. Empty parts are dropped so we don't get
+    // ugly trailing commas like "12 Main St, , VIC, 3000".
+    var addressParts = [pi.address1, pi.address2, pi.suburb, pi.state, pi.postcode]
+      .filter(function(p) { return p && String(p).trim(); })
+      .map(function(p) { return String(p).trim(); });
+    var addressStr = addressParts.join(', ');
+    return {
+      _format:               'spartan_cad_build_v1',
+      _savedAt:              new Date().toISOString(),
+      // Identity / search-keyable fields
+      designId:              (crm.design && crm.design.id) || '',
+      crmType:               crm.type || '',
+      crmId:                 crm.id || '',
+      activeQuoteId:         s.activeQuoteId || '',
+      jobNumber:             pi.jobNumber || pi.reference || '',
+      quoteNumber:           pi.quoteNumber || (typeof quoteNumber !== 'undefined' ? quoteNumber : '') || '',
+      customerName:          pi.customerName || '',
+      address:               addressStr,
+      // Persist the address parts too so loading restores them into the
+      // project-info form fields, not just the stitched string.
+      address1:              pi.address1 || '',
+      address2:              pi.address2 || '',
+      suburb:                pi.suburb || '',
+      postcode:              pi.postcode || '',
+      state:                 pi.state || '',
+      customerPhone:         pi.phone || '',
+      customerEmail:         pi.email || '',
+      reference:             pi.reference || '',
+      comments:              pi.comments || '',
+      propertyType:          pi.propertyType || 'brick_veneer',
+      installationType:      pi.installationType || 'retrofit',
+      projectName:           (typeof projectName !== 'undefined' ? projectName : '') || '',
+      // Phase
+      phase:                 pi.phase || 'design',
+      // Build content
+      projectItems:          s.projectItems || [],
+      measurementsByFrameId: s.measurementsByFrameId || {},
+      siteChecklist:         s.siteChecklist || null,
+    };
+  }
+
+  // Resolve the build id we should write to. If we have a CRM link, use
+  // its design id (canonical). Otherwise reuse the current local id, or
+  // mint a new one. This is called from the auto-save effect.
+  function resolveBuildIdForSave() {
+    var s = buildSaveStateRef.current;
+    var crm = s.crmLink;
+    var crmId = window.SpartanBuildStorage.buildIdFromCrm(crm);
+    if (crmId) {
+      // If the user was working on a local build that's now linked, promote.
+      if (activeBuildId && activeBuildId.indexOf('local_') === 0) {
+        var promoted = window.SpartanBuildStorage.promoteLocalToCrm(activeBuildId, crm.design.id);
+        if (promoted) setActiveBuildId(promoted);
+        return promoted || crmId;
+      }
+      return crmId;
+    }
+    // No CRM link
+    if (activeBuildId) return activeBuildId;
+    var fresh = window.SpartanBuildStorage.newLocalBuildId();
+    setActiveBuildId(fresh);
+    window.SpartanBuildStorage.setActiveBuildId(fresh);
+    return fresh;
+  }
+
+  // Auto-save: debounced 2 seconds after any change to projectItems,
+  // measurementsByFrameId, or siteChecklist. quoteDirty is the dependency
+  // because it's set by the existing dirty-tracking effects whenever the
+  // user makes a change.
+  React.useEffect(function() {
+    if (!window.SpartanBuildStorage) return;
+    if (!quoteDirty) return;
+    var timer = setTimeout(function() {
+      var payload, id;
+      try {
+        payload = buildLocalSavePayload();
+        // Skip writing an empty draft — nothing useful to recover.
+        if ((!payload.projectItems || payload.projectItems.length === 0)
+            && Object.keys(payload.measurementsByFrameId || {}).length === 0) {
+          return;
+        }
+        id = resolveBuildIdForSave();
+        window.SpartanBuildStorage.saveBuild(id, payload);
+        window.SpartanBuildStorage.setActiveBuildId(id);
+        setBuildSaveError(null);
+        setBuildsLastSavedTs(Date.now());
+      } catch (e) {
+        console.warn('Build auto-save failed:', e);
+        // Friendlier message for the common quota case.
+        var msg;
+        if (e && e.code === 'QuotaExceededError') {
+          msg = 'Local storage is full. Open Builds → Download backup, then delete old builds. Cloud save will still attempt to run.';
+        } else {
+          msg = (e && e.message) ? e.message : 'Local save failed';
+        }
+        setBuildSaveError(msg);
+      }
+      // Cloud mirror — runs whether the local save succeeded or failed.
+      // If local succeeded the cloud is a backup; if local failed the
+      // cloud might be the only successful save.
+      if (typeof window.SpartanBuildStorage.syncBuildToSupabase === 'function'
+          && payload && id) {
+        try {
+          window.SpartanBuildStorage.syncBuildToSupabase(id, payload).catch(function(){});
+        } catch (e) {}
+      }
+    }, 2000);
+    return function() { clearTimeout(timer); };
+  }, [quoteDirty]);
+
+  // Manual snapshot — user clicks "Snapshot" or a phase boundary fires.
+  function makeBuildSnapshot(label, phase) {
+    if (!window.SpartanBuildStorage) return null;
+    try {
+      var payload = buildLocalSavePayload();
+      var id = activeBuildId || resolveBuildIdForSave();
+      // Save the live state first so the snapshot lines up with it.
+      window.SpartanBuildStorage.saveBuild(id, payload);
+      var key = window.SpartanBuildStorage.saveSnapshot(id, payload, label || '', phase || 'manual');
+      setBuildsLastSavedTs(Date.now());
+      return key;
+    } catch (e) {
+      console.warn('Snapshot failed:', e);
+      setBuildSaveError(e && e.message ? e.message : 'Snapshot failed');
+      return null;
+    }
+  }
+
+  // ─── Save (the user-visible action) ────────────────────────────────────
+  // Single unified save: writes the current state locally AND, when the
+  // Supabase backend is configured, also mirrors the build to the
+  // cad_builds table so other devices can find it. If a CRM iframe bridge
+  // is connected, also nudges the host's save flow. The local store is the
+  // source of truth — it's fast, offline-capable, and the search index
+  // reads from it. Supabase is the second backend for cross-device reach.
+  //
+  // Status semantics:
+  //   localOk:    true if the localStorage write succeeded
+  //   storageMissing: true if 41-build-storage.js wasn't loaded (NOT a
+  //                   failure — just nothing to save TO. We don't alert.)
+  //   hadCrm:     true if we successfully posted to the parent CRM frame
+  //   sbQueued:   true if we kicked off a Supabase upsert (result async)
+  //
+  // The Save button only shows an error if localOk is false AND
+  // storageMissing is false (i.e. storage exists but the write threw).
+  function saveBuildNow() {
+    // Commit any in-flight editor state to projectItems before saving,
+    // so the saved build reflects what the user sees on screen — not the
+    // last-committed state. Same fix as the Production / Price buttons.
+    commitEditorStateToProject(false);
+    var localOk = false;
+    var storageMissing = false;
+    var hadCrm = false;
+    var sbQueued = false;
+    var localError = null;       // captured Error from the localStorage write
+    var savedPayload = null;     // hoisted so the Supabase fallback can use it
+    var savedId = null;
+    if (window.SpartanBuildStorage) {
+      try {
+        savedPayload = buildLocalSavePayload();
+        savedId = resolveBuildIdForSave();
+        window.SpartanBuildStorage.saveBuild(savedId, savedPayload);
+        window.SpartanBuildStorage.setActiveBuildId(savedId);
+        setBuildSaveError(null);
+        setBuildsLastSavedTs(Date.now());
+        localOk = true;
+
+        // ─── Supabase mirror (fire-and-forget) ────────────────────────
+        // Try to push to the cloud. We do NOT block the UI on this —
+        // user's already seen "Saved" by the time the network round
+        // trips. Failures queue for retry inside syncBuildToSupabase.
+        if (typeof window.SpartanBuildStorage.syncBuildToSupabase === 'function') {
+          try {
+            window.SpartanBuildStorage.syncBuildToSupabase(savedId, savedPayload).then(function(r) {
+              if (r && r.ok) {
+                if (typeof console !== 'undefined') console.log('[SpartanCAD] Build synced to cloud:', savedId);
+              } else if (r && r.reason === 'not configured') {
+                // Supabase not set up. Silent — local save was enough.
+              } else {
+                if (typeof console !== 'undefined') console.warn('[SpartanCAD] Build cloud sync failed (queued):', r);
+              }
+            }).catch(function(err) {
+              if (typeof console !== 'undefined') console.warn('[SpartanCAD] Build cloud sync threw:', err);
+            });
+            sbQueued = true;
+          } catch (e) {
+            if (typeof console !== 'undefined') console.warn('[SpartanCAD] Cloud sync call failed:', e);
+          }
+        }
+      } catch (e) {
+        // localStorage failed (most likely quota exceeded, or disabled
+        // in private/incognito mode). Capture details for both the user-
+        // visible alert and the inline error pill, then fall through to
+        // try Supabase as a last-resort cloud-only save.
+        console.warn('Local save failed:', e);
+        localError = e;
+        // Friendlier message for the common quota case.
+        var msg;
+        if (e && e.code === 'QuotaExceededError') {
+          msg = 'Local storage full. ' +
+                'Open the Builds panel to download a backup, then delete old builds. ' +
+                'Cloud save will be attempted as a fallback.';
+        } else if (e && e.message) {
+          msg = e.message;
+        } else {
+          msg = 'Local save failed (unknown error)';
+        }
+        setBuildSaveError(msg);
+
+        // Cloud-only fallback: even though local failed, try Supabase
+        // directly. If it succeeds, the build IS persisted (just not
+        // mirrored locally yet). Better than nothing.
+        if (typeof window.SpartanBuildStorage.syncBuildToSupabase === 'function'
+            && savedPayload && savedId) {
+          try {
+            window.SpartanBuildStorage.syncBuildToSupabase(savedId, savedPayload).then(function(r) {
+              if (r && r.ok) {
+                if (typeof console !== 'undefined') console.log('[SpartanCAD] Local failed but cloud succeeded:', savedId);
+                // Treat as a successful save for the UI flash. The dirty
+                // flag is cleared by the cloud save returning ok.
+                setSaveFlashAt(Date.now());
+                setQuoteDirty(false);
+              }
+            }).catch(function(){});
+            sbQueued = true;
+          } catch (eSb) { /* nothing more to try */ }
+        }
+      }
+    } else {
+      // 41-build-storage.js wasn't loaded. This is a deployment issue,
+      // not a user-facing "save failure". We log once and skip — the CRM
+      // path may still work below if connected.
+      storageMissing = true;
+      if (typeof console !== 'undefined' && !window._spartanStorageWarned) {
+        console.warn('[SpartanCAD] Build storage module (41-build-storage.js) not loaded. Save button will only fire CRM bridge.');
+        window._spartanStorageWarned = true;
+      }
+    }
+    // CRM save — only if the bridge is wired (CRM-launched session). In
+    // dev mode there's no parent frame listening, so skip silently.
+    try {
+      if (window.__cadBridge && typeof window.__cadBridge.requestSave === 'function') {
+        window.__cadBridge.requestSave();
+        hadCrm = true;
+      } else if (window.parent && window.parent !== window) {
+        try {
+          window.parent.postMessage({ type: 'spartan-cad-save-request' }, '*');
+          hadCrm = true;
+        } catch (e) { /* cross-origin block — non-fatal */ }
+      }
+    } catch (e) {
+      console.warn('CRM save bridge call failed:', e);
+    }
+    if (localOk) setQuoteDirty(false);
+    if (localOk || hadCrm) {
+      setSaveFlashAt(Date.now());
+    }
+    return {
+      localOk: localOk,
+      storageMissing: storageMissing,
+      hadCrm: hadCrm,
+      sbQueued: sbQueued,
+      localError: localError,
+    };
+  }
+  // ─── End save action ───────────────────────────────────────────────────
+
+  // Restore from a build payload — replaces React state. Used when the
+  // user clicks "Load" on a build in the Builds panel, OR when restoring
+  // from a snapshot. Sets the skip flags so the dirty effects don't
+  // immediately mark the restored state as dirty (which would re-save it).
+  function loadBuildIntoEditor(buildId, payloadOverride) {
+    if (!window.SpartanBuildStorage) return false;
+    var payload = payloadOverride || window.SpartanBuildStorage.loadBuild(buildId);
+    if (!payload) return false;
+    // Pre-load snapshot of CURRENT state so we never lose data even if the
+    // user loads the wrong build by mistake.
+    if (activeBuildId && activeBuildId !== buildId) {
+      try {
+        var current = buildLocalSavePayload();
+        if (current.projectItems && current.projectItems.length > 0) {
+          window.SpartanBuildStorage.saveSnapshot(activeBuildId, current, 'Auto: before switching to ' + (payload.customerName || buildId), 'pre_switch');
+        }
+      } catch (e) { /* non-fatal */ }
+    }
+    // Set skip flags BEFORE the setState calls so the dirty effects skip.
+    skipNextDirtyRef.current = true;
+    skipNextMeasurementDirtyRef.current = true;
+    skipNextChecklistDirtyRef.current = true;
+    skipNextProjectInfoDirtyRef.current = true;
+    setProjectItems(Array.isArray(payload.projectItems) ? payload.projectItems : []);
+    setMeasurementsByFrameId(payload.measurementsByFrameId || {});
+    if (payload.siteChecklist) setSiteChecklist(payload.siteChecklist);
+    // Restore the project info (customer, address, etc.) so the search-
+    // surfaced fields actually populate when a build is loaded. Without
+    // this, loading a build brought back the frames but left the customer
+    // name + address blank — which is what made it look like saving
+    // wasn't working. We Object.assign over the existing shape so any
+    // newer fields the build doesn't carry stay at their state default.
+    setProjectInfo(function(prev) {
+      return Object.assign({}, prev, {
+        customerName:     payload.customerName     || '',
+        address1:         payload.address1         || '',
+        address2:         payload.address2         || '',
+        suburb:           payload.suburb           || '',
+        postcode:         payload.postcode         || '',
+        state:            payload.state            || '',
+        phone:            payload.customerPhone    || '',
+        email:            payload.customerEmail    || '',
+        reference:        payload.reference        || '',
+        comments:         payload.comments         || '',
+        propertyType:     payload.propertyType     || prev.propertyType || 'brick_veneer',
+        installationType: payload.installationType || prev.installationType || 'retrofit',
+        jobNumber:        payload.jobNumber        || '',
+        quoteNumber:      payload.quoteNumber      || '',
+      });
+    });
+    if (typeof setProjectName === 'function' && payload.projectName) {
+      setProjectName(payload.projectName);
+    }
+    setActiveFrameIdx(0);
+    setActiveBuildId(buildId);
+    window.SpartanBuildStorage.setActiveBuildId(buildId);
+    setShowBuildsPanel(false);
+    setShowBuildSearch(false);
+    setQuoteDirty(false);  // freshly loaded, not dirty
+    return true;
+  }
+
+  // "New project" — clear the editor and start a fresh local build.
+  // Snapshots the current state first if it has any content, so accidentally
+  // hitting New doesn't destroy work.
+  function startNewProject() {
+    if (window.SpartanBuildStorage && activeBuildId) {
+      try {
+        var current = buildLocalSavePayload();
+        if (current.projectItems && current.projectItems.length > 0) {
+          window.SpartanBuildStorage.saveSnapshot(activeBuildId, current, 'Auto: before new project', 'pre_new_project');
+          window.SpartanBuildStorage.saveBuild(activeBuildId, current);
+        }
+      } catch (e) { /* non-fatal */ }
+    }
+    skipNextDirtyRef.current = true;
+    skipNextMeasurementDirtyRef.current = true;
+    skipNextChecklistDirtyRef.current = true;
+    skipNextProjectInfoDirtyRef.current = true;
+    setProjectItems([]);
+    setMeasurementsByFrameId({});
+    setSiteChecklist(makeBlankSiteChecklist());
+    // Clear customer/address details too — without this, the previous
+    // job's customer info hangs around on the fresh project, which made
+    // the search index look like multiple builds had the same customer.
+    setProjectInfo({
+      customerName: '', address1: '', address2: '', suburb: '', postcode: '', state: '',
+      phone: '', email: '', reference: '', comments: '',
+      propertyType: 'brick_veneer', installationType: 'retrofit',
+    });
+    if (typeof setProjectName === 'function') setProjectName('Project 1');
+    setActiveFrameIdx(-1);
+    var freshId = window.SpartanBuildStorage ? window.SpartanBuildStorage.newLocalBuildId() : null;
+    setActiveBuildId(freshId);
+    if (window.SpartanBuildStorage) window.SpartanBuildStorage.setActiveBuildId(freshId);
+    setQuoteDirty(false);
+    setShowBuildsPanel(false);
+    setShowBuildSearch(false);
+  }
+  // ═══ End build storage ════════════════════════════════════════════════
 
   React.useEffect(function() {
     // ─── onInit ──────────────────────────────────────────────────────────
@@ -809,9 +1524,38 @@ function SpartanCADPreview() {
         skipNextMeasurementDirtyRef.current = true;
         setMeasurementsByFrameId(map);
       } else {
-        // No prior survey data — clean slate.
-        skipNextMeasurementDirtyRef.current = true;
-        setMeasurementsByFrameId({});
+        // No surveyData on the payload. PRESERVE existing measurements
+        // when present — this is the common case for the dev-mode survey
+        // toggle (which sends no surveyData) and for any future scenario
+        // where the host re-emits onInit without resending all the data
+        // (e.g. mode switch). Only fall through to a clean slate if we
+        // genuinely have nothing — and even then, try the local build
+        // store first so survey work survives page refreshes.
+        var existingMeasurements = measurementsBridgeRef.current || {};
+        var hasExisting = existingMeasurements && Object.keys(existingMeasurements).length > 0;
+        if (hasExisting) {
+          // Already have measurements — keep them. No state change needed,
+          // but we still flip the skip ref so the next dirty-tracking pass
+          // doesn't treat this as a fresh user edit.
+          skipNextMeasurementDirtyRef.current = true;
+        } else if (window.SpartanBuildStorage) {
+          // Try to hydrate from local build storage. We can't use
+          // activeBuildId here directly since the React state may not
+          // have settled yet on the first onInit call — go through the
+          // storage layer's getActiveBuildId() which is sync.
+          var liveActiveId = window.SpartanBuildStorage.getActiveBuildId();
+          var liveBuild = liveActiveId ? window.SpartanBuildStorage.loadBuild(liveActiveId) : null;
+          if (liveBuild && liveBuild.measurementsByFrameId && Object.keys(liveBuild.measurementsByFrameId).length > 0) {
+            skipNextMeasurementDirtyRef.current = true;
+            setMeasurementsByFrameId(liveBuild.measurementsByFrameId);
+          } else {
+            skipNextMeasurementDirtyRef.current = true;
+            setMeasurementsByFrameId({});
+          }
+        } else {
+          skipNextMeasurementDirtyRef.current = true;
+          setMeasurementsByFrameId({});
+        }
       }
 
       // ─── WIP29: site-checklist hydration ─────────────────────────────
@@ -824,8 +1568,33 @@ function SpartanCADPreview() {
         skipNextChecklistDirtyRef.current = true;
         setSiteChecklist(Object.assign(makeBlankSiteChecklist(), payload.siteChecklist));
       } else {
-        skipNextChecklistDirtyRef.current = true;
-        setSiteChecklist(makeBlankSiteChecklist());
+        // No siteChecklist on the payload. Same preservation logic as
+        // measurements — keep what we already have if anything; otherwise
+        // try the local store before resetting to blank.
+        var existingChecklist = siteChecklistBridgeRef.current;
+        var checklistHasContent = existingChecklist && Object.keys(existingChecklist).some(function(k) {
+          var v = existingChecklist[k];
+          if (v == null || v === '' || v === false) return false;
+          if (typeof v === 'object' && Object.keys(v).length === 0) return false;
+          return true;
+        });
+        if (checklistHasContent) {
+          skipNextChecklistDirtyRef.current = true;
+          // No state change needed — keep current.
+        } else if (window.SpartanBuildStorage) {
+          var liveActiveId2 = window.SpartanBuildStorage.getActiveBuildId();
+          var liveBuild2 = liveActiveId2 ? window.SpartanBuildStorage.loadBuild(liveActiveId2) : null;
+          if (liveBuild2 && liveBuild2.siteChecklist) {
+            skipNextChecklistDirtyRef.current = true;
+            setSiteChecklist(Object.assign(makeBlankSiteChecklist(), liveBuild2.siteChecklist));
+          } else {
+            skipNextChecklistDirtyRef.current = true;
+            setSiteChecklist(makeBlankSiteChecklist());
+          }
+        } else {
+          skipNextChecklistDirtyRef.current = true;
+          setSiteChecklist(makeBlankSiteChecklist());
+        }
       }
     };
 
@@ -836,6 +1605,41 @@ function SpartanCADPreview() {
     // The core round-trip is the contract; richer payloads attach over
     // later milestones.
     __cadBridge.onRequestSave = function() {
+      // ─── Pre-save flush of in-flight editor state ──────────────────────
+      // Without this, any width/height/colour/glass/etc. field the user
+      // typed in the right-hand DIMENSIONS / OPTIONS panel but didn't blur
+      // stays trapped in local React state until they switch frames or
+      // return to the dashboard. Save would then post stale values
+      // (template defaults for fresh frames; the previous value otherwise).
+      //
+      // Gated on currentView === 'editor' because that's the ONLY view
+      // where the design-mode local-state inputs are rendered. In
+      // survey/check-measure mode, applyDimToFrame writes measured W/H
+      // straight into projectItems[idx].width — a flush here would clobber
+      // those writes with the stale editor-local width/height useState
+      // left over from an earlier editor visit. See saveCurrentFrameState
+      // and the ref declarations above for context.
+      try {
+        var _patchView = currentViewRef.current;
+        var _patchIdx  = activeFrameIdxRef.current;
+        var _patchSnap = saveCurrentFrameStateRef.current;
+        if (_patchView === 'editor'
+            && typeof _patchSnap === 'function'
+            && _patchIdx >= 0) {
+          var _patchCurrent = projectItemsBridgeRef.current || [];
+          if (_patchIdx < _patchCurrent.length) {
+            var _patchSnapState = _patchSnap();
+            var _patchNext = _patchCurrent.slice();
+            _patchNext[_patchIdx] = Object.assign({}, _patchNext[_patchIdx], _patchSnapState);
+            // Update the ref synchronously so the very next line
+            // (var items = projectItemsBridgeRef.current...) sees the
+            // flushed values without waiting for React to commit.
+            projectItemsBridgeRef.current = _patchNext;
+            setProjectItems(_patchNext);
+          }
+        }
+      } catch (e) { /* never block save on a flush hiccup */ }
+
       var init = crmInitRef.current || {};
       var items = projectItemsBridgeRef.current || [];
       var settings = appSettingsRef.current || null;
@@ -1065,26 +1869,32 @@ function SpartanCADPreview() {
         // stay '' rather than null to match the input convention. CRM
         // should accept extra/missing keys gracefully (per contract §12).
         msg.siteChecklist = Object.assign({}, siteChecklistBridgeRef.current || makeBlankSiteChecklist());
+      }
 
-        // ─── WIP30: trimCutList emission (Factory CRM production handoff) ─
-        // Full computed cutting list with frame colour info per cut. Per
-        // Phoenix's spec: top/bottom = W+200mm, left/right = H+200mm, applied
-        // to ALL trim selections (catalog SKUs and legacy dictionary codes).
-        // Per cut: frameId, frame name, frame colours (ext+int, id+label),
-        // surface, side, length, trim value/label, catalog flags, bar length.
-        // Per byTrim aggregate: label, totals, bars-required estimate.
-        // Plus a frameColours map for cross-reference. The CRM production
-        // module consumes this directly — no need to re-derive from
-        // surveyMeasurements + projectItems. Wrapped in try/catch so a
-        // computation glitch never blocks the wire-shape save.
-        try {
-          var pcForCuts = (appSettings && appSettings.pricingConfig) || (typeof window !== 'undefined' && window.PRICING_DEFAULTS) || {};
-          var trimCatalogsForCuts = (pcForCuts && pcForCuts.trims) || null;
-          msg.trimCutList = computeTrimCuts(items, measMap2, trimCatalogsForCuts, 200);
-        } catch (e) {
-          if (typeof console !== 'undefined') console.warn('trimCutList emit failed (non-blocking):', e);
-          msg.trimCutList = null;
-        }
+      // ─── trimCutList emission (Factory CRM production handoff) ───────
+      // Lifted out of the survey-only branch in WIP38 so design-mode and
+      // final-mode saves AFTER check measure also re-emit the trim cuts.
+      // The measurementsByFrameId map is captured in survey mode and
+      // persists in React state across mode transitions, so any save
+      // post-CM still has the trim selections to compute against. Saves
+      // before CM produce an empty cuts array — harmless on the CRM side
+      // (Production view simply renders nothing until CM lands data).
+      //
+      // Full computed cutting list with frame colour info per cut. Per
+      // Phoenix's spec: top/bottom = W+200mm, left/right = H+200mm, applied
+      // to ALL trim selections (catalog SKUs and legacy dictionary codes).
+      // Per cut: frameId, frame name, frame colours (ext+int, id+label),
+      // surface, side, length, trim value/label, catalog flags, bar length.
+      // Per byTrim aggregate: label, totals, bars-required estimate.
+      // Wrapped in try/catch so a computation glitch never blocks the save.
+      try {
+        var _measMapForCuts = measurementsBridgeRef.current || {};
+        var _pcForCuts = (appSettings && appSettings.pricingConfig) || (typeof window !== 'undefined' && window.PRICING_DEFAULTS) || {};
+        var _trimCatalogsForCuts = (_pcForCuts && _pcForCuts.trims) || null;
+        msg.trimCutList = computeTrimCuts(items, _measMapForCuts, _trimCatalogsForCuts, 200, appSettings);
+      } catch (e) {
+        if (typeof console !== 'undefined') console.warn('trimCutList emit failed (non-blocking):', e);
+        msg.trimCutList = null;
       }
 
       // ─── M4b: pdfs.checkMeasure emission (contract §6, §9.5 task 7) ──
@@ -1301,7 +2111,8 @@ function SpartanCADPreview() {
         var res = await saveDesignAndItems(
           crmLink.design.id, crmLink.type, crmLink.id,
           projectItems, appSettings, selectedPriceList,
-          { status: crmLink.design.status || 'draft', stage: crmLink.design.stage || 'design' }
+          { status: crmLink.design.status || 'draft', stage: crmLink.design.stage || 'design' },
+          measurementsByFrameId
         );
         if (res.ok) {
           setSyncStatus(res.offline ? 'offline' : 'saved');
@@ -1358,6 +2169,12 @@ function SpartanCADPreview() {
       propertyType, floorLevel, installationType
     };
   }
+  // Keep the ref pointed at the latest closure each render so the bridge's
+  // onRequestSave (set inside an empty-deps useEffect) can call this without
+  // hitting React's stale-closure trap. Ref mutation during render is safe
+  // and is the canonical pattern for surfacing per-render closures to event
+  // handlers / async callbacks that outlive their original render.
+  saveCurrentFrameStateRef.current = saveCurrentFrameState;
 
   // Load frame state into editor
   function loadFrameState(frame) {
@@ -1531,21 +2348,42 @@ function SpartanCADPreview() {
     } catch(e) { console.warn('snapshot capture failed', e); return null; }
   }
 
+  // Commit the editor's local state (cellTypes, gridCols, hardware, colours,
+  // fly screen, etc.) back to projectItems[activeFrameIdx]. Without this,
+  // changes made in the editor (Frame Styles presets, colour picks, fly-
+  // screen toggles) only live in editor-local React state and never make
+  // it into projectItems — so the Production/Price/Save engines see stale
+  // data. Both openFrameEditor and returnToDashboard call this; so do
+  // the Production and Price buttons. Returns the new projectItems array
+  // so callers that need it synchronously (e.g. before reading projectItems
+  // in the same handler) can use it.
+  function commitEditorStateToProject(captureThumbs) {
+    if (activeFrameIdx < 0 || activeFrameIdx >= projectItems.length) return projectItems;
+    var items = [...projectItems];
+    var snaps = captureThumbs ? captureFrameSnapshots() : null;
+    items[activeFrameIdx] = {
+      ...items[activeFrameIdx],
+      ...saveCurrentFrameState(),
+      thumbnail:      (snaps && snaps.thumbnail) || items[activeFrameIdx].thumbnail,
+      thumbnailFront: (snaps && snaps.front)     || items[activeFrameIdx].thumbnailFront,
+      thumbnailBack:  (snaps && snaps.back)      || items[activeFrameIdx].thumbnailBack,
+    };
+    setProjectItems(items);
+    // Update the bridge ref synchronously so same-tick reads (e.g.
+    // saveBuildNow → buildLocalSavePayload) see the new state. The
+    // useEffect that maintains this ref runs post-render, which would
+    // be too late.
+    projectItemsBridgeRef.current = items;
+    if (buildSaveStateRef && buildSaveStateRef.current) {
+      buildSaveStateRef.current.projectItems = items;
+    }
+    return items;
+  }
+
   // Open a frame in the editor
   function openFrameEditor(idx) {
     // Save current frame if we're editing one (with thumbnails)
-    if (activeFrameIdx >= 0 && activeFrameIdx < projectItems.length) {
-      var items = [...projectItems];
-      var snaps = captureFrameSnapshots();
-      items[activeFrameIdx] = {
-        ...items[activeFrameIdx],
-        ...saveCurrentFrameState(),
-        thumbnail: (snaps && snaps.thumbnail) || items[activeFrameIdx].thumbnail,
-        thumbnailFront: (snaps && snaps.front) || items[activeFrameIdx].thumbnailFront,
-        thumbnailBack:  (snaps && snaps.back)  || items[activeFrameIdx].thumbnailBack,
-      };
-      setProjectItems(items);
-    }
+    commitEditorStateToProject(true);
     // Load the target frame
     if (idx >= 0 && idx < projectItems.length) {
       loadFrameState(projectItems[idx]);
@@ -1556,18 +2394,7 @@ function SpartanCADPreview() {
 
   // Return to dashboard, saving current frame with 3D thumbnails
   function returnToDashboard() {
-    if (activeFrameIdx >= 0 && activeFrameIdx < projectItems.length) {
-      var items = [...projectItems];
-      var snaps = captureFrameSnapshots();
-      items[activeFrameIdx] = {
-        ...items[activeFrameIdx],
-        ...saveCurrentFrameState(),
-        thumbnail: (snaps && snaps.thumbnail) || items[activeFrameIdx].thumbnail,
-        thumbnailFront: (snaps && snaps.front) || items[activeFrameIdx].thumbnailFront,
-        thumbnailBack:  (snaps && snaps.back)  || items[activeFrameIdx].thumbnailBack,
-      };
-      setProjectItems(items);
-    }
+    commitEditorStateToProject(true);
     setCurrentView('dashboard');
   }
 
@@ -2194,63 +3021,253 @@ function SpartanCADPreview() {
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !el.clientWidth || !el.clientHeight) return;
+    // Read render-quality settings — defaults preserve existing visual
+    // behaviour for users who haven't opened the new panel yet.
+    const rq = (appSettings && appSettings.renderQuality) || {};
+    const _toneExposure   = typeof rq.toneExposure === 'number' ? rq.toneExposure : 1.8;
+    const _toneMapping    = rq.toneMapping || 'aces';
+    const _hdriStyle      = rq.hdriStyle || 'flat';
+    const _hdriRotation   = typeof rq.hdriRotation === 'number' ? rq.hdriRotation : 0;
+    const _bgMode         = rq.backgroundMode || 'theme';
+    const _bgColor        = rq.backgroundColor || '#fafafa';
+    const _envIntMult     = typeof rq.envIntensityMult === 'number' ? rq.envIntensityMult : 1.0;
+    const _ambIntensity   = typeof rq.ambientIntensity === 'number' ? rq.ambientIntensity : 0.30;
+    const _hemiIntensity  = typeof rq.hemiIntensity === 'number' ? rq.hemiIntensity : 1.00;
+    const _fillIntensity  = typeof rq.fillIntensity === 'number' ? rq.fillIntensity : 1.00;
+    const _shadowsOn      = !!rq.shadows;
+    const _shadowSoftness = typeof rq.shadowSoftness === 'number' ? rq.shadowSoftness : 4;
+    const _shadowMapSize  = typeof rq.shadowMapSize === 'number' ? rq.shadowMapSize : 2048;
+    const _ralOn          = !!rq.rectAreaLight;
+    const _ralIntensity   = typeof rq.rectAreaIntensity === 'number' ? rq.rectAreaIntensity : 3;
+    const _camFov         = typeof rq.cameraFov === 'number' ? rq.cameraFov : 32;
+    const _saturation     = typeof rq.saturation === 'number' ? rq.saturation : 1.0;
+    const _contrast       = typeof rq.contrast === 'number' ? rq.contrast : 1.0;
+
+    // Bridge global env-mult to window so the catalog material builder
+    // (24-materials-textures.js → makeProfileMat) can read it without
+    // holding a React ref. Mirror pattern matches __r3dProfiles bridge.
+    try { window.__renderQualityEnvMult = _envIntMult; } catch (e) {}
+
+    // Resolve tone-mapping mode → Three.js constant.
+    var _tmConst = THREE.ACESFilmicToneMapping;
+    if (_toneMapping === 'cineon')   _tmConst = THREE.CineonToneMapping;
+    else if (_toneMapping === 'reinhard') _tmConst = THREE.ReinhardToneMapping;
+    else if (_toneMapping === 'linear')   _tmConst = THREE.LinearToneMapping;
+    else if (_toneMapping === 'none')     _tmConst = THREE.NoToneMapping;
+
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio * 2, 4));
     renderer.setSize(el.clientWidth, el.clientHeight);
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.8;
+    renderer.toneMapping = _tmConst;
+    renderer.toneMappingExposure = _toneExposure;
     renderer.outputEncoding = THREE.sRGBEncoding;
+    if (_shadowsOn) {
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
     el.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(appSettings.theme === 'dark' ? '#1a1a24' : '#fafafa');
-    const camera = new THREE.PerspectiveCamera(32, el.clientWidth/el.clientHeight, 0.1, 50);
+    // Background mode: 'theme' = legacy theme-aware, 'solid' = user picker,
+    // 'hdri' = use the studio HDRI (only meaningful when hdriStyle='studio';
+    // falls back to theme grey otherwise).
+    var _themeBg = appSettings.theme === 'dark' ? '#1a1a24' : '#fafafa';
+    if (_bgMode === 'solid') {
+      scene.background = new THREE.Color(_bgColor);
+    } else if (_bgMode === 'hdri' && _hdriStyle === 'studio') {
+      // Set later once the HDRI is generated (requires the canvas).
+      scene.background = new THREE.Color(_themeBg); // temporary
+    } else {
+      scene.background = new THREE.Color(_themeBg);
+    }
+    const camera = new THREE.PerspectiveCamera(_camFov, el.clientWidth/el.clientHeight, 0.1, 50);
     camera.position.set(0.6, 0.5, 2.5);
 
-    // Lighting — soft ambient-dominant, no specular hotspots
-    scene.add(new THREE.HemisphereLight(0xffffff, 0xeae6e2, 1.0));
-    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
-    // Very gentle directional fills for form definition only (no specular)
-    { const kf = new THREE.DirectionalLight(0xffffff, 0.35); kf.position.set(0, 5, 6); scene.add(kf); }
-    { const kb = new THREE.DirectionalLight(0xffffff, 0.35); kb.position.set(0, 5, -6); scene.add(kb); }
-    { const fl = new THREE.DirectionalLight(0xffffff, 0.2); fl.position.set(-5, 3, 0); scene.add(fl); }
-    { const fr = new THREE.DirectionalLight(0xffffff, 0.2); fr.position.set(5, 3, 0); scene.add(fr); }
+    // Lighting — soft ambient-dominant, no specular hotspots.
+    // Intensities are now scaled by render-quality multipliers so users
+    // can dial the whole scene moodier/brighter without altering exposure.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0xeae6e2, _hemiIntensity));
+    scene.add(new THREE.AmbientLight(0xffffff, _ambIntensity));
+    // Very gentle directional fills for form definition only (no specular).
+    // _fillIntensity scales all four together — pull below 1 for moodier
+    // look, push above 1 for fully-lit showroom feel.
+    { const kf = new THREE.DirectionalLight(0xffffff, 0.35 * _fillIntensity); kf.position.set(0, 5, 6); scene.add(kf); }
+    { const kb = new THREE.DirectionalLight(0xffffff, 0.35 * _fillIntensity); kb.position.set(0, 5, -6); scene.add(kb); }
+    { const fl = new THREE.DirectionalLight(0xffffff, 0.20 * _fillIntensity); fl.position.set(-5, 3, 0); scene.add(fl); }
+    { const fr = new THREE.DirectionalLight(0xffffff, 0.20 * _fillIntensity); fr.position.set(5, 3, 0); scene.add(fr); }
 
-    // Fake soft shadow — opaque vertex-color ellipse, no window shape, no shadow maps
-    var _fakeShadow = (function() {
-      var geo = new THREE.CircleGeometry(0.5, 64);
-      var colors = [];
-      var pos = geo.getAttribute('position');
-      var bg = 250 / 255; // exact #fafafa match
-      for (var i = 0; i < pos.count; i++) {
-        var x = pos.getX(i), y = pos.getY(i);
-        var d = Math.min(1, Math.sqrt(x * x + y * y) / 0.5);
-        var f = d * d * d; // cubic falloff
-        var v = bg - 0.18 * (1.0 - f);
-        colors.push(v, v, v);
-      }
-      geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-      var mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, toneMapped: false });
-      var mesh = new THREE.Mesh(geo, mat);
-      mesh.rotation.x = -Math.PI / 2;
-      mesh.position.y = -0.0005;
-      scene.add(mesh);
-      return mesh;
-    })();
+    // Optional shadow-caster key light — only when the user has opted into
+    // shadows from the Render quality panel. Without this, the four
+    // existing fills cast no shadows (none of them have castShadow=true)
+    // so the existing flat look is preserved by default.
+    var _shadowKey = null;
+    if (_shadowsOn) {
+      _shadowKey = new THREE.DirectionalLight(0xffffff, 0.6);
+      _shadowKey.position.set(2, 4, 3);
+      _shadowKey.castShadow = true;
+      _shadowKey.shadow.mapSize.set(_shadowMapSize, _shadowMapSize);
+      _shadowKey.shadow.camera.left = -2;
+      _shadowKey.shadow.camera.right = 2;
+      _shadowKey.shadow.camera.top = 2;
+      _shadowKey.shadow.camera.bottom = -2;
+      _shadowKey.shadow.camera.near = 0.1;
+      _shadowKey.shadow.camera.far = 12;
+      _shadowKey.shadow.bias = -0.0001;
+      _shadowKey.shadow.normalBias = 0.02;
+      _shadowKey.shadow.radius = _shadowSoftness;
+      scene.add(_shadowKey);
+    }
 
-    // Studio HDRI — completely flat uniform grey, zero hotspots
-    const hdriW = 64, hdriH = 32;
+    // Optional RectAreaLight — adds the elongated softbox highlight
+    // typical of product photography. Glass and metal hardware show a
+    // directional gleam rather than the matte hemisphere look. Requires
+    // RectAreaLightUniformsLib to be initialised; we guard for whether
+    // it's loaded (it's an examples module, not core).
+    var _ralLight = null;
+    if (_ralOn && THREE.RectAreaLight) {
+      try {
+        if (THREE.RectAreaLightUniformsLib && typeof THREE.RectAreaLightUniformsLib.init === 'function') {
+          THREE.RectAreaLightUniformsLib.init();
+        }
+        _ralLight = new THREE.RectAreaLight(0xffffff, _ralIntensity, 2.0, 0.5);
+        _ralLight.position.set(0, 3, 1.5);
+        _ralLight.lookAt(0, 0, 0);
+        scene.add(_ralLight);
+      } catch (e) { /* graceful fallback if uniforms lib missing */ }
+    }
+
+    // Soft shadow under the frame.
+    // Two paths:
+    //   • _shadowsOn = false (default): vertex-coloured ellipse "fake" — opaque
+    //     match-the-background ring, no real shadow casting. Cheap, looks
+    //     fine for the schematic "floating frame" view.
+    //   • _shadowsOn = true: ShadowMaterial plane that receives the
+    //     directional key light's shadow. Realistic, anchors the frame
+    //     to a ground plane, but requires meshes to opt-in via
+    //     castShadow/receiveShadow (handled by the rebuild useEffect
+    //     that walks productGroup after construction).
+    var _fakeShadow = null;
+    var _realShadowPlane = null;
+    if (_shadowsOn) {
+      _realShadowPlane = new THREE.Mesh(
+        new THREE.PlaneGeometry(10, 10),
+        new THREE.ShadowMaterial({ opacity: 0.22 })
+      );
+      _realShadowPlane.rotation.x = -Math.PI / 2;
+      _realShadowPlane.position.y = -0.001;
+      _realShadowPlane.receiveShadow = true;
+      scene.add(_realShadowPlane);
+    } else {
+      _fakeShadow = (function() {
+        var geo = new THREE.CircleGeometry(0.5, 64);
+        var colors = [];
+        var pos = geo.getAttribute('position');
+        var bg = 250 / 255; // exact #fafafa match
+        for (var i = 0; i < pos.count; i++) {
+          var x = pos.getX(i), y = pos.getY(i);
+          var d = Math.min(1, Math.sqrt(x * x + y * y) / 0.5);
+          var f = d * d * d; // cubic falloff
+          var v = bg - 0.18 * (1.0 - f);
+          colors.push(v, v, v);
+        }
+        geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        var mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, toneMapped: false });
+        var mesh = new THREE.Mesh(geo, mat);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.y = -0.0005;
+        scene.add(mesh);
+        return mesh;
+      })();
+    }
+
+    // HDRI environment.
+    //   • 'flat' (default): 64×32 uniform grey. Zero hotspots — produces
+    //     the schematic look the existing UI was tuned for.
+    //   • 'studio': 256×128 procedural softbox HDRI with a key softbox
+    //     above-front and a smaller side fill. Adds believable
+    //     reflections to glass and metal hardware, and brings out the
+    //     depth in woodgrain foils. Costs nothing to deploy (no asset
+    //     fetch — generated in-canvas) and lifts perceived material
+    //     quality substantially when paired with photographic textures.
     const hdriCanvas = document.createElement('canvas');
-    hdriCanvas.width = hdriW; hdriCanvas.height = hdriH;
-    const hctx = hdriCanvas.getContext('2d');
-    // Uniform flat fill — no gradients, no bright spots
-    hctx.fillStyle = '#d8d8d8';
-    hctx.fillRect(0, 0, hdriW, hdriH);
+    var hdriW, hdriH;
+    if (_hdriStyle === 'studio') {
+      hdriW = 256; hdriH = 128;
+      hdriCanvas.width = hdriW; hdriCanvas.height = hdriH;
+      const hctx = hdriCanvas.getContext('2d');
+      const skyGrad = hctx.createLinearGradient(0, 0, 0, hdriH);
+      skyGrad.addColorStop(0.00, '#f4f4f3');
+      skyGrad.addColorStop(0.42, '#e0e0e0');
+      skyGrad.addColorStop(0.50, '#d2d2d2');
+      skyGrad.addColorStop(0.70, '#b8b8b6');
+      skyGrad.addColorStop(1.00, '#9e9e9c');
+      hctx.fillStyle = skyGrad;
+      hctx.fillRect(0, 0, hdriW, hdriH);
+      // Front softbox (key)
+      var sbX = hdriW * 0.5, sbY = hdriH * 0.30;
+      var sbW = hdriW * 0.32, sbH = hdriH * 0.18;
+      var sbGrad = hctx.createRadialGradient(sbX, sbY, 0, sbX, sbY, Math.max(sbW, sbH));
+      sbGrad.addColorStop(0.0, 'rgba(255,255,254,0.95)');
+      sbGrad.addColorStop(0.4, 'rgba(255,255,254,0.55)');
+      sbGrad.addColorStop(1.0, 'rgba(255,255,254,0.0)');
+      hctx.fillStyle = sbGrad;
+      hctx.beginPath();
+      hctx.ellipse(sbX, sbY, sbW, sbH, 0, 0, Math.PI * 2);
+      hctx.fill();
+      // Side fill softbox
+      var sb2X = hdriW * 0.78, sb2Y = hdriH * 0.36;
+      var sb2W = hdriW * 0.16, sb2H = hdriH * 0.14;
+      var sb2Grad = hctx.createRadialGradient(sb2X, sb2Y, 0, sb2X, sb2Y, Math.max(sb2W, sb2H));
+      sb2Grad.addColorStop(0.0, 'rgba(252,250,245,0.55)');
+      sb2Grad.addColorStop(1.0, 'rgba(252,250,245,0.0)');
+      hctx.fillStyle = sb2Grad;
+      hctx.beginPath();
+      hctx.ellipse(sb2X, sb2Y, sb2W, sb2H, 0, 0, Math.PI * 2);
+      hctx.fill();
+    } else {
+      hdriW = 64; hdriH = 32;
+      hdriCanvas.width = hdriW; hdriCanvas.height = hdriH;
+      const hctx = hdriCanvas.getContext('2d');
+      hctx.fillStyle = '#d8d8d8';
+      hctx.fillRect(0, 0, hdriW, hdriH);
+    }
+
+    // Apply HDRI rotation (only meaningful for studio HDRI — flat is uniform).
+    // Rotation is implemented as a horizontal pixel shift on the equirect
+    // canvas, since r128 doesn't expose scene.environmentRotation. The
+    // softbox positions wrap horizontally because the canvas is set to
+    // RepeatWrapping. Rotation in degrees → pixel offset.
+    if (_hdriStyle === 'studio' && _hdriRotation !== 0) {
+      try {
+        var rotPx = Math.round((((_hdriRotation % 360) + 360) % 360) / 360 * hdriW);
+        if (rotPx !== 0) {
+          var rotCvs = document.createElement('canvas');
+          rotCvs.width = hdriW; rotCvs.height = hdriH;
+          var rotCtx = rotCvs.getContext('2d');
+          // Draw two halves shifted to wrap around the seam.
+          rotCtx.drawImage(hdriCanvas, -rotPx, 0);
+          rotCtx.drawImage(hdriCanvas, hdriW - rotPx, 0);
+          // Replace original canvas content
+          var orig = hdriCanvas.getContext('2d');
+          orig.clearRect(0, 0, hdriW, hdriH);
+          orig.drawImage(rotCvs, 0, 0);
+        }
+      } catch (e) { /* ignore — fall back to unrotated */ }
+    }
+
     const hdriTex = new THREE.CanvasTexture(hdriCanvas);
     hdriTex.mapping = THREE.EquirectangularReflectionMapping;
+    hdriTex.wrapS = THREE.RepeatWrapping; hdriTex.wrapT = THREE.RepeatWrapping;
     const pmrem = new THREE.PMREMGenerator(renderer);
     pmrem.compileEquirectangularShader();
-    scene.environment = pmrem.fromEquirectangular(hdriTex).texture;
+    var _envPmrem = pmrem.fromEquirectangular(hdriTex).texture;
+    scene.environment = _envPmrem;
+    // Background mode 'hdri': use the same PMREM-blurred env texture as
+    // the scene background, so the studio softbox visibly surrounds the
+    // frame. Falls back to the temporary theme-grey otherwise.
+    if (_bgMode === 'hdri' && _hdriStyle === 'studio') {
+      scene.background = _envPmrem;
+    }
     hdriTex.dispose(); pmrem.dispose();
 
     // EffectComposer pipeline: RenderPass → SSAOPass → FXAA
@@ -2276,6 +3293,37 @@ function SpartanCADPreview() {
         fxaaPass = new THREE.ShaderPass(THREE.FXAAShader);
         fxaaPass.uniforms['resolution'].value.set(1/_pw, 1/_ph);
         composer.addPass(fxaaPass);
+        // Saturation + contrast post-processing pass — only added when the
+        // user has dialled either away from neutral (1.0). Avoids paying
+        // shader cost when the controls are at default.
+        if (Math.abs(_saturation - 1.0) > 0.001 || Math.abs(_contrast - 1.0) > 0.001) {
+          var satConShader = {
+            uniforms: {
+              tDiffuse:   { value: null },
+              saturation: { value: _saturation },
+              contrast:   { value: _contrast },
+            },
+            vertexShader:
+              'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+            fragmentShader:
+              'precision highp float;' +
+              'uniform sampler2D tDiffuse;' +
+              'uniform float saturation;' +
+              'uniform float contrast;' +
+              'varying vec2 vUv;' +
+              'void main(){' +
+              '  vec4 c = texture2D(tDiffuse, vUv);' +
+              // Saturation — mix between luminance and original colour
+              '  float l = dot(c.rgb, vec3(0.299, 0.587, 0.114));' +
+              '  vec3 sat = mix(vec3(l), c.rgb, saturation);' +
+              // Contrast — push around 0.5 mid-grey
+              '  vec3 con = (sat - 0.5) * contrast + 0.5;' +
+              '  gl_FragColor = vec4(con, c.a);' +
+              '}',
+          };
+          var satConPass = new THREE.ShaderPass(satConShader);
+          composer.addPass(satConPass);
+        }
       } catch(e) {
         console.warn('EffectComposer init failed, using fallback FXAA:', e);
         composer = null;
@@ -2363,6 +3411,22 @@ function SpartanCADPreview() {
         animating = true;
       }
     };
+    // Signal the geometry rebuild useEffect that a fresh scene is ready to
+    // receive the productGroup. The bump triggers a re-render, the rebuild
+    // effect picks up the new sceneData.current via its sceneEpoch dep, and
+    // attaches geometry to the new scene. Robust across effect-ordering and
+    // React Strict Mode — does not rely on rebuild's deps including any
+    // render-quality field, which previously only worked by accident.
+    //
+    // Skip the bump on the very first mount: the rebuild useEffect already
+    // fires on initial render via its other deps (currentView, productType,
+    // colour, etc. all transitioning from undefined/null to defined values).
+    // Bumping here too would cause an unnecessary double-build with a brief
+    // visual flash. After the first mount we always bump.
+    if (initRanOnce.current) {
+      setSceneEpoch(function (e) { return e + 1; });
+    }
+    initRanOnce.current = true;
 
     let animId;
     const loop = () => {
@@ -2444,7 +3508,7 @@ function SpartanCADPreview() {
       try { renderer.dispose(); } catch(_){}
       try { if (el.contains(cvs)) el.removeChild(cvs); } catch(_){}
     };
-  }, [currentView]);
+  }, [currentView, appSettings.renderQuality]);
 
   // Rebuild geometry
   useEffect(() => {
@@ -2480,6 +3544,26 @@ function SpartanCADPreview() {
         var defCH = (oH_fs - totalTraH) / numR;
         var cwArr = (zoneWidths && zoneWidths.length === numC) ? zoneWidths.map(function(mm){return mm * S}) : Array(numC).fill(defCW);
         var chArr = (zoneHeights && zoneHeights.length === numR) ? zoneHeights.map(function(mm){return mm * S}) : Array(numR).fill(defCH);
+
+        // Defensive rescale — mirror buildGridWindow's behaviour so the fly
+        // screens stay aligned with the window cells when the user changes
+        // overall width/height in the bottom toolbar without explicitly
+        // editing the zoneWidths/zoneHeights arrays. Without this rescale
+        // the fly screens were stuck at the old cell sizes while the window
+        // stretched to the new dimensions, leaving them floating in the
+        // middle of each aperture.
+        var availColW_fs = oW_fs - totalMulW;
+        var availRowH_fs = oH_fs - totalTraH;
+        var cwSumFs = cwArr.reduce(function(a, b){ return a + b; }, 0);
+        var chSumFs = chArr.reduce(function(a, b){ return a + b; }, 0);
+        if (cwSumFs > 0 && Math.abs(cwSumFs - availColW_fs) > 0.0005) {
+          var kwFs = availColW_fs / cwSumFs;
+          for (var i = 0; i < cwArr.length; i++) cwArr[i] *= kwFs;
+        }
+        if (chSumFs > 0 && Math.abs(chSumFs - availRowH_fs) > 0.0005) {
+          var khFs = availRowH_fs / chSumFs;
+          for (var j = 0; j < chArr.length; j++) chArr[j] *= khFs;
+        }
 
         for (var fr = 0; fr < numR; fr++) {
           for (var fc = 0; fc < numC; fc++) {
@@ -2525,14 +3609,32 @@ function SpartanCADPreview() {
 
     group.position.y = H/2; sd.scene.add(group);
     sd.productGroup = group; sd.sashes = sashes; sd.productTypeId = productType; sd._lastW = W; sd._lastH = H;
-    // Scale fake shadow to fit under this product
+    // When shadows are enabled in Render quality settings, opt every mesh
+    // in the product group into shadow casting + receiving. mergeMesh and
+    // the catalog-path builders set these to false by default; we flip
+    // them post-construction so the same builders work for both shadowed
+    // and non-shadowed renders without per-builder branching.
+    var _rq = (appSettings && appSettings.renderQuality) || {};
+    if (_rq.shadows) {
+      group.traverse(function(c) {
+        if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; }
+      });
+    }
+    // Scale fake shadow to fit under this product (only if it exists —
+    // shadow path replaces fakeShadow with a real ShadowMaterial plane).
     if (sd.fakeShadow) { sd.fakeShadow.scale.set(W * 1.05 + 0.04, W * 0.22 + 0.03, 1); }
     const orb = sd.getOrbit(); sd.setOrbit(orb.theta, orb.phi, Math.max(W, H)*1.8, H/2);
   }, [currentView, productType, colour, colourInt, appSettings.editColours, width, height, panelCount, opensIn, openStyle, transomPct, glassSpec, colonialGrid, cellTypes, cellBreaks, zoneWidths, zoneHeights, hardwareColour, showFlyScreen, showDimensions,
       // Rebuild when DXF-imported polygons or product→profile links change so
       // the 3D viewport reflects newly-imported uPVC profiles immediately.
       appSettings.pricingConfig && appSettings.pricingConfig.profiles,
-      appSettings.pricingConfig && appSettings.pricingConfig.profileLinks]);
+      appSettings.pricingConfig && appSettings.pricingConfig.profileLinks,
+      // Rebuild when the THREE init useEffect creates a fresh scene (e.g. on
+      // any render-quality change that requires a teardown). The init bumps
+      // sceneEpoch after sceneData.current is reassigned; this dep then
+      // re-fires the rebuild so the productGroup is attached to the new
+      // scene rather than orphaned in the disposed one.
+      sceneEpoch]);
 
   // Animate sashes
   useEffect(() => {
@@ -2579,7 +3681,23 @@ function SpartanCADPreview() {
 
   const selCol = colTarget === "ext" ? colour : colourInt;
   const handleColClick = id => {
+    // 1. Update the editor-local colour state — this is what the scene
+    //    rebuild useEffect watches via deps.
     if (colTarget === "ext") setColour(id); else setColourInt(id);
+    // 2. Persist into projectItems[activeFrameIdx] so the colour stays
+    //    when the user navigates away and back. The editor-local state
+    //    doesn't auto-persist; saveCurrentFrameState only runs on
+    //    openFrameEditor / returnToDashboard / Production / Save.
+    if (activeFrameIdx >= 0 && activeFrameIdx < projectItems.length) {
+      setProjectItems(function(prev) {
+        var next = prev.slice();
+        var upd = {};
+        if (colTarget === "ext") upd.colour = id; else upd.colourInt = id;
+        next[activeFrameIdx] = Object.assign({}, next[activeFrameIdx], upd);
+        return next;
+      });
+    }
+    // 3. Apply to all frames if the "Apply to all" checkbox is on.
     if (applyColourAll) {
       setProjectItems(function(prev) {
         return prev.map(function(item) {
@@ -2589,6 +3707,8 @@ function SpartanCADPreview() {
         });
       });
     }
+    // 4. Mark dirty so auto-save fires.
+    setQuoteDirty(true);
   };
   const handleGlassChange = id => {
     setGlassSpec(id);
@@ -2863,8 +3983,98 @@ function SpartanCADPreview() {
           })()}
 
           <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8 }}>
+            {/* ── Build save + search controls (top toolbar) ──
+                These match the visual style of Production/Price (translucent
+                white). Visible from every view, including the empty-frames
+                landing page. The corresponding buttons below on the per-frame
+                toolbar were removed to avoid duplication. */}
+            {buildSaveError && (
+              <span onClick={function(){
+                       if (confirm('Save error:\n\n' + buildSaveError + '\n\nDismiss this warning?')) {
+                         setBuildSaveError(null);
+                       }
+                     }}
+                     title="Click for details"
+                     style={{ color:'#fca5a5', fontSize:10, fontFamily:'monospace', padding:'3px 6px', background:'rgba(255,0,0,0.15)', border:'1px solid rgba(255,0,0,0.3)', borderRadius:3, cursor:'pointer' }}>
+                ⚠ Save failed
+              </span>
+            )}
+            <button onClick={function(){ setShowBuildSearch(function(s){ return !s; }); }}
+                    title="Search saved builds (customer, address, job number)"
+                    style={{ background:'rgba(255,255,255,0.12)', border:'none', borderRadius:5, padding:'5px 12px', cursor:'pointer', color:'white', fontSize:10, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+              Search
+            </button>
+            <button onClick={function(){ setShowBuildsPanel(true); }}
+                    title="Manage saved builds — load, snapshot, download backup"
+                    style={{ background:'rgba(255,255,255,0.12)', border:'none', borderRadius:5, padding:'5px 12px', cursor:'pointer', color:'white', fontSize:10, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4V7z"/><path d="M3 7l9 4 9-4M12 11v10"/></svg>
+              Builds
+            </button>
+            <button onClick={function(){
+                      if (projectItems && projectItems.length > 0) {
+                        if (!confirm('Start a new project? Save your current work first if you want to keep editing it.')) return;
+                      }
+                      startNewProject();
+                    }}
+                    title="Start a new project (current is snapshotted first)"
+                    style={{ background:'rgba(255,255,255,0.12)', border:'none', borderRadius:5, padding:'5px 12px', cursor:'pointer', color:'white', fontSize:10, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
+              New
+            </button>
+            <button onClick={function(){
+                      var result = saveBuildNow();
+                      // Three failure modes from the user's POV:
+                      //  1) Storage module not loaded AND no CRM — nothing
+                      //     is wired up. Most common cause of "save broken".
+                      //  2) Storage tried but threw (quota, disabled, etc.)
+                      //  3) Some other path that didn't write anywhere.
+                      // All three need an alert — silent failure is the
+                      // worst possible behaviour for "Save."
+                      if (result.storageMissing && !result.hadCrm) {
+                        alert(
+                          'Save failed: build storage module not loaded.\n\n' +
+                          'The 41-build-storage.js file is missing from your deployed bundle. ' +
+                          'Copy 41-build-storage.js into the modules/ folder and rebuild.\n\n' +
+                          '(Open the browser console for the full warning.)'
+                        );
+                      } else if (!result.localOk && !result.hadCrm && !result.sbQueued) {
+                        var detail = (result.localError && result.localError.message) || 'unknown error';
+                        alert('Save failed.\n\n' + detail + '\n\nOpen the browser console for full details.');
+                      } else if (!result.localOk && !result.hadCrm && result.sbQueued) {
+                        // Local failed but cloud was queued — quieter notification.
+                        // The error pill in the top bar will show details.
+                      }
+                    }}
+                    title={activeBuildId ? 'Save this job (local + cloud if connected)' : 'Save this job'}
+                    style={{
+                      background: (Date.now() - saveFlashAt < 2000) ? '#16a34a' : (quoteDirty ? '#f59e0b' : 'rgba(255,255,255,0.12)'),
+                      border:'none', borderRadius:5, padding:'5px 12px', cursor:'pointer',
+                      color:'white', fontSize:10, fontWeight:600, display:'flex', alignItems:'center', gap:4,
+                      transition:'background 0.2s'
+                    }}>
+              {(Date.now() - saveFlashAt < 2000) ? (
+                <>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  Saved
+                </>
+              ) : (
+                <>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                  {quoteDirty ? 'Save *' : 'Save'}
+                </>
+              )}
+            </button>
             <button
-              onClick={function(){ setShowProduction(true); setProductionTab('profile'); }}
+              onClick={function(){
+                // Commit any in-flight editor state (Frame Style preset,
+                // colour, fly screen, hardware) back to projectItems
+                // before opening the production view — otherwise the cut
+                // engine reads stale data and the lists come up empty.
+                commitEditorStateToProject(false);
+                setShowProduction(true);
+                setProductionTab('profile');
+              }}
               disabled={projectItems.length === 0}
               title={projectItems.length === 0 ? 'Add at least one frame to view production lists' : 'Open production lists — Profile, Milling, Hardware, Glass'}
               style={{
@@ -2880,7 +4090,7 @@ function SpartanCADPreview() {
               </svg>
               Production
             </button>
-            <button onClick={function(){setShowPricePanel(true)}} style={{ background:'rgba(255,255,255,0.12)', border:'none', borderRadius:5, padding:'5px 12px', cursor:'pointer', color:'white', fontSize:10, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}>
+            <button onClick={function(){ commitEditorStateToProject(false); setShowPricePanel(true); }} style={{ background:'rgba(255,255,255,0.12)', border:'none', borderRadius:5, padding:'5px 12px', cursor:'pointer', color:'white', fontSize:10, fontWeight:600, display:'flex', alignItems:'center', gap:4 }}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
               Price
             </button>
@@ -3024,7 +4234,7 @@ function SpartanCADPreview() {
               <span style={{ opacity:0.5, margin:'0 8px' }}>·</span>
               <span style={{ opacity:0.85 }}>{addr}</span>
             </span>
-            <span style={{ marginLeft:'auto' }}>
+            <span style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8 }}>
               {total === 0
                 ? <span style={{
                     background:'rgba(0,0,0,0.25)', padding:'3px 10px',
@@ -3046,6 +4256,44 @@ function SpartanCADPreview() {
                       Missing measurements: {missing} of {total} frame{total === 1 ? '' : 's'}
                     </span>
               }
+              {/* ── Survey-mode Save button ──
+                  Same unified save action as the top-bar Save: writes
+                  the current survey state to local storage immediately
+                  (so it persists across mode toggles and refreshes), and
+                  if the CRM bridge is connected also fires the CRM save
+                  round-trip. Brief "Saved" confirmation flashes for 2s. */}
+              <button onClick={function(){
+                        var result = saveBuildNow();
+                        if (result.storageMissing && !result.hadCrm) {
+                          alert(
+                            'Save failed: build storage module not loaded.\n\n' +
+                            'The 41-build-storage.js file is missing from your deployed bundle. ' +
+                            'Copy 41-build-storage.js into the modules/ folder and rebuild.'
+                          );
+                        } else if (!result.localOk && !result.hadCrm && !result.sbQueued) {
+                          var detail = (result.localError && result.localError.message) || 'unknown error';
+                          alert('Save failed.\n\n' + detail + '\n\nOpen the browser console for full details.');
+                        }
+                      }}
+                      title="Save this check measure (local + cloud if connected)"
+                      style={{
+                        background: (Date.now() - saveFlashAt < 2000) ? 'rgba(22,163,74,0.85)' : 'rgba(255,255,255,0.15)',
+                        border:'1px solid rgba(255,255,255,0.3)', color:'#fff7ed', borderRadius:3,
+                        padding:'3px 12px', fontSize:11, fontWeight:600, cursor:'pointer',
+                        display:'inline-flex', alignItems:'center', gap:5, transition:'background 0.2s'
+                      }}>
+                {(Date.now() - saveFlashAt < 2000) ? (
+                  <>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    Saved
+                  </>
+                ) : (
+                  <>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                    {quoteDirty ? 'Save *' : 'Save'}
+                  </>
+                )}
+              </button>
             </span>
           </div>;
         })()}
@@ -3762,7 +5010,7 @@ function SpartanCADPreview() {
                   var userTrims = (appSettings && appSettings.pricingConfig && appSettings.pricingConfig.trims) || {};
                   var catalogs = Object.assign({}, defTrims, userTrims);
                   if (!Object.keys(catalogs).length) catalogs = null;
-                  var tc = computeTrimCuts(projectItems, measurementsByFrameId, catalogs, 200);
+                  var tc = computeTrimCuts(projectItems, measurementsByFrameId, catalogs, 200, appSettings);
                   // Diagnostic — visible in the preview header so we can see
                   // catalog state at a glance during smoke testing.
                   var diagCatalogs = catalogs ? Object.keys(catalogs).map(function(k){
@@ -4055,18 +5303,19 @@ function SpartanCADPreview() {
                 overflow:'hidden', transition:'box-shadow 0.15s',
               }} onMouseEnter={function(e){e.currentTarget.style.boxShadow='0 6px 24px rgba(0,0,0,0.12)'}}
                  onMouseLeave={function(e){e.currentTarget.style.boxShadow='none'}}>
-                {/* Thumbnail area — click to edit */}
+                {/* Thumbnail area — click to edit. Always renders the 2D
+                    Schematic2D — per Phoenix the dashboard overview is for
+                    quickly identifying a frame's opening style + dimensions,
+                    which the schematic conveys clearly; the 3D snapshot was
+                    too dense at this size and varied between frames depending
+                    on whether they'd been opened in the editor yet. */}
                 <div onClick={function(){openFrameEditor(idx)}} style={{ height:160, background:'#e8eaed', display:'flex', alignItems:'center', justifyContent:'center', position:'relative', cursor:'pointer' }}>
-                  {frame.thumbnail ? (
-                    <img src={frame.thumbnail} alt={frame.name} style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
-                  ) : (
-                    <div style={{ opacity:0.6, transform:'scale(0.7)' }}>
-                      <Schematic2D productType={frame.productType} widthMm={frame.width} heightMm={frame.height}
-                        panelCount={frame.panelCount} openingStyle={frame.openStyle} transomPct={frame.transomPct}
-                        colonialGrid={frame.colonialGrid} cellTypes={frame.cellTypes} zoneWidths={frame.zoneWidths} zoneHeights={frame.zoneHeights}
-                        pricingConfig={(appSettings && appSettings.pricingConfig) || null} profileOverrides={frame.profileOverrides || null}/>
-                    </div>
-                  )}
+                  <div style={{ opacity:0.6, transform:'scale(0.7)' }}>
+                    <Schematic2D productType={frame.productType} widthMm={frame.width} heightMm={frame.height}
+                      panelCount={frame.panelCount} openingStyle={frame.openStyle} transomPct={frame.transomPct}
+                      colonialGrid={frame.colonialGrid} cellTypes={frame.cellTypes} zoneWidths={frame.zoneWidths} zoneHeights={frame.zoneHeights}
+                      pricingConfig={(appSettings && appSettings.pricingConfig) || null} profileOverrides={frame.profileOverrides || null}/>
+                  </div>
                   {/* Edit overlay on hover */}
                   <div style={{ position:'absolute', inset:0, background:'rgba(0,0,0,0)', transition:'background 0.15s', display:'flex', alignItems:'center', justifyContent:'center' }}
                     onMouseEnter={function(e){e.currentTarget.style.background='rgba(0,0,0,0.25)';e.currentTarget.children[0].style.opacity='1'}}
@@ -4262,8 +5511,9 @@ function SpartanCADPreview() {
                       var iw = S-f*2, ih = S-f*2;
                       // Opening triangles and type-specific markings
                       if (pId === 'awning_window') {
-                        // Triangle pointing up from bottom (top-hung)
-                        inner.push(<polygon key="t" points={(f+iw/2)+","+(f+s)+' '+(f+s)+","+(f+ih-s)+' '+(f+iw-s)+","+(f+ih-s)} fill="none" stroke={cl} strokeWidth="0.8"/>);
+                        // Triangle pointing down to bottom (top-hinged, opens
+                        // outward at the bottom — Spartan house convention).
+                        inner.push(<polygon key="t" points={(f+s)+","+(f+s)+' '+(f+iw-s)+","+(f+s)+' '+(f+iw/2)+","+(f+ih-s)} fill="none" stroke={cl} strokeWidth="0.8"/>);
                         inner.push(<rect key="s" x={f+s} y={f+s} width={iw-s*2} height={ih-s*2} fill="none" stroke={c} strokeWidth="1"/>);
                       } else if (pId === 'casement_window') {
                         // Triangle pointing left (left-hand hinge)
@@ -6770,6 +8020,7 @@ function SpartanCADPreview() {
               { id:'glass',    label:'Glass',    icon:'▢' },
               { id:'steel',    label:'Steel',    icon:'▤' },
               { id:'assembly', label:'Assembly', icon:'◫' },
+              { id:'trims',    label:'Additional Profiles', icon:'▭' },
             ].map(function(tab){
               var active = productionTab === tab.id;
               return (
@@ -7580,8 +8831,419 @@ function SpartanCADPreview() {
             );
           })()}
 
+          {/* ─── TRIMS TAB ─────────────────────────────────────────────
+              Architraves, cover trims (e.g. 30T, 92x18 SB), and reveals,
+              with cut lengths derived from frame dims + the per-family
+              allowance (200mm default; 30mm for flange30). Selections
+              live in measurementsByFrameId — they're populated during
+              Check Measure, so this tab is empty (with a banner) until
+              CM has been completed for at least one frame. The same
+              data already ships to the CRM in msg.trimCutList AND is
+              stored on cad_data.trimCutList by buildCadDataCache. */}
+          {productionTab === 'trims' && (function(){
+            if (typeof computeTrimCuts !== 'function') {
+              return <div style={{ padding:24, color:T.textMuted, fontSize:12 }}>Trim cut module not loaded.</div>;
+            }
+            var pcConfig = (appSettings && appSettings.pricingConfig) || (typeof window !== 'undefined' && window.PRICING_DEFAULTS) || {};
+            var trimCatalogs = (pcConfig && pcConfig.trims) || null;
+            var measMap = measurementsByFrameId || {};
+            var tc;
+            try { tc = computeTrimCuts(projectItems, measMap, trimCatalogs, 200, appSettings); }
+            catch (e) {
+              console.warn('Trim cut compute failed:', e);
+              return <div style={{ padding:24, color:'#7c2d12', fontSize:12 }}>Trim cut computation failed: {String(e && e.message || e)}</div>;
+            }
+            if (!tc || !tc.cuts || !tc.cuts.length) {
+              return (
+                <div style={{ padding:'14px 18px', background:T.bgPanel, border:'1px dashed '+T.border, borderRadius:8, fontSize:12, color:T.textMuted, textAlign:'center', maxWidth:640, margin:'24px auto' }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:T.text, marginBottom:6 }}>No additional profile cuts yet</div>
+                  <div>Architrave, cover trim, and reveal selections are captured during <b>Check Measure</b> — pick the profiles per frame in survey mode. Once at least one frame has selections, this tab populates with cut lengths, per-bar plans, and aggregate totals for the production line.</div>
+                </div>
+              );
+            }
+            // Group cuts by frame for the per-frame card list.
+            var byFrame = {};
+            tc.cuts.forEach(function(c){
+              if (!byFrame[c.frameId]) byFrame[c.frameId] = { frameName: c.frameName, frameColourExt: c.frameColourExt, frameColourInt: c.frameColourInt, cuts: [] };
+              byFrame[c.frameId].cuts.push(c);
+            });
+            var frameIds = Object.keys(byFrame);
+            var trimKeys = Object.keys(tc.byTrim);
+            // Project totals across all trim groups
+            var totalCuts = tc.cuts.length;
+            var totalLengthMm = 0;
+            var totalBars = 0;
+            trimKeys.forEach(function(k){
+              var b = tc.byTrim[k];
+              totalLengthMm += (b.totalLengthMm || 0);
+              if (typeof b.barsRequired === 'number') totalBars += b.barsRequired;
+            });
+            return (
+              <div style={{ display:'flex', gap:16, flexWrap:'wrap', alignItems:'flex-start' }}>
+                {/* Per-frame breakdown */}
+                <div style={{ flex:'2 1 540px', minWidth:540, background:T.bgPanel, border:'1px solid '+T.border, borderRadius:8, padding:'14px 18px' }}>
+                  <div style={{ marginBottom:8 }}>
+                    <div style={{ fontSize:14, fontWeight:700, color:T.text }}>Additional profiles — per frame</div>
+                    <div style={{ fontSize:11, color:T.textMuted }}>One row per cut. Allowance: 200 mm/cut (30 mm for flange30 family). Length = (W or H) + allowance, except reveals (exact finished length).</div>
+                  </div>
+                  {frameIds.map(function(fid){
+                    var fb = byFrame[fid];
+                    var extLbl = (fb.frameColourExt && fb.frameColourExt.label) || '—';
+                    var intLbl = (fb.frameColourInt && fb.frameColourInt.label) || '—';
+                    return (
+                      <div key={fid} style={{ marginBottom:12, background:'white', border:'1px solid '+T.border, borderRadius:4, padding:'10px 12px' }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:6, flexWrap:'wrap' }}>
+                          <span style={{ fontWeight:700, fontSize:13, color:T.text }}>{fb.frameName}</span>
+                          <span style={{ fontSize:10, color:T.textMuted }}>Ext: {extLbl}</span>
+                          <span style={{ fontSize:10, color:T.textMuted }}>Int: {intLbl}</span>
+                          <span style={{ fontSize:10, fontWeight:600, color:'#1e3a8a', background:'#dbeafe', padding:'1px 6px', borderRadius:3 }}>{fb.cuts.length} cut{fb.cuts.length === 1 ? '' : 's'}</span>
+                        </div>
+                        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:10 }}>
+                          <thead>
+                            <tr style={{ background:'#f4f6f8', color:T.textMuted, textTransform:'uppercase', fontSize:9 }}>
+                              <th style={{ textAlign:'left',  padding:'4px 8px' }}>Surface</th>
+                              <th style={{ textAlign:'left',  padding:'4px 8px' }}>Side</th>
+                              <th style={{ textAlign:'left',  padding:'4px 8px' }}>Trim</th>
+                              <th style={{ textAlign:'right', padding:'4px 8px' }}>Length (mm)</th>
+                              <th style={{ textAlign:'left',  padding:'4px 8px' }}>Joint</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {fb.cuts.map(function(c, ci){
+                              return (
+                                <tr key={ci}>
+                                  <td style={{ padding:'3px 8px', borderBottom:'1px solid #f0f0f0', textTransform:'capitalize' }}>{c.surface}</td>
+                                  <td style={{ padding:'3px 8px', borderBottom:'1px solid #f0f0f0', textTransform:'capitalize' }}>{c.side}</td>
+                                  <td style={{ padding:'3px 8px', borderBottom:'1px solid #f0f0f0' }} title={c.catalogId || c.trimValue}>{c.trimLabel}</td>
+                                  <td style={{ padding:'3px 8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontFamily:'monospace', fontWeight:700 }}>{c.lengthMm}</td>
+                                  <td style={{ padding:'3px 8px', borderBottom:'1px solid #f0f0f0', color: c.jointStyle === 'mitre' ? '#7c2d12' : T.textMuted }}>{c.jointStyle || 'butt'}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Project-wide aggregate by trim type */}
+                <div style={{ flex:'1 1 320px', minWidth:320, background:T.bgPanel, border:'1px solid '+T.border, borderRadius:8, padding:'14px 18px' }}>
+                  <div style={{ marginBottom:8 }}>
+                    <div style={{ fontSize:14, fontWeight:700, color:T.text }}>Project total</div>
+                    <div style={{ fontSize:11, color:T.textMuted }}>Bars required is a coarse estimate (totalLength ÷ barLength rounded up). The Bar Plan in the xlsx export uses an FFD packer for the actual cut sequence.</div>
+                    <div style={{ fontSize:11, color:T.text, marginTop:6 }}>
+                      <b>{totalCuts}</b> cuts &middot; <b>{(totalLengthMm/1000).toFixed(2)}</b> m total &middot; <b>{totalBars || '—'}</b> bars (est.)
+                    </div>
+                  </div>
+                  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:10, background:'white', border:'1px solid '+T.border, borderRadius:4 }}>
+                    {(function(){
+                      // Show the Material Cost column only when at least one
+                      // group has a cost computed. Today that's fly screens
+                      // (frame metres × per-metre rate + per-unit miscellaneous);
+                      // architraves/trims/reveals don't yet emit a cost on the
+                      // byTrim entry, so the column stays hidden for them.
+                      var hasCost = trimKeys.some(function(k){ return typeof tc.byTrim[k].totalMaterialCost === 'number'; });
+                      return <thead>
+                        <tr style={{ background:'#f4f6f8', color:T.textMuted, textTransform:'uppercase', fontSize:9 }}>
+                          <th style={{ textAlign:'left',  padding:'4px 8px' }}>Trim</th>
+                          <th style={{ textAlign:'right', padding:'4px 8px' }}>Cuts</th>
+                          <th style={{ textAlign:'right', padding:'4px 8px' }}>Total (mm)</th>
+                          <th style={{ textAlign:'right', padding:'4px 8px' }}>Bars</th>
+                          {hasCost && <th style={{ textAlign:'right', padding:'4px 8px' }}>Material&nbsp;($)</th>}
+                        </tr>
+                      </thead>;
+                    })()}
+                    <tbody>
+                      {trimKeys.map(function(k){
+                        var b = tc.byTrim[k];
+                        var hasCost = trimKeys.some(function(kk){ return typeof tc.byTrim[kk].totalMaterialCost === 'number'; });
+                        return (
+                          <tr key={k}>
+                            <td style={{ padding:'3px 8px', borderBottom:'1px solid #f0f0f0' }} title={b.isCatalogItem ? ('catalog: ' + k) : ('legacy code: ' + k)}>
+                              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                                {b.profileImage && (
+                                  <img src={b.profileImage} alt="profile cross-section"
+                                       style={{ width:32, height:32, objectFit:'contain', border:'1px solid '+T.border, borderRadius:3, background:'#f8f8f8', flexShrink:0 }}/>
+                                )}
+                                <span>
+                                  {b.label}
+                                  {!b.isCatalogItem && <span style={{ fontSize:9, color:'#7c2d12', marginLeft:4 }}>(legacy)</span>}
+                                </span>
+                              </div>
+                            </td>
+                            <td style={{ padding:'3px 8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:700, fontFamily:'monospace' }}>{b.cutCount}</td>
+                            <td style={{ padding:'3px 8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontFamily:'monospace' }}>{b.totalLengthMm}</td>
+                            <td style={{ padding:'3px 8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontFamily:'monospace' }}>{b.barsRequired == null ? '—' : b.barsRequired}</td>
+                            {hasCost && (
+                              <td style={{ padding:'3px 8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontFamily:'monospace' }}
+                                  title={typeof b.totalMaterialCost === 'number' ?
+                                    ('Frame: $' + (b.frameMaterialCost || 0).toFixed(2) +
+                                     ' (' + (b.totalLengthMm/1000).toFixed(2) + 'm × $' + (b.flyScreenFramePerMetre || 0).toFixed(2) + '/m) +' +
+                                     ' Misc: $' + (b.miscMaterialCost || 0).toFixed(2) +
+                                     ' (' + (b.numScreens || 0) + ' screen' + ((b.numScreens || 0) === 1 ? '' : 's') + ' × $' + (b.flyScreenPerUnit || 0).toFixed(2) + ')') : '—'}>
+                                {typeof b.totalMaterialCost === 'number' ? '$' + b.totalMaterialCost.toFixed(2) : '—'}
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <div style={{ fontSize:10, color:T.textMuted, marginTop:8, fontStyle:'italic' }}>
+                    Full cut detail + FFD bar plan are in the xlsx export (top-right) — the CRM also receives this list as <code>cadData.trimCutList</code> for downstream production handoff.
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
         </div>
       </div>}
+
+      {/* ─── Search dropdown — small floating panel from top-right ──────
+          Toggled by the Search button in the top bar. Reads from the
+          builds index (no need to load full builds for a search hit) and
+          filters by substring across customerName / address / jobNumber /
+          quoteNumber. Click a result to load it. */}
+      {showBuildSearch && (function(){
+        var idx = (window.SpartanBuildStorage && window.SpartanBuildStorage.loadIndex()) || [];
+        return (
+          <div style={{ position:'fixed', top:42, right:16, zIndex:10000, width:480, maxHeight:'70vh', background:'white', border:'1px solid #ccc', borderRadius:6, boxShadow:'0 8px 32px rgba(0,0,0,0.25)', display:'flex', flexDirection:'column' }}>
+            <div style={{ padding:'10px 12px', borderBottom:'1px solid #eee', display:'flex', alignItems:'center', gap:8 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+              <input type="text" id="build-search-input"
+                     autoFocus
+                     placeholder="Search by customer, address, job, or quote number…"
+                     onChange={function(e){ setBuildSearchQuery(e.target.value); }}
+                     style={{ flex:1, border:'none', outline:'none', fontSize:13, background:'transparent' }}/>
+              <button onClick={function(){ setShowBuildSearch(false); }}
+                      style={{ background:'transparent', border:'none', cursor:'pointer', fontSize:14, color:'#999' }}>✕</button>
+            </div>
+            <div style={{ overflowY:'auto', flex:1 }}>
+              {idx.length === 0 ? (
+                <div style={{ padding:24, textAlign:'center', fontSize:12, color:'#999' }}>
+                  No saved builds yet. Builds auto-save 2 seconds after each edit.
+                </div>
+              ) : (function(){
+                var q = (buildSearchQuery || '').toLowerCase().trim();
+                var rows = idx.filter(function(r){
+                  if (!q) return true;
+                  var hay = ((r.customerName || '') + ' ' + (r.address || '') + ' ' + (r.jobNumber || '') + ' ' + (r.quoteNumber || '')).toLowerCase();
+                  return hay.indexOf(q) !== -1;
+                });
+                if (rows.length === 0) return (
+                  <div style={{ padding:24, textAlign:'center', fontSize:12, color:'#999' }}>
+                    No matches for "{buildSearchQuery}".
+                  </div>
+                );
+                return rows.map(function(r){
+                  var isActive = r.buildId === activeBuildId;
+                  var when = r.lastSaved ? new Date(r.lastSaved) : null;
+                  var whenStr = when ? when.toLocaleString() : '—';
+                  return (
+                    <div key={r.buildId}
+                         onClick={function(){
+                           // Always open on click — even if this is already
+                           // the active build, the user expects something
+                           // to happen (and a reload from storage doesn't
+                           // hurt; if anything, it recovers from any
+                           // unsaved-on-screen-only weirdness).
+                           if (!isActive && quoteDirty && projectItems && projectItems.length > 0) {
+                             if (!confirm('Switch builds? Save your current changes first if you want to keep them.')) return;
+                           }
+                           var ok = loadBuildIntoEditor(r.buildId);
+                           if (!ok) alert('Could not open this build — its data is missing or corrupted in storage.');
+                         }}
+                         style={{ padding:'10px 14px', borderBottom:'1px solid #f0f0f0', cursor:'pointer', background: isActive ? '#fff7e6' : 'transparent' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:8 }}>
+                        <div style={{ fontSize:13, fontWeight:600, color:'#222' }}>
+                          {r.customerName || <span style={{ color:'#999', fontStyle:'italic' }}>Unnamed build</span>}
+                          {isActive && <span style={{ marginLeft:6, fontSize:9, fontWeight:600, color:'#1d4ed8', background:'#dbeafe', padding:'1px 6px', borderRadius:3 }}>ACTIVE</span>}
+                        </div>
+                        <div style={{ fontSize:10, color:'#999', fontFamily:'monospace' }}>{r.frameCount} frame{r.frameCount === 1 ? '' : 's'}</div>
+                      </div>
+                      {r.address && <div style={{ fontSize:11, color:'#666', marginTop:2 }}>{r.address}</div>}
+                      <div style={{ display:'flex', gap:10, marginTop:4, fontSize:10, color:'#999' }}>
+                        {r.jobNumber && <span>Job: <b style={{ color:'#555' }}>{r.jobNumber}</b></span>}
+                        {r.quoteNumber && <span>Quote: <b style={{ color:'#555' }}>{r.quoteNumber}</b></span>}
+                        <span style={{ marginLeft:'auto' }}>{whenStr}</span>
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+            <div style={{ padding:'8px 12px', borderTop:'1px solid #eee', fontSize:10, color:'#999', display:'flex', justifyContent:'space-between' }}>
+              <span>{idx.length} build{idx.length === 1 ? '' : 's'} saved locally</span>
+              <span style={{ cursor:'pointer', color:'#1d4ed8' }} onClick={function(){ setShowBuildSearch(false); setShowBuildsPanel(true); }}>
+                Open Builds panel →
+              </span>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ─── Builds panel — full-screen modal ──────────────────────────
+          Lists every saved build with edit / load / delete / download.
+          For the active build, also lists snapshots with restore.
+          Footer: Download all / Restore from file / Storage usage. */}
+      {showBuildsPanel && (function(){
+        var idx = (window.SpartanBuildStorage && window.SpartanBuildStorage.loadIndex()) || [];
+        var usageBytes = (window.SpartanBuildStorage && window.SpartanBuildStorage.storageUsageBytes()) || 0;
+        var usageKB = (usageBytes / 1024).toFixed(0);
+        var usageMB = (usageBytes / 1024 / 1024).toFixed(2);
+        return (
+          <div style={{ position:'fixed', inset:0, zIndex:9999, background:'#f4f6f8', display:'flex', flexDirection:'column', fontFamily:"'Segoe UI',Tahoma,Geneva,Verdana,sans-serif" }}>
+            <div style={{ height:40, background:'#1a1a1a', display:'flex', alignItems:'center', padding:'0 16px', gap:14, flexShrink:0 }}>
+              <div onClick={function(){ setShowBuildsPanel(false); }} style={{ cursor:'pointer', display:'flex', alignItems:'center', gap:6, color:'rgba(255,255,255,0.6)', fontSize:13 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15,18 9,12 15,6"/></svg>
+                Back
+              </div>
+              <span style={{ color:'white', fontSize:13, fontWeight:600 }}>Builds</span>
+              <span style={{ color:'rgba(255,255,255,0.4)', fontSize:11 }}>{idx.length} saved · {usageBytes >= 1024*1024 ? usageMB+' MB' : usageKB+' KB'}</span>
+              <div style={{ marginLeft:'auto', display:'flex', gap:8 }}>
+                <button onClick={function(){
+                          if (!window.SpartanBuildStorage || typeof window.SpartanBuildStorage.mergeSupabaseIndex !== 'function') {
+                            alert('Cloud sync not available. Make sure 41-build-storage.js is loaded.');
+                            return;
+                          }
+                          window.SpartanBuildStorage.mergeSupabaseIndex().then(function(r) {
+                            if (!r.ok) {
+                              alert('Could not reach cloud: ' + (r.reason || 'unknown') + '.\n\nMake sure Supabase is configured and the cad_builds table exists. See 41-build-storage.js for the schema.');
+                              return;
+                            }
+                            var msg = 'Synced from cloud:\n• ' + r.added + ' new build' + (r.added === 1 ? '' : 's') + ' added\n• ' + r.updated + ' updated\n• ' + r.total + ' total in cloud';
+                            alert(msg);
+                            setBuildsLastSavedTs(Date.now());
+                          }).catch(function(err) {
+                            alert('Cloud sync failed: ' + (err && err.message ? err.message : 'unknown'));
+                          });
+                        }}
+                        title="Pull all cloud-saved builds into this device"
+                        style={{ background:'#16a34a', color:'white', border:'none', borderRadius:5, padding:'5px 12px', cursor:'pointer', fontSize:11, fontWeight:600 }}>
+                  ☁ Sync from cloud
+                </button>
+                <button onClick={function(){
+                          var data = window.SpartanBuildStorage.downloadAllBuildsJSON();
+                          alert('Downloaded ' + Object.keys(data.builds || {}).length + ' build(s). Keep the file safe — it\'s your off-machine backup.');
+                        }}
+                        style={{ background:'#1d4ed8', color:'white', border:'none', borderRadius:5, padding:'5px 12px', cursor:'pointer', fontSize:11, fontWeight:600 }}>
+                  ⬇ Download backup
+                </button>
+                <input type="file" accept="application/json" id="builds-restore-input" style={{ display:'none' }}
+                       onChange={function(e){
+                         var f = e.target.files && e.target.files[0];
+                         if (!f) return;
+                         var reader = new FileReader();
+                         reader.onload = function(ev){
+                           var report = window.SpartanBuildStorage.restoreBuildsFromJSON(ev.target.result);
+                           var msg = 'Restore complete:\n• ' + report.imported + ' imported\n• ' + report.skipped + ' skipped (older than local)';
+                           if (report.errors.length) msg += '\n\nErrors:\n' + report.errors.join('\n');
+                           alert(msg);
+                           setBuildsLastSavedTs(Date.now());
+                         };
+                         reader.onerror = function(){ alert('Could not read file.'); };
+                         reader.readAsText(f);
+                         e.target.value = '';
+                       }}/>
+                <label htmlFor="builds-restore-input"
+                       style={{ background:'rgba(255,255,255,0.1)', color:'white', border:'1px solid rgba(255,255,255,0.2)', borderRadius:5, padding:'5px 12px', cursor:'pointer', fontSize:11, fontWeight:600 }}>
+                  ⬆ Restore from file
+                </label>
+              </div>
+            </div>
+            <div style={{ flex:1, overflowY:'auto', padding:'24px 32px' }}>
+              {idx.length === 0 ? (
+                <div style={{ padding:'60px 40px', textAlign:'center', color:'#666', fontSize:13 }}>
+                  <div style={{ fontSize:36, marginBottom:12, color:'#bbb' }}>📁</div>
+                  <div style={{ fontWeight:600, fontSize:15, color:'#333', marginBottom:6 }}>No saved builds yet</div>
+                  <div style={{ maxWidth:480, margin:'0 auto', lineHeight:1.5 }}>
+                    Builds auto-save 2 seconds after each edit. Add some frames in the editor and they'll appear here automatically.
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display:'flex', gap:24, alignItems:'flex-start' }}>
+                  {/* Builds list */}
+                  <div style={{ flex:'1 1 0', minWidth:0 }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:'#333', marginBottom:10 }}>All builds <span style={{ color:'#999', fontWeight:400, marginLeft:4 }}>({idx.length})</span></div>
+                    {idx.map(function(r){
+                      var isActive = r.buildId === activeBuildId;
+                      var when = r.lastSaved ? new Date(r.lastSaved) : null;
+                      var whenStr = when ? when.toLocaleString() : '—';
+                      var sizeKB = r.sizeBytes ? (r.sizeBytes / 1024).toFixed(1) : '?';
+                      return (
+                        <div key={r.buildId}
+                             style={{ marginBottom:8, padding:'12px 16px', background:'white', border:'1px solid '+(isActive ? '#fbbf24' : '#e5e7eb'), borderRadius:6, boxShadow:isActive ? '0 0 0 2px #fef3c7' : 'none' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:10, marginBottom:4 }}>
+                            <div>
+                              <span style={{ fontSize:14, fontWeight:600, color:'#222' }}>{r.customerName || <span style={{ color:'#999', fontStyle:'italic' }}>Unnamed build</span>}</span>
+                              {isActive && <span style={{ marginLeft:8, fontSize:9, fontWeight:600, color:'#92400e', background:'#fef3c7', padding:'2px 8px', borderRadius:3 }}>ACTIVE</span>}
+                              <span style={{ marginLeft:8, fontSize:9, color:'#999', fontFamily:'monospace' }}>{r.buildId.slice(0, 24)}{r.buildId.length > 24 ? '…' : ''}</span>
+                            </div>
+                            <div style={{ display:'flex', gap:6 }}>
+                              <button onClick={function(){
+                                        if (!isActive && quoteDirty && projectItems && projectItems.length > 0) {
+                                          if (!confirm('Open this build? Save your current changes first if you want to keep them.')) return;
+                                        }
+                                        var ok = loadBuildIntoEditor(r.buildId);
+                                        if (!ok) alert('Could not open this build — its data is missing or corrupted in storage.');
+                                      }}
+                                      title={isActive ? 'Reload this build from storage (refresh in case of stale state)' : 'Open this build in the editor'}
+                                      style={{ background:'#1d4ed8', color:'white', border:'none', borderRadius:4, padding:'4px 10px', cursor:'pointer', fontSize:10, fontWeight:600 }}>
+                                {isActive ? 'Reload' : 'Open'}
+                              </button>
+                              <button onClick={function(){
+                                        var data = window.SpartanBuildStorage.loadBuild(r.buildId);
+                                        if (!data) return alert('Build not found.');
+                                        var blob = new Blob([JSON.stringify({ _format:'spartan_cad_builds_v1', _version:1, _exportedAt:new Date().toISOString(), index:[r], builds:{[r.buildId]:data}, snapshots:{} }, null, 2)], { type:'application/json' });
+                                        var url = URL.createObjectURL(blob);
+                                        var ts = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+                                        var a = document.createElement('a');
+                                        a.href = url;
+                                        a.download = 'build-' + (r.customerName ? r.customerName.replace(/[^a-z0-9]/gi,'_') : r.buildId) + '-' + ts + '.json';
+                                        document.body.appendChild(a); a.click();
+                                        setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+                                      }}
+                                      style={{ background:'transparent', color:'#1d4ed8', border:'1px solid #ccc', borderRadius:4, padding:'4px 10px', cursor:'pointer', fontSize:10 }}>
+                                ⬇ Export
+                              </button>
+                              <button onClick={function(){
+                                        if (!confirm('Delete this build? This cannot be undone unless you have a downloaded backup file.')) return;
+                                        window.SpartanBuildStorage.deleteBuild(r.buildId);
+                                        // Mirror the delete to Supabase so the cloud
+                                        // doesn't keep reviving deleted builds when
+                                        // another device syncs.
+                                        if (typeof window.SpartanBuildStorage.deleteBuildFromSupabase === 'function') {
+                                          try { window.SpartanBuildStorage.deleteBuildFromSupabase(r.buildId); } catch (e) {}
+                                        }
+                                        setBuildsLastSavedTs(Date.now());
+                                        if (r.buildId === activeBuildId) setActiveBuildId(null);
+                                      }}
+                                      style={{ background:'transparent', color:'#dc2626', border:'1px solid '+(isActive ? '#fbbf24' : '#fecaca'), borderRadius:4, padding:'4px 10px', cursor:'pointer', fontSize:10 }}>
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                          {r.address && <div style={{ fontSize:11, color:'#555', marginBottom:4 }}>{r.address}</div>}
+                          <div style={{ display:'flex', gap:14, fontSize:10, color:'#999', flexWrap:'wrap' }}>
+                            {r.jobNumber && <span>Job: <b style={{ color:'#555' }}>{r.jobNumber}</b></span>}
+                            {r.quoteNumber && <span>Quote: <b style={{ color:'#555' }}>{r.quoteNumber}</b></span>}
+                            <span>Frames: <b style={{ color:'#555' }}>{r.frameCount}</b></span>
+                            <span>Size: <b style={{ color:'#555' }}>{sizeKB} KB</b></span>
+                            <span>Phase: <b style={{ color:'#555' }}>{r.phase || 'design'}</b></span>
+                            <span style={{ marginLeft:'auto' }}>Saved: {whenStr}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Full-screen Settings — WindowCAD style */}
       {showSettings && <div style={{ position:'fixed', inset:0, zIndex:9999, background:T.bg, display:'flex', flexDirection:'column', fontFamily:"'Segoe UI',Tahoma,Geneva,Verdana,sans-serif" }}>
@@ -7638,6 +9300,7 @@ function SpartanCADPreview() {
                 {id:'prod-framestyles', label:'Frame styles', icon:'◫'},
                 {id:'prod-customlayouts', label:'Custom layouts', icon:'▦'},
                 {id:'prod-types',         label:'Product types',  icon:'❑'},
+                {id:'prod-mullions',      label:'Mullions',       icon:'╫'},
                 {id:'prod-hardware', label:'Hardware & milling', icon:'⚒'},
               ]},
               {key:'pricing', label:'Pricing', items:[
@@ -7658,6 +9321,9 @@ function SpartanCADPreview() {
                 {id:'catalog-hardwood',    label:'Hardwood (DAR)',          icon:'▦'},
                 {id:'catalog-reveals',     label:'Reveals',                 icon:'▤'},
                 {id:'catalog-flyscreens',  label:'Fly screens',             icon:'▦'},
+              ]},
+              {key:'renderer', label:'3D Renderer', items:[
+                {id:'render-quality', label:'Render quality', icon:'✦'},
               ]},
               {key:'projects', label:'Projects', items:[
                 {id:'statuses', label:'Statuses', icon:'☰'},
@@ -8099,11 +9765,115 @@ function SpartanCADPreview() {
               
               // === PRODUCTS: COLOURS ===
               if (settingsPath === 'prod-colours') {
+                try {
                 const list = appSettings.editColours;
-                const sel = list[settingsListIdx];
+                // Defensive: if list is empty or settingsListIdx is out of
+                // range, sel can be undefined. Coerce to a safe fallback
+                // entry so renderColourSwatch + the right-pane never crash.
+                var safeIdx = (list && list.length > 0)
+                  ? Math.max(0, Math.min(settingsListIdx, list.length - 1))
+                  : 0;
+                const sel = (list && list[safeIdx]) || { id:'_fallback', label:'(empty)', hex:'#cccccc', cat:'smooth', r:0.3, m:0, cc:0.4, ccr:0.3, envI:0.5 };
+
+                // Material-aware swatch renderer. Replaces the flat-hex
+                // `<div style={{ background: c.hex }}>` rectangles that were
+                // showing every colour as a featureless coloured square,
+                // ignoring roughness/metalness/clearcoat/envI entirely.
+                //
+                // For wood: shows the procedural grain (or the uploaded
+                // photographic albedo when texturePack.albedo is set) as
+                // background-image. For aludec/smooth: builds a CSS
+                // gradient sphere that responds to the material settings —
+                // small for the list, larger for the header. The same
+                // visual language as the Material Preview ball below, just
+                // shrunk down so users can see how their settings look at
+                // a glance while scrolling through colours.
+                function renderColourSwatch(c, size, opts) {
+                  opts = opts || {};
+                  var rad = opts.shape === 'square' ? Math.max(2, size / 8) : size / 2;
+                  var borderRad = opts.shape === 'square' ? rad : '50%';
+                  var r = typeof c.r === 'number' ? c.r : 0.3;
+                  var m = typeof c.m === 'number' ? c.m : 0;
+                  var cc = typeof c.cc === 'number' ? c.cc : 0;
+                  var ccr = typeof c.ccr === 'number' ? c.ccr : 0.3;
+                  var envI = typeof c.envI === 'number' ? c.envI : 0.5;
+
+                  // Wood OR aludec with photographic albedo upload — show actual texture
+                  if ((c.cat === 'wood' || c.cat === 'aludec') && c.texturePack && c.texturePack.albedo) {
+                    return <div style={{
+                      width: size, height: size, borderRadius: borderRad,
+                      backgroundImage: 'url(' + c.texturePack.albedo + ')',
+                      backgroundSize: 'cover', backgroundPosition: 'center',
+                      border: '1px solid ' + T.border, flexShrink: 0,
+                      boxShadow: 'inset -1px -2px 4px rgba(0,0,0,0.18)',
+                    }}/>;
+                  }
+                  // Wood with procedural grain
+                  if (c.cat === 'wood') {
+                    var woodUrl = '';
+                    try { woodUrl = makeWoodPreviewDataURL(c, Math.max(48, size * 2), Math.max(48, size * 2)); }
+                    catch (e) { /* fallback below */ }
+                    return <div style={{
+                      width: size, height: size, borderRadius: borderRad,
+                      backgroundImage: woodUrl ? 'url(' + woodUrl + ')' : undefined,
+                      backgroundColor: woodUrl ? undefined : c.hex,
+                      backgroundSize: 'cover', backgroundPosition: 'center',
+                      border: '1px solid ' + T.border, flexShrink: 0,
+                      boxShadow: 'inset -1px -2px 4px rgba(0,0,0,0.18)',
+                    }}/>;
+                  }
+
+                  // Smooth/aludec/anything else — pseudo-3D CSS sphere/square
+                  // Same gradient math the Material Preview uses; shrunk.
+                  var col;
+                  try { col = new THREE.Color(c.hex); } catch (e) { col = { r:0.5, g:0.5, b:0.5 }; }
+                  var lightR = Math.min(255, Math.round(col.r * 255 * (1.4 - r * 0.3)));
+                  var lightG = Math.min(255, Math.round(col.g * 255 * (1.4 - r * 0.3)));
+                  var lightB = Math.min(255, Math.round(col.b * 255 * (1.4 - r * 0.3)));
+                  var darkR = Math.round(col.r * 255 * 0.5);
+                  var darkG = Math.round(col.g * 255 * 0.5);
+                  var darkB = Math.round(col.b * 255 * 0.5);
+                  var hlPos = (35 + (1 - r) * 15) + '% ' + (30 + (1 - r) * 10) + '%';
+                  var bg = 'radial-gradient(circle at ' + hlPos + ', '
+                         + 'rgb(' + lightR + ',' + lightG + ',' + lightB + '), '
+                         + c.hex + ' 50%, '
+                         + 'rgb(' + darkR + ',' + darkG + ',' + darkB + ') 100%)';
+                  // Highlight overlay for clearcoat
+                  var ccOverlay = null;
+                  if (cc > 0.05) {
+                    var hlW = Math.max(3, size * 0.36 * (1 - ccr * 0.6));
+                    var hlH = Math.max(2, size * 0.18 * (1 - ccr * 0.6));
+                    ccOverlay = <div style={{
+                      position: 'absolute', top: size * 0.08, left: size * 0.22,
+                      width: hlW, height: hlH, borderRadius: '50%', pointerEvents: 'none',
+                      background: 'radial-gradient(ellipse, rgba(255,255,255,' + (cc * 0.7 * (1 - ccr)).toFixed(3) + ') 0%, rgba(255,255,255,0) 100%)',
+                    }}/>;
+                  }
+                  // Metallic rim light
+                  var metalRim = null;
+                  if (m > 0.02) {
+                    metalRim = <div style={{
+                      position: 'absolute', top: 0, left: 0, width: size, height: size,
+                      borderRadius: borderRad, pointerEvents: 'none',
+                      background: 'radial-gradient(circle at 70% 70%, transparent 40%, rgba(255,255,255,' + (m * 0.6).toFixed(3) + ') 80%, transparent 100%)',
+                    }}/>;
+                  }
+                  return <div style={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
+                    <div style={{
+                      width: size, height: size, borderRadius: borderRad,
+                      background: bg,
+                      boxShadow: 'inset -1px -2px ' + Math.round(size * 0.12) + 'px rgba(0,0,0,' + (0.15 + r * 0.15).toFixed(2) + ')',
+                      filter: 'saturate(' + (1 + m * 0.5) + ')',
+                      border: '1px solid ' + T.border,
+                    }}/>
+                    {ccOverlay}
+                    {metalRim}
+                  </div>;
+                }
+
                 return <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
                   {toolbar(
-                    () => { const n={id:'col_'+Date.now(),label:'New Colour',hex:'#CCCCCC',cat:'smooth',r:0.25,m:0.0,cc:0.4,ccr:0.3,envI:0.5}; setAppSettings(p=>({...p,editColours:[...p.editColours,n]})); setSettingsListIdx(list.length); },
+                    () => { const n={id:'col_'+Date.now(),label:'New Colour',hex:'#CCCCCC',cat:'smooth',r:0.25,m:0.0,cc:0.4,ccr:0.3,envI:0.5,sn:0.0}; setAppSettings(p=>({...p,editColours:[...p.editColours,n]})); setSettingsListIdx(list.length); },
                     () => { if(list.length>1){ setAppSettings(p=>({...p,editColours:p.editColours.filter((_,i)=>i!==settingsListIdx)})); setSettingsListIdx(Math.max(0,settingsListIdx-1)); }},
                     () => listSwap(list, n => setAppSettings(p=>({...p,editColours:n})), -1),
                     () => listSwap(list, n => setAppSettings(p=>({...p,editColours:n})), 1)
@@ -8112,14 +9882,14 @@ function SpartanCADPreview() {
                     <div style={{ width:220, borderRight:'1px solid '+T.border, background:T.bgPanel, overflowY:'auto' }}>
                       {list.map((c,i) => (
                         <div key={c.id} onClick={() => setSettingsListIdx(i)} style={{ padding:'8px 12px', cursor:'pointer', fontSize:12, background: i===settingsListIdx ? (dk?'#2a2a3a':'#f0f0f8') : 'transparent', display:'flex', alignItems:'center', gap:8, borderBottom:'1px solid '+T.borderLight }}>
-                          <div style={{ width:20, height:20, borderRadius:4, background:c.hex, border:'1px solid '+T.border, flexShrink:0 }}/>
+                          {renderColourSwatch(c, 22, { shape:'square' })}
                           <div><div style={{ fontWeight: i===settingsListIdx?600:400, color:T.text }}>{c.label}</div><div style={{ fontSize:9, color:T.textMuted }}>{c.cat}</div></div>
                         </div>
                       ))}
                     </div>
                     {sel && <div style={{ flex:1, padding:24, overflowY:'auto' }}>
                       <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:20 }}>
-                        <div style={{ width:32, height:32, borderRadius:6, background:sel.hex, border:'1px solid '+T.border }}/>
+                        {renderColourSwatch(sel, 36, { shape:'square' })}
                         <div style={{ fontSize:16, fontWeight:600, color:T.text }}>{sel.label}</div>
                         <span style={{ fontSize:10, color:T.textMuted, fontFamily:'monospace' }}>{sel.hex}</span>
                       </div>
@@ -8177,15 +9947,124 @@ function SpartanCADPreview() {
                         })}
                       </div>}
 
-                      {/* Material Properties */}
+                      {/* ───── Photographic texture uploads (wood + aludec) ─────
+                          Shared across both categories that benefit from real
+                          photographic textures: woodgrain foils and aludec
+                          powder-coats. Wood uses long-strip scans aligned to
+                          grain direction; aludec uses small tileable scans of
+                          the powder-coat surface.
+
+                          When sel.texturePack.albedo is present, the material
+                          constructor (24-materials-textures.js, makeProfileMat)
+                          loads it as the colour map and skips the procedural
+                          path. Normal and roughness maps are optional add-ons.
+
+                          Stored as base64 data URLs on the colour entry so
+                          they round-trip through Save/Load with the rest of
+                          editColours. Files >2MB warn the user. */}
+                      {(sel.cat === 'wood' || sel.cat === 'aludec') && (function(){
+                        var isWood = sel.cat === 'wood';
+                        var sectionTitle = isWood ? 'Photographic foil textures' : 'Photographic powder-coat textures';
+                        var sectionBlurb = isWood
+                          ? 'Upload a scan/photo of the actual foil to override the procedural grain. Albedo is the colour image — the only required map. Normal and roughness improve realism but are optional. Typical size: 2048 × 512 px, JPEG, with grain running along the long axis. Recommended for timber colours where the procedural grain doesn\'t match a specific manufacturer foil.'
+                          : 'Upload a scan/photo of the actual powder-coat surface to override the procedural granular texture. Albedo is the colour image — the only required map. Normal and roughness improve depth but are optional. Aludec is a uniform texture so a small tileable square works fine: 512 × 512 px, JPEG. Recommended when the procedural speckle doesn\'t match a specific manufacturer\'s grain.';
+                        var slots = isWood ? [
+                          { key:'albedo',    label:'Albedo (colour)',    hint:'The base colour image. JPEG works fine. Long-strip scan, grain running along the long axis.' },
+                          { key:'normal',    label:'Normal map',         hint:'Optional. Adds surface relief. PNG only.' },
+                          { key:'roughness', label:'Roughness map',      hint:'Optional. Greyscale: dark = glossy, light = matte.' },
+                        ] : [
+                          { key:'albedo',    label:'Albedo (colour)',    hint:'The base colour image. Tileable square (e.g. 512×512). JPEG works fine.' },
+                          { key:'normal',    label:'Normal map',         hint:'Optional. Captures the powder-coat micro-relief. PNG only.' },
+                          { key:'roughness', label:'Roughness map',      hint:'Optional. Greyscale: dark = glossy, light = matte.' },
+                        ];
+                        function setTexSlot(slotKey, dataUrl) {
+                          var n = [...list];
+                          var nextPack = Object.assign({}, sel.texturePack || {});
+                          if (dataUrl) nextPack[slotKey] = dataUrl;
+                          else delete nextPack[slotKey];
+                          n[settingsListIdx] = Object.assign({}, sel,
+                            Object.keys(nextPack).length ? { texturePack: nextPack } : (function(){ var c = Object.assign({}, sel); delete c.texturePack; return c; })()
+                          );
+                          setAppSettings(p => ({ ...p, editColours: n }));
+                          syncColours(n);
+                        }
+                        function readFileAsDataUrl(file, slotKey) {
+                          if (!file) return;
+                          if (file.size > 2 * 1024 * 1024) {
+                            if (!confirm('This file is ' + (file.size / 1024 / 1024).toFixed(1) + ' MB. Files over 2 MB can slow loading and may exceed browser storage limits if you have several. Continue?')) return;
+                          }
+                          if (slotKey === 'normal' && !/png/i.test(file.type)) {
+                            if (!confirm('Normal maps are best as PNG. The chosen file is ' + (file.type || 'unknown type') + ' — JPEG compression artefacts can introduce surface noise. Continue?')) return;
+                          }
+                          var reader = new FileReader();
+                          reader.onload = function(ev) { setTexSlot(slotKey, ev.target.result); };
+                          reader.onerror = function() { alert('Failed to read file.'); };
+                          reader.readAsDataURL(file);
+                        }
+                        var tp = sel.texturePack || {};
+                        var overrideNotice = isWood
+                          ? 'Photographic textures are active for this colour. The procedural grain settings above are ignored until you remove the albedo upload.'
+                          : 'Photographic textures are active for this colour. The procedural speckle (driven by Roughness/Metalness/Env) is replaced by your uploaded image until you remove the albedo upload.';
+                        return <div style={{ marginBottom:16, padding:14, background:T.bgCard, border:'1px solid '+T.borderLight, borderRadius:6 }}>
+                          <div style={{ fontSize:12, fontWeight:600, color:T.text, marginBottom:4 }}>{sectionTitle}</div>
+                          <div style={{ fontSize:10, color:T.textMuted, marginBottom:10, lineHeight:1.4 }}>{sectionBlurb}</div>
+                          {slots.map(function(slot){
+                            var hasMap = !!tp[slot.key];
+                            var inputId = 'tex-' + sel.id + '-' + slot.key;
+                            return <div key={slot.key} style={{ display:'flex', gap:10, alignItems:'center', padding:'8px 0', borderBottom:'1px dashed '+T.borderLight }}>
+                              <div style={{ width:48, height:48, flexShrink:0, background:'#f4f4f4', border:'1px solid '+T.border, borderRadius:3, overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                                {hasMap ? (
+                                  <img src={tp[slot.key]} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
+                                ) : (
+                                  <span style={{ fontSize:18, color:'#9aa' }}>▢</span>
+                                )}
+                              </div>
+                              <div style={{ flex:1, minWidth:0 }}>
+                                <div style={{ fontSize:11, fontWeight:600, color:T.text }}>{slot.label}</div>
+                                <div style={{ fontSize:9, color:T.textMuted, marginTop:1, lineHeight:1.3 }}>{slot.hint}</div>
+                                <div style={{ marginTop:4, display:'flex', gap:4 }}>
+                                  <input type="file" accept="image/*" id={inputId} style={{ display:'none' }}
+                                         onChange={function(e){
+                                           var f = e.target.files && e.target.files[0];
+                                           if (f) readFileAsDataUrl(f, slot.key);
+                                           e.target.value = '';
+                                         }}/>
+                                  <label htmlFor={inputId}
+                                         style={{ background: hasMap ? 'transparent' : '#1f2937', color: hasMap ? T.text : 'white', border: hasMap ? '1px solid '+T.border : 'none', borderRadius:3, padding:'3px 9px', fontSize:9, fontWeight:600, cursor:'pointer' }}>
+                                    {hasMap ? 'Replace' : '⬆ Upload'}
+                                  </label>
+                                  {hasMap && (
+                                    <button onClick={function(){ setTexSlot(slot.key, null); }}
+                                            style={{ background:'transparent', color:'#dc2626', border:'1px solid '+T.border, borderRadius:3, padding:'3px 9px', fontSize:9, fontWeight:600, cursor:'pointer' }}>
+                                      Remove
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>;
+                          })}
+                          {tp.albedo && (
+                            <div style={{ marginTop:8, fontSize:9, fontStyle:'italic', color:'#92400e', background:'#fffbeb', border:'1px solid #fcd34d', padding:'5px 9px', borderRadius:3 }}>
+                              {overrideNotice}
+                            </div>
+                          )}
+                        </div>;
+                      })()}
+
+                      {/* Material Properties — slider ranges and help text are
+                          tuned to the dramatic amplification curves in
+                          24-materials-textures.js. The displayed range is the
+                          slider's literal value; the renderer multiplies up
+                          (e.g. metalness 0.5 reads as fully metallic in 3D). */}
                       <div style={{ marginTop:20, padding:16, background:T.bgCard, borderRadius:8, border:'1px solid '+T.borderLight }}>
                         <div style={{ fontSize:12, fontWeight:600, color:T.text, marginBottom:12 }}>Material Properties</div>
                         {[
-                          ['r', 'Roughness', 0, 1, 0.01, 'Controls surface smoothness. Low = glossy, High = matte'],
-                          ['m', 'Metalness', 0, 0.5, 0.01, 'Metallic reflection. 0 = plastic/foil, 0.5 = metallic'],
-                          ['cc', 'Clearcoat', 0, 1, 0.01, 'Adds a glossy top layer. Higher = shinier surface coating'],
-                          ['ccr', 'Clearcoat Roughness', 0, 1, 0.01, 'Roughness of the clearcoat layer. Low = mirror-like shine'],
-                          ['envI', 'Environment Intensity', 0, 2, 0.05, 'How much the surroundings reflect in the surface'],
+                          ['r',    'Roughness',           0, 1, 0.01, 'S-curve amplified — dragging toward 0 quickly reads as mirror-glossy, dragging toward 1 reads as fully matte. Mid-range 0.4–0.6 is the working zone.'],
+                          ['m',    'Metalness',           0, 1, 0.01, '×2.2 amplified. 0 = plastic/foil, 0.45 already reads fully metallic, 1.0 = chrome-like. Frames are non-metals — keep low; satin metallics 0.10–0.25.'],
+                          ['cc',   'Clearcoat',           0, 1, 0.01, 'Power-curve amplified. Even cc=0.10 produces visible sheen; 0.5+ reads as a strong lacquer; 1.0 is full mirror coat.'],
+                          ['ccr',  'Clearcoat Roughness', 0, 1, 0.01, 'Power-curve amplified — drag toward 0 for sharp mirror-like coat highlights, toward 1 for muted satin coat.'],
+                          ['envI', 'Environment Intensity', 0, 2, 0.05, '×2.5 amplified, then scaled by the global render-quality multiplier. Drives how much the HDRI surroundings reflect in the surface.'],
+                          ['sn',   'Sheen',               0, 1, 0.01, 'Velvety glow at grazing angles. Adds depth to woodgrain and dark anthracite/black colours without changing base reflectance.'],
                         ].map(([key, label, min, max, step, tip]) => (
                           <div key={key} style={{ marginBottom:12 }}>
                             <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
@@ -8203,53 +10082,133 @@ function SpartanCADPreview() {
                       <div style={{ marginTop:16, padding:16, background:T.bgCard, borderRadius:8, border:'1px solid '+T.borderLight }}>
                         <div style={{ fontSize:10, color:T.textMuted, marginBottom:8 }}>Material Preview</div>
                         <div style={{ display:'flex', gap:16, alignItems:'center' }}>
-                          {/* Sphere preview */}
+                          {/* Sphere preview — defensively coerce all material
+                              params to numbers, since a colour entry missing a
+                              field would otherwise inject NaN into a CSS string
+                              and break the gradient. The visual rules try to
+                              echo the dramatic amplification curves used by
+                              makeProfileMat in 24-materials-textures.js, so
+                              what users see here matches the 3D viewport. */}
+                          {(() => {
+                            var sR  = typeof sel.r   === 'number' ? sel.r   : 0.3;
+                            var sM  = typeof sel.m   === 'number' ? sel.m   : 0;
+                            var sCc = typeof sel.cc  === 'number' ? sel.cc  : 0;
+                            var sCr = typeof sel.ccr === 'number' ? sel.ccr : 0.3;
+                            var sE  = typeof sel.envI=== 'number' ? sel.envI: 0.5;
+                            var sSn = typeof sel.sn  === 'number' ? sel.sn  : 0;
+                            var sH  = sel.hex || '#888888';
+                            // Mirror the renderer's roughness S-curve so the
+                            // preview matches the 3D viewport.
+                            var sRamp = sR <= 0.5 ? 0.5 * Math.pow(sR * 2, 1.6) : 1 - 0.5 * Math.pow((1 - sR) * 2, 1.6);
+                            // Metalness amplification 2.2× to match renderer.
+                            var sMamp = Math.min(1.0, sM * 2.2);
+                            // Clearcoat amplification — power curve.
+                            var sCcAmp = Math.min(1.0, Math.pow(sCc, 0.55) * 1.05);
+                            return (
                           <div style={{ position:'relative', width:100, height:100, flexShrink:0 }}>
                             {/* Base sphere */}
                             <div style={{
                               width:100, height:100, borderRadius:'50%',
-                              background: `radial-gradient(circle at ${35 + (1-sel.r)*15}% ${30 + (1-sel.r)*10}%, 
-                                ${sel.hex === '#FFFFFF' || sel.hex === '#ffffff' ? '#fff' : (() => { const c = new THREE.Color(sel.hex); return `rgb(${Math.min(255,Math.round(c.r*255*1.4))},${Math.min(255,Math.round(c.g*255*1.4))},${Math.min(255,Math.round(c.b*255*1.4))})`})()}, 
-                                ${sel.hex} 50%, 
-                                ${(() => { const c = new THREE.Color(sel.hex); return `rgb(${Math.round(c.r*255*0.5)},${Math.round(c.g*255*0.5)},${Math.round(c.b*255*0.5)})`})()} 100%)`,
-                              boxShadow: `inset -3px -6px 12px rgba(0,0,0,${0.15 + sel.r * 0.15}), 4px 6px 16px rgba(0,0,0,0.2)`,
-                              filter: `saturate(${1 + sel.m * 0.5})`,
+                              background: 'radial-gradient(circle at ' + (35 + (1-sRamp)*15) + '% ' + (30 + (1-sRamp)*10) + '%, ' +
+                                (sH === '#FFFFFF' || sH === '#ffffff' ? '#fff' : (function(){ var c = new THREE.Color(sH); return 'rgb(' + Math.min(255,Math.round(c.r*255*1.4)) + ',' + Math.min(255,Math.round(c.g*255*1.4)) + ',' + Math.min(255,Math.round(c.b*255*1.4)) + ')'; })()) + ', ' +
+                                sH + ' 50%, ' +
+                                (function(){ var c = new THREE.Color(sH); return 'rgb(' + Math.round(c.r*255*0.5) + ',' + Math.round(c.g*255*0.5) + ',' + Math.round(c.b*255*0.5) + ')'; })() + ' 100%)',
+                              boxShadow: 'inset -3px -6px 12px rgba(0,0,0,' + (0.15 + sRamp * 0.15).toFixed(3) + '), 4px 6px 16px rgba(0,0,0,0.2)',
+                              filter: 'saturate(' + (1 + sMamp * 0.5).toFixed(3) + ')',
                             }}/>
                             {/* Clearcoat highlight */}
-                            {sel.cc > 0.05 && <div style={{
-                              position:'absolute', top:8, left:22, width: 36 - sel.ccr*20, height: 18 - sel.ccr*10,
-                              borderRadius:'50%', 
-                              background: `radial-gradient(ellipse, rgba(255,255,255,${sel.cc * 0.7 * (1-sel.ccr)}) 0%, rgba(255,255,255,0) 100%)`,
+                            {sCcAmp > 0.05 && <div style={{
+                              position:'absolute', top:8, left:22, width: 36 - sCr*20, height: 18 - sCr*10,
+                              borderRadius:'50%',
+                              background: 'radial-gradient(ellipse, rgba(255,255,255,' + (sCcAmp * 0.85 * (1-sCr)).toFixed(3) + ') 0%, rgba(255,255,255,0) 100%)',
                               pointerEvents:'none',
                             }}/>}
-                            {/* Environment reflection band */}
-                            {sel.envI > 0.2 && <div style={{
+                            {/* Environment reflection band — amplified to match renderer */}
+                            {sE > 0.1 && <div style={{
                               position:'absolute', top:28, left:6, width:40, height:20, borderRadius:'50%',
-                              background: `radial-gradient(ellipse, rgba(200,220,240,${sel.envI * 0.12 * (1-sel.r)}) 0%, transparent 100%)`,
+                              background: 'radial-gradient(ellipse, rgba(200,220,240,' + Math.min(0.6, sE * 0.20 * (1-sRamp)).toFixed(3) + ') 0%, transparent 100%)',
                               pointerEvents:'none', transform:'rotate(-20deg)',
                             }}/>}
                             {/* Metallic rim light */}
-                            {sel.m > 0.02 && <div style={{
+                            {sMamp > 0.02 && <div style={{
                               position:'absolute', top:0, left:0, width:100, height:100, borderRadius:'50%',
-                              background: `radial-gradient(circle at 70% 70%, transparent 40%, rgba(255,255,255,${sel.m * 0.6}) 80%, transparent 100%)`,
+                              background: 'radial-gradient(circle at 70% 70%, transparent 40%, rgba(255,255,255,' + (sMamp * 0.6).toFixed(3) + ') 80%, transparent 100%)',
                               pointerEvents:'none',
                             }}/>}
+                            {/* Sheen — soft glow at the silhouette */}
+                            {sSn > 0.05 && <div style={{
+                              position:'absolute', top:0, left:0, width:100, height:100, borderRadius:'50%',
+                              background: 'radial-gradient(circle at 50% 50%, transparent 55%, rgba(255,250,240,' + (sSn * 0.55).toFixed(3) + ') 92%, transparent 100%)',
+                              pointerEvents:'none', mixBlendMode:'screen',
+                            }}/>}
                           </div>
-                          {/* Flat swatch / woodgrain preview + info */}
+                            );
+                          })()}
+                          {/* Material-aware swatch — uses makeMaterialPreviewDataURL
+                              so the canvas-rendered preview reflects the actual
+                              roughness / metalness / clearcoat / envI sliders.
+                              When a texturePack.albedo is uploaded for any
+                              category that supports it (wood + aludec), the
+                              uploaded photo replaces the procedural preview.
+                              Smooth always uses the canvas-rendered swatch.
+                              The math handles dark colours (Anthracite, Jet
+                              Black) by widening the tonal spread additively
+                              rather than multiplying from a near-zero base. */}
                           <div style={{ flex:1 }}>
-                            {sel.cat === 'wood' ? (
-                              <div style={{ height:60, borderRadius:6, border:'1px solid '+T.border, marginBottom:8, overflow:'hidden',
-                                backgroundImage:'url('+makeWoodPreviewDataURL(sel, 300, 80)+')',
-                                backgroundSize:'cover', backgroundPosition:'center' }}/>
-                            ) : (
-                              <div style={{ height:40, borderRadius:6, background:sel.hex, border:'1px solid '+T.border, marginBottom:8 }}/>
-                            )}
+                            {(() => {
+                              // Build a backgroundImage / backgroundColor pair
+                              // that always renders something visible. Defends
+                              // against the previous ReferenceError where a
+                              // non-existent makeMaterialPreviewDataURL crashed
+                              // the entire Settings IIFE and blanked the page.
+                              var bg = { image: null, color: sel.hex || '#cccccc' };
+                              try {
+                                if ((sel.cat === 'wood' || sel.cat === 'aludec') && sel.texturePack && sel.texturePack.albedo) {
+                                  bg.image = 'url(' + sel.texturePack.albedo + ')';
+                                } else if (sel.cat === 'wood' && typeof makeWoodPreviewDataURL === 'function') {
+                                  bg.image = 'url(' + makeWoodPreviewDataURL(sel, 320, 80) + ')';
+                                } else {
+                                  // Smooth / aludec / fallback — use the same
+                                  // 3-stop CSS gradient as the sphere preview so
+                                  // roughness/metalness/clearcoat read on the
+                                  // wide swatch. Pure CSS, no canvas needed.
+                                  var c = new THREE.Color(sel.hex || '#888888');
+                                  var lr2 = Math.min(255, Math.round(c.r * 255 * (1.4 - sel.r * 0.3)));
+                                  var lg2 = Math.min(255, Math.round(c.g * 255 * (1.4 - sel.r * 0.3)));
+                                  var lb2 = Math.min(255, Math.round(c.b * 255 * (1.4 - sel.r * 0.3)));
+                                  var dr2 = Math.round(c.r * 255 * 0.55);
+                                  var dg2 = Math.round(c.g * 255 * 0.55);
+                                  var db2 = Math.round(c.b * 255 * 0.55);
+                                  bg.image = 'linear-gradient(135deg, rgb(' + lr2 + ',' + lg2 + ',' + lb2 + ') 0%, ' + sel.hex + ' 50%, rgb(' + dr2 + ',' + dg2 + ',' + db2 + ') 100%)';
+                                }
+                              } catch (e) {
+                                // any failure → flat colour, never blank
+                                bg.image = null;
+                                bg.color = sel.hex || '#cccccc';
+                              }
+                              return <div style={{
+                                height: sel.cat === 'wood' ? 60 : 50,
+                                borderRadius: 6,
+                                border: '1px solid ' + T.border,
+                                marginBottom: 8,
+                                overflow: 'hidden',
+                                backgroundImage: bg.image || undefined,
+                                backgroundColor: bg.color,
+                                backgroundSize: 'cover',
+                                backgroundPosition: 'center',
+                                boxShadow: 'inset 0 -3px 8px rgba(0,0,0,0.18), inset 0 3px 8px rgba(255,255,255,0.06)'
+                              }}/>;
+                            })()}
                             <div style={{ fontSize:9, color:T.textFaint, lineHeight:1.6 }}>
-                              {sel.cat === 'smooth' && 'Smooth uPVC — clean glossy finish with clearcoat shine'}
-                              {sel.cat === 'aludec' && 'Aludec — granular powder-coat finish with subtle metallic texture'}
-                              {sel.cat === 'wood' && ('Woodgrain foil — ' + (sel.grain||'fine') + ' grain pattern, matte natural wood finish')}
+                              {sel.cat === 'smooth' && 'Smooth uPVC \u2014 clean glossy finish with clearcoat shine'}
+                              {sel.cat === 'aludec' && (sel.texturePack && sel.texturePack.albedo
+                                ? 'Aludec \u2014 uploaded photographic texture (procedural speckle replaced)'
+                                : 'Aludec \u2014 granular powder-coat finish with subtle metallic texture')}
+                              {sel.cat === 'wood' && (sel.texturePack && sel.texturePack.albedo
+                                ? 'Woodgrain foil \u2014 uploaded photographic texture (procedural grain settings ignored)'
+                                : ('Woodgrain foil \u2014 ' + (sel.grain||'fine') + ' grain pattern, matte natural wood finish'))}
                               <br/>
-                              R:{sel.r?.toFixed(2)} M:{sel.m?.toFixed(2)} CC:{sel.cc?.toFixed(2)} Env:{sel.envI?.toFixed(2)}
+                              R:{(sel.r||0).toFixed(2)} M:{(sel.m||0).toFixed(2)} CC:{(sel.cc||0).toFixed(2)} Env:{(sel.envI||0).toFixed(2)}
                             </div>
                           </div>
                         </div>
@@ -8257,6 +10216,17 @@ function SpartanCADPreview() {
                     </div>}
                   </div>
                 </div>;
+                } catch (e) {
+                  // If any render fails, show the error instead of blanking
+                  // the page. This lets the user see what's wrong and lets
+                  // us diagnose without a black-box "blank screen".
+                  console.error('[prod-colours render error]', e);
+                  return <div style={{ padding:24, color:T.text, fontFamily:'monospace', fontSize:12 }}>
+                    <div style={{ fontWeight:700, color:'#c41230', marginBottom:8 }}>Colours panel render error</div>
+                    <div style={{ marginBottom:8 }}>{(e && e.message) || String(e)}</div>
+                    <div style={{ fontSize:10, color:T.textMuted, whiteSpace:'pre-wrap' }}>{(e && e.stack) || ''}</div>
+                  </div>;
+                }
               }
 
               // === PRODUCTS: PROFILES (unified Profile Manager — replaces legacy
@@ -8360,93 +10330,231 @@ function SpartanCADPreview() {
 
               // ═══ PRICING SETTINGS SECTIONS ═══
               // === CUSTOM FRAME LAYOUTS ===
+              // These are user-defined frame style presets. They show up in the
+              // Frame Styles modal (the "Layout" button in the editor) alongside
+              // the built-in FRAME_STYLE_PRESETS. Each one is bound to a single
+              // product type — Awning, Casement, Sliding, etc. — because the
+              // valid cell types differ by product (you can't have an "awning"
+              // sash in a sliding-door layout).
               if (settingsPath === 'prod-customlayouts') {
                 const cfs = appSettings.customFrameStyles || [];
                 const cSel = cfs[settingsListIdx];
                 const prodOpts = PRODUCTS.map(p => p.id);
-                const cellOpts = ['fixed','awning','casement','casement_l','casement_r','tilt_turn'];
+                // Per-product valid cell types — what the user can cycle through
+                // when clicking a cell. Awning windows allow only awning + fixed
+                // sashes; casement allows L/R hinge variants; sliding is panel-
+                // count-driven so cells just toggle fixed/sliding; fixed is
+                // always 'fixed'.
+                function cellOptionsFor(productType) {
+                  if (productType === 'awning_window')   return ['fixed','awning'];
+                  if (productType === 'casement_window') return ['fixed','casement_l','casement_r'];
+                  if (productType === 'tilt_turn_window') return ['fixed','tilt_turn'];
+                  if (productType === 'fixed_window')    return ['fixed'];
+                  if (productType === 'sliding_window')  return ['fixed','sliding'];
+                  if (productType && productType.indexOf('door') >= 0) return ['fixed','sliding','panel'];
+                  return ['fixed','awning','casement_l','casement_r','tilt_turn','sliding'];
+                }
+                const cellOpts = cellOptionsFor(cSel ? cSel.type : 'awning_window');
+                // Default cell type for a freshly-created layout under each type.
+                function defaultCellFor(productType) {
+                  var opts = cellOptionsFor(productType);
+                  // Prefer the first non-fixed option as the active sash so
+                  // a 1x1 layout isn't trivially equivalent to a fixed window.
+                  for (var i = 0; i < opts.length; i++) if (opts[i] !== 'fixed') return opts[i];
+                  return 'fixed';
+                }
+                // Build a sensible default new layout for a product type.
+                // 1x1 single sash, named "<Type> 1x1" — user can rename + grow.
+                function makeDefaultLayoutFor(productType) {
+                  var prod = PRODUCTS.find(function(p){ return p.id === productType; });
+                  var typeLabel = (prod && prod.label) || productType;
+                  var defCell = defaultCellFor(productType);
+                  return {
+                    id:    'cfs_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+                    type:  productType,
+                    label: typeLabel + ' 1x1 (custom)',
+                    cols:  1,
+                    rows:  1,
+                    cells: [[defCell]],
+                    wr:    [1],
+                    hr:    [1],
+                    ap:    1,
+                  };
+                }
+                // Group the list by product type for display, so users with
+                // many custom layouts can find theirs at a glance.
+                var groupedCfs = {};
+                cfs.forEach(function(fs, i) {
+                  var t = fs.type || 'other';
+                  if (!groupedCfs[t]) groupedCfs[t] = [];
+                  groupedCfs[t].push({ fs: fs, idx: i });
+                });
+                // Stable display order: same as PRODUCTS array so groups
+                // appear in the canonical type order.
+                var groupOrder = prodOpts.filter(function(t){ return groupedCfs[t]; });
+
                 return <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
-                  {toolbar(
-                    () => {
-                      const n = {id:'cfs_'+Date.now(), type:'awning_window', label:'New Layout', cols:2, rows:1, cells:[['awning','fixed']], wr:[1,1], hr:[1], ap:2};
-                      setAppSettings(p=>({...p, customFrameStyles:[...(p.customFrameStyles||[]), n]}));
-                      setSettingsListIdx(cfs.length);
-                    },
-                    () => { if(cfs.length>0){ setAppSettings(p=>({...p, customFrameStyles:(p.customFrameStyles||[]).filter((_,i)=>i!==settingsListIdx)})); setSettingsListIdx(Math.max(0,settingsListIdx-1)); }},
-                    () => listSwap(cfs, n => setAppSettings(p=>({...p,customFrameStyles:n})), -1),
-                    () => listSwap(cfs, n => setAppSettings(p=>({...p,customFrameStyles:n})), 1)
-                  )}
+                  <div style={{ padding:'8px 16px', borderBottom:'1px solid '+T.border, background:T.bgCard, display:'flex', gap:16, fontSize:12, color:T.text, alignItems:'center', flexWrap:'wrap' }}>
+                    {/* New: pick product type then create. Inline buttons so the user
+                        doesn't have to deal with a modal — one click per type. */}
+                    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <span style={{ fontWeight:600 }}>+ New layout for:</span>
+                      {prodOpts.map(function(po) {
+                        var prod = PRODUCTS.find(function(p){ return p.id === po; });
+                        var label = (prod && prod.label) || po;
+                        return <button key={po} onClick={function() {
+                          var n = makeDefaultLayoutFor(po);
+                          setAppSettings(function(p){ return Object.assign({}, p, { customFrameStyles: [...(p.customFrameStyles || []), n] }); });
+                          setSettingsListIdx(cfs.length);
+                        }} style={{
+                          padding:'4px 10px', fontSize:11, border:'1px solid '+T.border,
+                          background:T.bgInput, color:T.text, borderRadius:4,
+                          cursor:'pointer', fontWeight:500
+                        }}>{label}</button>;
+                      })}
+                    </div>
+                    <div style={{ flex:1 }}/>
+                    {cSel && <div onClick={function() {
+                      if (!confirm('Delete custom layout "' + cSel.label + '"?')) return;
+                      setAppSettings(function(p){ return Object.assign({}, p, { customFrameStyles: (p.customFrameStyles || []).filter(function(_, i){ return i !== settingsListIdx; }) }); });
+                      setSettingsListIdx(Math.max(0, settingsListIdx - 1));
+                    }} style={{ cursor:'pointer', display:'flex', alignItems:'center', gap:4, color:'#dc2626' }}>🗑 Delete</div>}
+                    {cSel && <div onClick={function(){ listSwap(cfs, function(n){ setAppSettings(function(p){ return Object.assign({}, p, { customFrameStyles: n }); }); }, -1); }} style={{ cursor:'pointer' }}>&#8593; Up</div>}
+                    {cSel && <div onClick={function(){ listSwap(cfs, function(n){ setAppSettings(function(p){ return Object.assign({}, p, { customFrameStyles: n }); }); }, 1); }} style={{ cursor:'pointer' }}>&#8595; Down</div>}
+                  </div>
                   <div style={{ flex:1, display:'flex', overflow:'hidden' }}>
-                    <div style={{ width:200, borderRight:'1px solid '+T.border, background:T.bgPanel, overflowY:'auto' }}>
-                      {cfs.length === 0 && <div style={{ padding:16, fontSize:11, color:T.textMuted, textAlign:'center' }}>No custom layouts yet. Click + New to create one.</div>}
-                      {cfs.map((fs,i) => (
-                        <div key={fs.id} onClick={() => setSettingsListIdx(i)} style={{ padding:'8px 12px', cursor:'pointer', fontSize:12, background: i===settingsListIdx ? (dk?'#2a2a3a':'#f0f0f8') : 'transparent', borderBottom:'1px solid '+T.borderLight, color:T.text }}>
-                          <div style={{ fontWeight: i===settingsListIdx?600:400 }}>{fs.label}</div>
-                          <div style={{ fontSize:9, color:T.textMuted }}>{fs.cols}x{fs.rows} - {fs.ap} apertures</div>
-                        </div>
-                      ))}
+                    <div style={{ width:240, borderRight:'1px solid '+T.border, background:T.bgPanel, overflowY:'auto' }}>
+                      {cfs.length === 0 && <div style={{ padding:16, fontSize:11, color:T.textMuted, textAlign:'center' }}>No custom layouts yet. Click a product type above to create your first one.</div>}
+                      {/* Grouped list — section header per product type */}
+                      {groupOrder.map(function(t) {
+                        var prod = PRODUCTS.find(function(p){ return p.id === t; });
+                        var groupLabel = (prod && prod.label) || t;
+                        return <div key={t}>
+                          <div style={{ padding:'6px 12px', fontSize:9, fontWeight:700, color:T.textMuted, textTransform:'uppercase', letterSpacing:0.5, background:T.bgCard, borderBottom:'1px solid '+T.borderLight, position:'sticky', top:0 }}>
+                            {groupLabel} <span style={{ color:T.textFaint, fontWeight:500 }}>({groupedCfs[t].length})</span>
+                          </div>
+                          {groupedCfs[t].map(function(rec) {
+                            var fs = rec.fs;
+                            var i = rec.idx;
+                            return <div key={fs.id} onClick={function(){ setSettingsListIdx(i); }} style={{ padding:'8px 12px', cursor:'pointer', fontSize:12, background: i===settingsListIdx ? (dk?'#2a2a3a':'#f0f0f8') : 'transparent', borderBottom:'1px solid '+T.borderLight, color:T.text }}>
+                              <div style={{ fontWeight: i===settingsListIdx?600:400 }}>{fs.label}</div>
+                              <div style={{ fontSize:9, color:T.textMuted }}>{fs.cols}x{fs.rows} - {fs.ap} apertures</div>
+                            </div>;
+                          })}
+                        </div>;
+                      })}
                     </div>
                     {cSel && <div style={{ flex:1, padding:20, overflowY:'auto' }}>
                       <div style={{ fontSize:15, fontWeight:600, color:T.text, marginBottom:16 }}>{cSel.label}</div>
-                      {field('Name', cSel.label, v => { const n=[...cfs]; n[settingsListIdx]={...cSel,label:v}; setAppSettings(p=>({...p,customFrameStyles:n})); })}
+                      {field('Name', cSel.label, function(v){ const n=[...cfs]; n[settingsListIdx]={...cSel,label:v}; setAppSettings(function(p){ return Object.assign({}, p, { customFrameStyles: n }); }); })}
                       <div style={{ marginBottom:12 }}>
                         <div style={{ fontSize:11, color:T.textSub, marginBottom:4 }}>Product type</div>
-                        <select value={cSel.type} onChange={e => { const n=[...cfs]; n[settingsListIdx]={...cSel,type:e.target.value}; setAppSettings(p=>({...p,customFrameStyles:n})); }} style={{ padding:'6px 8px', border:'1px solid '+T.border, borderRadius:4, fontSize:12, background:T.bgInput, color:T.text }}>
-                          {prodOpts.map(po => <option key={po} value={po}>{PRODUCTS.find(p=>p.id===po)?.label || po}</option>)}
+                        <select value={cSel.type} onChange={function(e){
+                          var nt = e.target.value;
+                          // Reset cells to valid types for the new product when
+                          // switching, otherwise the user could leave invalid
+                          // cells (e.g. an awning sash in a sliding layout).
+                          var newOpts = cellOptionsFor(nt);
+                          var newCells = cSel.cells.map(function(row){
+                            return row.map(function(c){ return newOpts.indexOf(c) >= 0 ? c : (newOpts[1] || newOpts[0]); });
+                          });
+                          const n=[...cfs]; n[settingsListIdx]={...cSel,type:nt,cells:newCells};
+                          setAppSettings(function(p){ return Object.assign({}, p, { customFrameStyles: n }); });
+                        }} style={{ padding:'6px 8px', border:'1px solid '+T.border, borderRadius:4, fontSize:12, background:T.bgInput, color:T.text }}>
+                          {prodOpts.map(function(po){ return <option key={po} value={po}>{PRODUCTS.find(function(p){ return p.id===po; })?.label || po}</option>; })}
                         </select>
                       </div>
                       <div style={{ display:'flex', gap:12, marginBottom:12 }}>
                         <div>
                           <div style={{ fontSize:11, color:T.textSub, marginBottom:4 }}>Columns</div>
-                          <input type="number" min={1} max={5} value={cSel.cols} onChange={e => {
+                          <input type="number" min={1} max={5} value={cSel.cols} onChange={function(e){
                             var nc=Math.max(1,Math.min(5,+e.target.value));
                             var nr=cSel.rows;
-                            var cells=[];for(var rr=0;rr<nr;rr++){cells[rr]=[];for(var cc=0;cc<nc;cc++) cells[rr][cc]=(cSel.cells[rr]&&cSel.cells[rr][cc])||'fixed';}
+                            var defCell = defaultCellFor(cSel.type);
+                            var cells=[];for(var rr=0;rr<nr;rr++){cells[rr]=[];for(var cc=0;cc<nc;cc++) cells[rr][cc]=(cSel.cells[rr]&&cSel.cells[rr][cc])||defCell;}
                             var wr=Array(nc).fill(1);
-                            const n=[...cfs]; n[settingsListIdx]={...cSel,cols:nc,cells:cells,wr:wr,ap:nc*nr}; setAppSettings(p=>({...p,customFrameStyles:n}));
+                            const n=[...cfs]; n[settingsListIdx]={...cSel,cols:nc,cells:cells,wr:wr,ap:nc*nr};
+                            setAppSettings(function(p){ return Object.assign({}, p, { customFrameStyles: n }); });
                           }} style={{ width:50, padding:'6px 8px', border:'1px solid '+T.border, borderRadius:4, fontSize:12, background:T.bgInput, color:T.text }}/>
                         </div>
                         <div>
                           <div style={{ fontSize:11, color:T.textSub, marginBottom:4 }}>Rows</div>
-                          <input type="number" min={1} max={5} value={cSel.rows} onChange={e => {
+                          <input type="number" min={1} max={5} value={cSel.rows} onChange={function(e){
                             var nr=Math.max(1,Math.min(5,+e.target.value));
                             var nc=cSel.cols;
-                            var cells=[];for(var rr=0;rr<nr;rr++){cells[rr]=[];for(var cc=0;cc<nc;cc++) cells[rr][cc]=(cSel.cells[rr]&&cSel.cells[rr][cc])||'fixed';}
+                            var defCell = defaultCellFor(cSel.type);
+                            var cells=[];for(var rr=0;rr<nr;rr++){cells[rr]=[];for(var cc=0;cc<nc;cc++) cells[rr][cc]=(cSel.cells[rr]&&cSel.cells[rr][cc])||defCell;}
                             var hr=Array(nr).fill(1);
-                            const n=[...cfs]; n[settingsListIdx]={...cSel,rows:nr,cells:cells,hr:hr,ap:nc*nr}; setAppSettings(p=>({...p,customFrameStyles:n}));
+                            const n=[...cfs]; n[settingsListIdx]={...cSel,rows:nr,cells:cells,hr:hr,ap:nc*nr};
+                            setAppSettings(function(p){ return Object.assign({}, p, { customFrameStyles: n }); });
                           }} style={{ width:50, padding:'6px 8px', border:'1px solid '+T.border, borderRadius:4, fontSize:12, background:T.bgInput, color:T.text }}/>
                         </div>
                       </div>
-                      <div style={{ fontSize:11, color:T.textSub, marginBottom:6 }}>Cell types (click to cycle)</div>
+                      <div style={{ fontSize:11, color:T.textSub, marginBottom:6 }}>Cell types <span style={{color:T.textFaint}}>(click to cycle through valid types for {PRODUCTS.find(function(p){ return p.id===cSel.type; })?.label || cSel.type})</span></div>
                       <div style={{ display:'grid', gridTemplateColumns:'repeat('+cSel.cols+', 1fr)', gap:4, marginBottom:16, maxWidth:300 }}>
-                        {cSel.cells.map((row,ri) => row.map((cell,ci) => {
+                        {cSel.cells.map(function(row,ri){ return row.map(function(cell,ci){
                           var idx2 = cellOpts.indexOf(cell);
-                          return <div key={ri+'_'+ci} onClick={() => {
+                          if (idx2 < 0) idx2 = 0;  // unknown cell type for this product → start from top
+                          return <div key={ri+'_'+ci} onClick={function(){
                             var next = cellOpts[(idx2+1)%cellOpts.length];
-                            var nc2=[...cSel.cells.map(r=>[...r])]; nc2[ri][ci]=next;
-                            const n=[...cfs]; n[settingsListIdx]={...cSel,cells:nc2}; setAppSettings(p=>({...p,customFrameStyles:n}));
+                            var nc2=cSel.cells.map(function(r){ return [...r]; }); nc2[ri][ci]=next;
+                            const n=[...cfs]; n[settingsListIdx]={...cSel,cells:nc2};
+                            setAppSettings(function(p){ return Object.assign({}, p, { customFrameStyles: n }); });
                           }} style={{ padding:'8px 4px', border:'1px solid '+T.border, borderRadius:4, cursor:'pointer', textAlign:'center', fontSize:10, fontWeight:600, background: cell==='fixed'?T.bgPanel:(dk?'#2a2a3a':'#e8e8f0'), color:T.text }}>
                             {cell}
                           </div>;
-                        }))}
+                        }); })}
                       </div>
                       <div style={{ fontSize:11, color:T.textSub, marginBottom:6 }}>Width ratios (proportional)</div>
                       <div style={{ display:'flex', gap:4, marginBottom:12 }}>
-                        {cSel.wr.map((w,i) => (
-                          <input key={'wr'+i} type="number" min={1} max={5} value={w} onChange={e => {
+                        {cSel.wr.map(function(w,i){ return (
+                          <input key={'wr'+i} type="number" min={1} max={5} value={w} onChange={function(e){
                             var nw=[...cSel.wr]; nw[i]=Math.max(1,+e.target.value);
-                            const n=[...cfs]; n[settingsListIdx]={...cSel,wr:nw}; setAppSettings(p=>({...p,customFrameStyles:n}));
+                            const n=[...cfs]; n[settingsListIdx]={...cSel,wr:nw};
+                            setAppSettings(function(p){ return Object.assign({}, p, { customFrameStyles: n }); });
                           }} style={{ width:40, padding:'4px', border:'1px solid '+T.border, borderRadius:4, fontSize:12, textAlign:'center', background:T.bgInput, color:T.text }}/>
-                        ))}
+                        ); })}
                       </div>
                       <div style={{ fontSize:11, color:T.textSub, marginBottom:6 }}>Height ratios (proportional)</div>
                       <div style={{ display:'flex', gap:4, marginBottom:12 }}>
-                        {cSel.hr.map((h,i) => (
-                          <input key={'hr'+i} type="number" min={1} max={5} value={h} onChange={e => {
+                        {cSel.hr.map(function(h,i){ return (
+                          <input key={'hr'+i} type="number" min={1} max={5} value={h} onChange={function(e){
                             var nh=[...cSel.hr]; nh[i]=Math.max(1,+e.target.value);
-                            const n=[...cfs]; n[settingsListIdx]={...cSel,hr:nh}; setAppSettings(p=>({...p,customFrameStyles:n}));
+                            const n=[...cfs]; n[settingsListIdx]={...cSel,hr:nh};
+                            setAppSettings(function(p){ return Object.assign({}, p, { customFrameStyles: n }); });
                           }} style={{ width:40, padding:'4px', border:'1px solid '+T.border, borderRadius:4, fontSize:12, textAlign:'center', background:T.bgInput, color:T.text }}/>
-                        ))}
+                        ); })}
+                      </div>
+
+                      {/* Live preview — proportional grid that mimics what the
+                          frame will look like in the Frame Styles modal. */}
+                      <div style={{ marginTop:24, paddingTop:16, borderTop:'1px solid '+T.border }}>
+                        <div style={{ fontSize:11, color:T.textSub, marginBottom:6 }}>Preview</div>
+                        {(function(){
+                          var wrSum = cSel.wr.reduce(function(a,b){return a+b;},0) || 1;
+                          var hrSum = cSel.hr.reduce(function(a,b){return a+b;},0) || 1;
+                          return <div style={{ display:'inline-block', border:'2px solid #444', background:'#fff', padding:2 }}>
+                            <div style={{ display:'grid',
+                                          gridTemplateColumns: cSel.wr.map(function(w){ return (w/wrSum*200) + 'px'; }).join(' '),
+                                          gridTemplateRows:    cSel.hr.map(function(h){ return (h/hrSum*150) + 'px'; }).join(' '),
+                                          gap:1, background:'#888' }}>
+                              {cSel.cells.map(function(row, ri){ return row.map(function(cell, ci){
+                                var color = cell === 'fixed' ? '#e8eef5'
+                                          : cell === 'awning' ? '#fef3c7'
+                                          : cell.indexOf('casement') === 0 ? '#dcfce7'
+                                          : cell === 'tilt_turn' ? '#fce7f3'
+                                          : cell === 'sliding' ? '#dbeafe'
+                                          : '#f3f4f6';
+                                return <div key={'pv'+ri+'_'+ci} style={{ background: color, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, color:'#444', padding:2 }}>
+                                  {cell}
+                                </div>;
+                              }); })}
+                            </div>
+                          </div>;
+                        })()}
+                        <div style={{ fontSize:10, color:T.textMuted, marginTop:8 }}>
+                          This layout will appear in the Frame Styles modal when you build a new <b>{PRODUCTS.find(function(p){ return p.id===cSel.type; })?.label || cSel.type}</b>.
+                        </div>
                       </div>
                     </div>}
                   </div>
@@ -8454,6 +10562,310 @@ function SpartanCADPreview() {
               }
 
 
+
+              if (settingsPath === 'render-quality') {
+                // ─── 3D Renderer — Render quality settings ───────────────────
+                // User-tunable controls for the 3D viewport. These live at
+                // appSettings.renderQuality and are read by the THREE init
+                // useEffect on mount; changing any value triggers a clean
+                // teardown + re-init (the dep array includes
+                // appSettings.renderQuality), so changes are immediate. The
+                // geometry rebuild useEffect also depends on renderQuality
+                // so the productGroup re-attaches to the freshly-built scene.
+                //
+                // Defaults preserve existing visual behaviour: flat-grey
+                // HDRI, no shadow maps, no RectAreaLight, exposure 1.8,
+                // ACES tone mapping, neutral saturation/contrast, 1.0
+                // env multiplier. Users opt into every enhancement.
+                var rqDefaults = {
+                  toneExposure: 1.8, toneMapping: 'aces',
+                  hdriStyle: 'flat', hdriRotation: 0,
+                  backgroundMode: 'theme', backgroundColor: '#fafafa',
+                  envIntensityMult: 1.0,
+                  ambientIntensity: 0.30, hemiIntensity: 1.00, fillIntensity: 1.00,
+                  shadows: false, shadowSoftness: 4, shadowMapSize: 2048,
+                  rectAreaLight: false, rectAreaIntensity: 3,
+                  cameraFov: 32,
+                  saturation: 1.0, contrast: 1.0,
+                };
+                var rq = Object.assign({}, rqDefaults, (appSettings && appSettings.renderQuality) || {});
+                function setRq(key, val) {
+                  setAppSettings(function(prev) {
+                    var next = Object.assign({}, prev.renderQuality || {}, {});
+                    next[key] = val;
+                    return Object.assign({}, prev, { renderQuality: next });
+                  });
+                }
+                function resetRq() {
+                  if (!confirm('Reset 3D render quality to defaults? Your other settings stay untouched.')) return;
+                  setAppSettings(function(prev) {
+                    return Object.assign({}, prev, { renderQuality: Object.assign({}, rqDefaults) });
+                  });
+                }
+                var hasOverride = JSON.stringify(rq) !== JSON.stringify(rqDefaults);
+
+                // Reusable card + slider helpers — keeps the JSX below
+                // readable and ensures every control has consistent
+                // styling. Section header is just a heading + subtitle.
+                var cardStyle = { marginBottom:16, padding:14, background:T.bgCard, border:'1px solid '+T.border, borderRadius:6 };
+                var sectionHeaderStyle = { fontSize:13, fontWeight:700, color:T.text, marginTop:24, marginBottom:8, paddingBottom:6, borderBottom:'2px solid '+T.border, textTransform:'uppercase', letterSpacing:0.4 };
+                function rqSlider(label, key, min, max, step, helper, fmt) {
+                  fmt = fmt || function(v){ return Number(v).toFixed(2); };
+                  return (
+                    <div style={cardStyle} key={key}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:4 }}>
+                        <div style={{ fontSize:12, fontWeight:700, color:T.text }}>{label}</div>
+                        <span style={{ fontFamily:'monospace', fontSize:11, fontWeight:600, color:T.accent }}>{fmt(rq[key])}</span>
+                      </div>
+                      {helper && <div style={{ fontSize:10, color:T.textMuted, marginBottom:8, lineHeight:1.4 }}>{helper}</div>}
+                      <input type="range" min={min} max={max} step={step} value={rq[key]}
+                             onChange={function(e){ setRq(key, Number(e.target.value)); }}
+                             style={{ width:'100%', accentColor:T.accent }}/>
+                    </div>
+                  );
+                }
+
+                return <div style={{ padding:24, maxWidth:720, overflowY:'auto' }}>
+                  <div style={{ fontSize:16, fontWeight:700, color:T.text, marginBottom:4 }}>3D Render Quality</div>
+                  <div style={{ fontSize:11, color:T.textMuted, marginBottom:18, lineHeight:1.5 }}>
+                    Tune how the 3D viewport renders frames. Changes apply immediately. Defaults preserve the original schematic look — opt into shadows, studio HDRI, the area light, and the post-process controls for a more photographic finish.
+                    {hasOverride && (
+                      <button onClick={resetRq}
+                              style={{ marginLeft:12, background:'transparent', color:T.text, border:'1px solid '+T.border, borderRadius:3, padding:'2px 8px', fontSize:9, fontWeight:600, cursor:'pointer' }}>
+                        Reset all to defaults
+                      </button>
+                    )}
+                  </div>
+
+                  {/* ═══════════════ TONE & EXPOSURE ═══════════════ */}
+                  <div style={sectionHeaderStyle}>Tone &amp; Exposure</div>
+
+                  {rqSlider('Tone exposure', 'toneExposure', 0.5, 2.5, 0.05,
+                    'Overall scene brightness multiplier. Lower = moodier with more material contrast; higher = brighter showroom feel. With studio HDRI on, around 1.2–1.4 looks natural; with flat HDRI, the legacy 1.8 fits the brighter ambient.')}
+
+                  {/* Tone-mapping mode picker */}
+                  <div style={cardStyle}>
+                    <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:4 }}>Tone-mapping curve</div>
+                    <div style={{ fontSize:10, color:T.textMuted, marginBottom:8, lineHeight:1.4 }}>
+                      How highlights are compressed into the visible range. <b>ACES</b> is filmic and forgiving (default). <b>Cineon</b> is similar with cooler shadows. <b>Reinhard</b> is gentle and slightly washed. <b>Linear</b> is uncompressed (clips bright highlights). <b>None</b> is raw output (mostly for debugging).
+                    </div>
+                    <div style={{ display:'flex', gap:0, border:'1px solid '+T.border, borderRadius:3, overflow:'hidden', width:'fit-content', flexWrap:'wrap' }}>
+                      {[
+                        { id:'aces',     label:'ACES filmic' },
+                        { id:'cineon',   label:'Cineon' },
+                        { id:'reinhard', label:'Reinhard' },
+                        { id:'linear',   label:'Linear' },
+                        { id:'none',     label:'None' },
+                      ].map(function(opt, idx) {
+                        var active = rq.toneMapping === opt.id;
+                        return <button key={opt.id}
+                                       onClick={function(){ setRq('toneMapping', opt.id); }}
+                                       style={{
+                                         background: active ? '#1f2937' : 'transparent',
+                                         color: active ? 'white' : T.text,
+                                         border:'none', borderLeft: idx === 0 ? 'none' : '1px solid '+T.border,
+                                         padding:'5px 11px', fontSize:10, fontWeight:600, cursor:'pointer'
+                                       }}>{opt.label}</button>;
+                      })}
+                    </div>
+                  </div>
+
+                  {/* ═══════════════ ENVIRONMENT ═══════════════ */}
+                  <div style={sectionHeaderStyle}>Environment &amp; Background</div>
+
+                  {/* HDRI style */}
+                  <div style={cardStyle}>
+                    <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:4 }}>Environment lighting (HDRI)</div>
+                    <div style={{ fontSize:10, color:T.textMuted, marginBottom:8, lineHeight:1.4 }}>
+                      The "world" surrounding the frame, used for reflections on glass, metal hardware, and clearcoat foils. Flat is uniform grey. Studio adds a procedural softbox setup with key + side fill that gives glass believable reflections and makes woodgrain depth read better.
+                    </div>
+                    <div style={{ display:'flex', gap:0, border:'1px solid '+T.border, borderRadius:3, overflow:'hidden', width:'fit-content' }}>
+                      {[
+                        { id:'flat',   label:'Flat grey',         hint:'Uniform grey, zero hotspots (current default)' },
+                        { id:'studio', label:'Studio softbox',    hint:'Procedural softbox HDRI with key + side fill' },
+                      ].map(function(opt, idx) {
+                        var active = rq.hdriStyle === opt.id;
+                        return <button key={opt.id}
+                                       title={opt.hint}
+                                       onClick={function(){ setRq('hdriStyle', opt.id); }}
+                                       style={{
+                                         background: active ? '#1f2937' : 'transparent',
+                                         color: active ? 'white' : T.text,
+                                         border:'none', borderLeft: idx === 0 ? 'none' : '1px solid '+T.border,
+                                         padding:'5px 11px', fontSize:10, fontWeight:600, cursor:'pointer'
+                                       }}>{opt.label}</button>;
+                      })}
+                    </div>
+                    {rq.hdriStyle === 'studio' && (
+                      <div style={{ marginTop:12 }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                          <span style={{ fontSize:10, color:T.textSub }}>HDRI rotation</span>
+                          <span style={{ fontFamily:'monospace', fontSize:10, color:T.accent, fontWeight:600 }}>{rq.hdriRotation.toFixed(0)}°</span>
+                        </div>
+                        <input type="range" min="0" max="360" step="5" value={rq.hdriRotation}
+                               onChange={function(e){ setRq('hdriRotation', Number(e.target.value)); }}
+                               style={{ width:'100%', accentColor:T.accent }}/>
+                        <div style={{ fontSize:9, color:T.textFaint, marginTop:2 }}>Spins the softbox around the frame. Useful for moving the bright reflection off glazing or hardware.</div>
+                      </div>
+                    )}
+                  </div>
+
+                  {rqSlider('Material reflection intensity (global)', 'envIntensityMult', 0.25, 3.0, 0.05,
+                    'Scales every material\u2019s envMapIntensity globally. <1.0 muted reflections, 1.0 normal, >1.0 cranks reflections higher across all colours at once. Most powerful single dial for "premium" feel.')}
+
+                  {/* Background mode */}
+                  <div style={cardStyle}>
+                    <div style={{ fontSize:12, fontWeight:700, color:T.text, marginBottom:4 }}>Background</div>
+                    <div style={{ fontSize:10, color:T.textMuted, marginBottom:8, lineHeight:1.4 }}>
+                      What sits behind the frame in the viewport. <b>Theme</b> follows light/dark mode (legacy). <b>Solid</b> uses a custom colour picker. <b>HDRI</b> shows the studio softbox itself (only with HDRI: Studio).
+                    </div>
+                    <div style={{ display:'flex', gap:0, border:'1px solid '+T.border, borderRadius:3, overflow:'hidden', width:'fit-content', marginBottom:10 }}>
+                      {[
+                        { id:'theme', label:'Theme' },
+                        { id:'solid', label:'Solid colour' },
+                        { id:'hdri',  label:'Show HDRI' },
+                      ].map(function(opt, idx) {
+                        var active = rq.backgroundMode === opt.id;
+                        var disabled = opt.id === 'hdri' && rq.hdriStyle !== 'studio';
+                        return <button key={opt.id}
+                                       disabled={disabled}
+                                       title={disabled ? 'Switch HDRI to Studio softbox first' : ''}
+                                       onClick={function(){ if (!disabled) setRq('backgroundMode', opt.id); }}
+                                       style={{
+                                         background: active ? '#1f2937' : 'transparent',
+                                         color: active ? 'white' : (disabled ? T.textFaint : T.text),
+                                         border:'none', borderLeft: idx === 0 ? 'none' : '1px solid '+T.border,
+                                         padding:'5px 11px', fontSize:10, fontWeight:600,
+                                         cursor: disabled ? 'not-allowed' : 'pointer',
+                                         opacity: disabled ? 0.5 : 1,
+                                       }}>{opt.label}</button>;
+                      })}
+                    </div>
+                    {rq.backgroundMode === 'solid' && (
+                      <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                        <input type="color" value={rq.backgroundColor}
+                               onChange={function(e){ setRq('backgroundColor', e.target.value); }}
+                               style={{ width:48, height:32, border:'none', cursor:'pointer' }}/>
+                        <input type="text" value={rq.backgroundColor}
+                               onChange={function(e){ setRq('backgroundColor', e.target.value); }}
+                               style={{ width:120, padding:'6px 8px', border:'1px solid '+T.border, borderRadius:4, fontSize:11, fontFamily:'monospace', background:T.bgInput, color:T.text }}/>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ═══════════════ LIGHTING BALANCE ═══════════════ */}
+                  <div style={sectionHeaderStyle}>Lighting Balance</div>
+
+                  {rqSlider('Ambient light', 'ambientIntensity', 0.0, 2.0, 0.05,
+                    'Flat fill across every surface. Higher = less material contrast (everything lit). Lower = punchier shadows but darker mid-tones.')}
+
+                  {rqSlider('Hemisphere light (sky/ground)', 'hemiIntensity', 0.0, 2.0, 0.05,
+                    'Soft top/bottom gradient fill. Drives the natural-looking ambient that picks up sky-grey on top of the frame and warmer floor-bounce underneath.')}
+
+                  {rqSlider('Directional fill lights', 'fillIntensity', 0.0, 2.0, 0.05,
+                    'Multiplier on the four corner directional fills that define the frame\u2019s form (front, back, left, right). Below 1.0 reads moody; above 1.0 fully-lit showroom.')}
+
+                  {/* ═══════════════ SHADOWS ═══════════════ */}
+                  <div style={sectionHeaderStyle}>Shadows</div>
+
+                  <div style={cardStyle}>
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
+                      <div style={{ fontSize:12, fontWeight:700, color:T.text }}>Cast shadows</div>
+                      <label style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer' }}>
+                        <input type="checkbox" checked={!!rq.shadows}
+                               onChange={function(e){ setRq('shadows', e.target.checked); }}/>
+                        <span style={{ fontSize:11, color:T.text }}>Enabled</span>
+                      </label>
+                    </div>
+                    <div style={{ fontSize:10, color:T.textMuted, marginBottom:8, lineHeight:1.4 }}>
+                      Real shadow maps anchor the frame to a ground plane and add depth at corners and rebates. Off by default — the schematic look uses a fake circle shadow underneath instead. Costs a small amount of GPU time.
+                    </div>
+                    {rq.shadows && (
+                      <div>
+                        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                          <span style={{ fontSize:10, color:T.textSub }}>Shadow softness</span>
+                          <span style={{ fontFamily:'monospace', fontSize:10, color:T.accent, fontWeight:600 }}>{rq.shadowSoftness}</span>
+                        </div>
+                        <input type="range" min="0" max="10" step="1" value={rq.shadowSoftness}
+                               onChange={function(e){ setRq('shadowSoftness', Number(e.target.value)); }}
+                               style={{ width:'100%', accentColor:T.accent, marginBottom:10 }}/>
+                        <div style={{ fontSize:9, color:T.textFaint, marginBottom:10 }}>Higher = softer, more diffuse shadow edges. Lower = crisper, more directional.</div>
+
+                        <div style={{ fontSize:10, color:T.textSub, marginBottom:6 }}>Shadow map resolution</div>
+                        <div style={{ display:'flex', gap:0, border:'1px solid '+T.border, borderRadius:3, overflow:'hidden', width:'fit-content' }}>
+                          {[1024, 2048, 4096].map(function(sz, idx) {
+                            var active = rq.shadowMapSize === sz;
+                            return <button key={sz}
+                                           onClick={function(){ setRq('shadowMapSize', sz); }}
+                                           style={{
+                                             background: active ? '#1f2937' : 'transparent',
+                                             color: active ? 'white' : T.text,
+                                             border:'none', borderLeft: idx === 0 ? 'none' : '1px solid '+T.border,
+                                             padding:'4px 12px', fontSize:10, fontWeight:600, cursor:'pointer'
+                                           }}>{sz}px</button>;
+                          })}
+                        </div>
+                        <div style={{ fontSize:9, color:T.textFaint, marginTop:4 }}>Higher = sharper shadow edges, but bigger GPU memory footprint. 4096 only on desktop GPUs.</div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ═══════════════ HIGHLIGHTS ═══════════════ */}
+                  <div style={sectionHeaderStyle}>Highlights</div>
+
+                  <div style={cardStyle}>
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:4 }}>
+                      <div style={{ fontSize:12, fontWeight:700, color:T.text }}>Overhead area light</div>
+                      <label style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer' }}>
+                        <input type="checkbox" checked={!!rq.rectAreaLight}
+                               onChange={function(e){ setRq('rectAreaLight', e.target.checked); }}/>
+                        <span style={{ fontSize:11, color:T.text }}>Enabled</span>
+                      </label>
+                    </div>
+                    <div style={{ fontSize:10, color:T.textMuted, marginBottom:8, lineHeight:1.4 }}>
+                      Adds an elongated softbox highlight typical of product photography. Glass picks up a directional gleam, metal hardware reflects more naturally. Off by default — adds shader cost.
+                    </div>
+                    {rq.rectAreaLight && (
+                      <div>
+                        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                          <span style={{ fontSize:10, color:T.textSub }}>Intensity</span>
+                          <span style={{ fontFamily:'monospace', fontSize:10, color:T.accent, fontWeight:600 }}>{rq.rectAreaIntensity.toFixed(2)}</span>
+                        </div>
+                        <input type="range" min="0" max="10" step="0.25" value={rq.rectAreaIntensity}
+                               onChange={function(e){ setRq('rectAreaIntensity', Number(e.target.value)); }}
+                               style={{ width:'100%', accentColor:T.accent }}/>
+                        <div style={{ fontSize:9, color:T.textFaint, marginTop:2 }}>Higher = brighter highlight. Around 3 is a good start.</div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ═══════════════ CAMERA ═══════════════ */}
+                  <div style={sectionHeaderStyle}>Camera</div>
+
+                  {rqSlider('Field of view (FOV)', 'cameraFov', 18, 60, 1,
+                    'Camera focal length. Lower (18–25°) = telephoto, less perspective distortion, professional product-shot look. Default 32° matches the legacy view. Higher (45–60°) = wide-angle with more depth/exaggeration.',
+                    function(v){ return Math.round(v) + '°'; })}
+
+                  {/* ═══════════════ POST-PROCESSING ═══════════════ */}
+                  <div style={sectionHeaderStyle}>Post-Processing</div>
+
+                  {rqSlider('Saturation', 'saturation', 0.0, 2.0, 0.05,
+                    'Colour intensity. 0 = greyscale, 1.0 = unchanged, 1.4–1.6 = punchy showroom finish that reads well in marketing photos. Above 2 risks clipping.')}
+
+                  {rqSlider('Contrast', 'contrast', 0.5, 1.8, 0.05,
+                    'Difference between highlights and shadows. 1.0 = unchanged. Above 1 deepens blacks and brightens highlights for a richer image. Below 1 flattens — useful when shadows are crushing detail.')}
+
+                  <div style={{ marginTop:24, padding:'12px 14px', background:'#fffbeb', border:'1px solid #fcd34d', borderRadius:4, fontSize:10, color:'#78350f', lineHeight:1.6 }}>
+                    <div style={{ fontSize:11, fontWeight:700, marginBottom:4 }}>Recipe — &ldquo;photographic timber&rdquo;</div>
+                    HDRI: <b>Studio softbox</b> · Cast shadows: <b>on</b> · Tone exposure: <b>1.30</b> · Material reflections: <b>1.40</b> · Saturation: <b>1.20</b> · Contrast: <b>1.10</b> · Overhead area light: <b>on at 4.0</b>. Then upload photographic foil textures per timber colour in <b>Settings → Products → Colours</b>. Procedural grain still works as the fallback when no photo is uploaded.
+                  </div>
+
+                  <div style={{ marginTop:12, padding:'12px 14px', background: T.bgCard, border:'1px solid '+T.border, borderRadius:4, fontSize:10, color:T.textSub, lineHeight:1.6 }}>
+                    <div style={{ fontSize:11, fontWeight:700, marginBottom:4, color:T.text }}>Recipe — &ldquo;moody hero&rdquo;</div>
+                    HDRI: <b>Flat grey</b> · Tone exposure: <b>0.95</b> · Ambient: <b>0.10</b> · Hemi: <b>0.50</b> · Fill: <b>0.65</b> · Saturation: <b>1.30</b> · Contrast: <b>1.30</b> · Background: <b>Solid</b> with a deep colour. Best for dark-anthracite or jet-black showroom shots.
+                  </div>
+                </div>;
+              }
 
               if (settingsPath === 'prod-types') {
                 // ─── Product Types — Per-type Assembly DXF ────────────────
@@ -8757,6 +11169,646 @@ function SpartanCADPreview() {
               }
 
 
+              if (settingsPath === 'catalog-flyscreens') {
+                // ─── Fly Screen Frame — Per-Product-Type Cutting Deductions ────
+                // Lives at the Catalogs → Fly screens page so all fly-screen
+                // settings (cutting deductions + future SKU catalog) are in
+                // one location for the user.
+                //
+                // Drives the additional-profiles cutlist. For each window
+                // type that's flyScreenConfig.enabled, four frame cuts are
+                // emitted per OPENING sash: 2 horizontal at (sashW − deductW)
+                // and 2 vertical at (sashH − deductH). The deduction
+                // accounts for the gasket clearance plus the corner-joiner
+                // overlap on the screen frame extrusion.
+                //
+                // Sliding windows have multiple sashes, but ONLY the
+                // opening sash gets a fly screen — the cutlist generator
+                // recognises this and emits a single screen per slider.
+                // Fixed windows have no opening sash, so default to off.
+                //
+                // profileSku selects which fly-screen profile family the
+                // cuts belong to. Different SKUs may have different bar
+                // lengths (typical aluminium extrusions are 5800mm). The
+                // cuts will pack into bars of that length in the cutting
+                // sheet, separate from the PVC frame profile bars.
+                var fsConfig = appSettings.flyScreenConfig || {};
+                // Show only window product types — fly screens don't apply
+                // to doors. Use PRODUCTS for canonical labels.
+                var windowTypes = (typeof PRODUCTS !== 'undefined' ? PRODUCTS : []).filter(function(p) {
+                  return p.cat === 'window';
+                });
+                function updFs(typeId, patch) {
+                  setAppSettings(function(p) {
+                    var existing = (p.flyScreenConfig && p.flyScreenConfig[typeId]) || {};
+                    var next = Object.assign({}, p.flyScreenConfig || {});
+                    next[typeId] = Object.assign({}, existing, patch);
+                    return Object.assign({}, p, { flyScreenConfig: next });
+                  });
+                }
+                function resetType(typeId) {
+                  if (!confirm('Reset fly-screen settings for this product type to defaults?')) return;
+                  // Pull defaults from getDefaultSettings if available, else
+                  // hardcoded.
+                  var defaults = {
+                    awning_window:    { enabled: true,  deductWidthMm: 8, deductHeightMm: 8, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+                    casement_window:  { enabled: true,  deductWidthMm: 8, deductHeightMm: 8, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+                    tilt_turn_window: { enabled: true,  deductWidthMm: 6, deductHeightMm: 6, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+                    fixed_window:     { enabled: false, deductWidthMm: 0, deductHeightMm: 0, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+                    sliding_window:   { enabled: true,  deductWidthMm: 5, deductHeightMm: 5, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+                  };
+                  var d = defaults[typeId] || { enabled: false, deductWidthMm: 0, deductHeightMm: 0, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 };
+                  setAppSettings(function(p) {
+                    var next = Object.assign({}, p.flyScreenConfig || {});
+                    next[typeId] = Object.assign({}, d);
+                    return Object.assign({}, p, { flyScreenConfig: next });
+                  });
+                }
+
+                return <div style={{ padding:24, maxWidth:880, overflowY:'auto' }}>
+                  <div style={{ fontSize:16, fontWeight:700, color:T.text, marginBottom:4 }}>Fly Screen Frame Cutting Deductions</div>
+                  <div style={{ fontSize:11, color:T.textMuted, marginBottom:18, lineHeight:1.5 }}>
+                    Per-product-type cutting list config for fly screen aluminium frames. Each opening sash emits four cuts: two horizontal (sash width − width deduction) and two vertical (sash height − height deduction). Adjust the deductions to match your screen-frame supplier's gasket clearance and corner-joiner overlap.
+                    <br/><br/>
+                    <b>Sliding windows:</b> only the opening sash gets a fly screen. The fixed sash is excluded automatically.
+                    <br/>
+                    <b>Fixed windows:</b> no opening sash, so off by default. Enable if you want to allow a fly screen to be added manually.
+                  </div>
+
+                  {/* ───── Profile cross-section image upload ─────
+                      Single PNG/JPEG slot — shared across all window
+                      types and SKUs. Stored as a base64 data URL on
+                      appSettings.flyScreenProfileImage and threaded
+                      through computeTrimCuts onto every fly-screen cut
+                      so the Production → Additional Profiles tab shows
+                      a thumbnail next to the row. */}
+                  {(function(){
+                    var img = appSettings.flyScreenProfileImage || null;
+                    function setImg(dataUrl) {
+                      setAppSettings(function(p) {
+                        if (dataUrl) {
+                          return Object.assign({}, p, { flyScreenProfileImage: dataUrl });
+                        }
+                        var next = Object.assign({}, p);
+                        delete next.flyScreenProfileImage;
+                        return next;
+                      });
+                    }
+                    function readImg(file) {
+                      if (!file) return;
+                      if (!/png|jpe?g/i.test(file.type)) {
+                        alert('Please use PNG or JPEG. Got: ' + (file.type || 'unknown'));
+                        return;
+                      }
+                      if (file.size > 1.5 * 1024 * 1024) {
+                        if (!confirm('This file is ' + (file.size / 1024 / 1024).toFixed(1) + ' MB. Profile cross-sections are usually < 200 KB. Continue?')) return;
+                      }
+                      var reader = new FileReader();
+                      reader.onload = function(ev) { setImg(ev.target.result); };
+                      reader.onerror = function() { alert('Failed to read file.'); };
+                      reader.readAsDataURL(file);
+                    }
+                    var inputId = 'flyscreen-profile-image-upload';
+                    return <div style={{ marginBottom:18, padding:14, background:T.bgCard, border:'1px solid '+T.borderLight, borderRadius:6 }}>
+                      <div style={{ fontSize:13, fontWeight:600, color:T.text, marginBottom:4 }}>Profile Cross-Section Image</div>
+                      <div style={{ fontSize:10, color:T.textMuted, marginBottom:12, lineHeight:1.4 }}>
+                        Optional PNG or JPEG of the fly-screen profile cross-section. Appears as a thumbnail next to the cutting-list row in Production → Additional Profiles, so the cutter can confirm the right extrusion is loaded. One image, shared across every window type.
+                      </div>
+                      <div style={{ display:'flex', gap:14, alignItems:'center' }}>
+                        <div style={{ width:88, height:88, flexShrink:0, background:'#f4f4f4', border:'1px solid '+T.border, borderRadius:4, overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center' }}>
+                          {img ? (
+                            <img src={img} alt="Fly screen profile" style={{ width:'100%', height:'100%', objectFit:'contain' }}/>
+                          ) : (
+                            <span style={{ fontSize:24, color:'#9aa' }}>▢</span>
+                          )}
+                        </div>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ fontSize:11, color:T.textMuted, marginBottom:6, lineHeight:1.4 }}>
+                            {img ? 'Image uploaded. Replace to swap, Remove to clear.' : 'No image yet. PNG or JPEG, typically < 200 KB.'}
+                          </div>
+                          <input type="file" accept="image/png,image/jpeg" id={inputId} style={{ display:'none' }}
+                                 onChange={function(e){
+                                   var f = e.target.files && e.target.files[0];
+                                   if (f) readImg(f);
+                                   e.target.value = '';
+                                 }}/>
+                          <div style={{ display:'flex', gap:6 }}>
+                            <label htmlFor={inputId}
+                                   style={{ background: img ? 'transparent' : '#1f2937', color: img ? T.text : 'white', border: img ? '1px solid '+T.border : 'none', borderRadius:3, padding:'5px 12px', fontSize:11, fontWeight:600, cursor:'pointer' }}>
+                              {img ? 'Replace' : '⬆ Upload PNG'}
+                            </label>
+                            {img && (
+                              <button onClick={function(){ if (confirm('Remove the fly-screen profile image?')) setImg(null); }}
+                                      style={{ background:'transparent', color:'#dc2626', border:'1px solid '+T.border, borderRadius:3, padding:'5px 12px', fontSize:11, fontWeight:600, cursor:'pointer' }}>
+                                Remove
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>;
+                  })()}
+
+                  {windowTypes.map(function(pt) {
+                    var cfg = fsConfig[pt.id] || { enabled: false, deductWidthMm: 0, deductHeightMm: 0, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 };
+                    var isSliding = pt.id === 'sliding_window';
+                    var isFixed = pt.id === 'fixed_window';
+                    return <div key={pt.id} style={{
+                      marginBottom: 18,
+                      padding: 16,
+                      background: T.bgCard,
+                      border: '1px solid ' + (cfg.enabled ? T.accent : T.border),
+                      borderLeft: cfg.enabled ? '3px solid ' + T.accent : '1px solid ' + T.border,
+                      borderRadius: 6,
+                      opacity: cfg.enabled ? 1 : 0.78,
+                    }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: cfg.enabled ? 12 : 0 }}>
+                        <div>
+                          <div style={{ fontSize:14, fontWeight:700, color:T.text }}>{pt.label}</div>
+                          <div style={{ fontSize:9, color:T.textMuted, marginTop:2 }}>
+                            {isSliding ? 'Fly screen on opening sash only — fixed sash excluded' :
+                             isFixed ? 'No opening sash — fly screens not typical' :
+                             'One fly screen per sash'}
+                          </div>
+                        </div>
+                        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                          <label style={{ display:'flex', alignItems:'center', gap:6, cursor:'pointer' }}>
+                            <input type="checkbox" checked={!!cfg.enabled}
+                                   onChange={function(e){ updFs(pt.id, { enabled: e.target.checked }); }}/>
+                            <span style={{ fontSize:12, color:T.text, fontWeight:600 }}>Enabled</span>
+                          </label>
+                          <button onClick={function(){ resetType(pt.id); }}
+                                  style={{ background:'transparent', color:T.textMuted, border:'1px solid '+T.border, borderRadius:3, padding:'2px 8px', fontSize:9, fontWeight:600, cursor:'pointer' }}>
+                            Reset
+                          </button>
+                        </div>
+                      </div>
+
+                      {cfg.enabled && (
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginTop:8 }}>
+                          {/* Width deduction */}
+                          <div>
+                            <div style={{ fontSize:10, color:T.textSub, marginBottom:3 }}>Width deduction (mm)</div>
+                            <input type="number" min="0" max="50" step="0.5"
+                                   value={cfg.deductWidthMm}
+                                   onChange={function(e){
+                                     var v = e.target.value === '' ? 0 : Number(e.target.value);
+                                     updFs(pt.id, { deductWidthMm: isFinite(v) ? v : 0 });
+                                   }}
+                                   style={{ width:'100%', padding:'5px 8px', border:'1px solid '+T.border, borderRadius:3, fontSize:12, fontFamily:'monospace', background:T.bgInput, color:T.text }}/>
+                            <div style={{ fontSize:9, color:T.textFaint, marginTop:2 }}>
+                              Subtracted from the sash WIDTH for horizontal screen frame cuts. Cut length = sashW − {cfg.deductWidthMm}mm.
+                            </div>
+                          </div>
+
+                          {/* Height deduction */}
+                          <div>
+                            <div style={{ fontSize:10, color:T.textSub, marginBottom:3 }}>Height deduction (mm)</div>
+                            <input type="number" min="0" max="50" step="0.5"
+                                   value={cfg.deductHeightMm}
+                                   onChange={function(e){
+                                     var v = e.target.value === '' ? 0 : Number(e.target.value);
+                                     updFs(pt.id, { deductHeightMm: isFinite(v) ? v : 0 });
+                                   }}
+                                   style={{ width:'100%', padding:'5px 8px', border:'1px solid '+T.border, borderRadius:3, fontSize:12, fontFamily:'monospace', background:T.bgInput, color:T.text }}/>
+                            <div style={{ fontSize:9, color:T.textFaint, marginTop:2 }}>
+                              Subtracted from the sash HEIGHT for vertical screen frame cuts. Cut length = sashH − {cfg.deductHeightMm}mm.
+                            </div>
+                          </div>
+
+                          {/* Profile SKU */}
+                          <div>
+                            <div style={{ fontSize:10, color:T.textSub, marginBottom:3 }}>Profile SKU</div>
+                            <input type="text" value={cfg.profileSku}
+                                   onChange={function(e){ updFs(pt.id, { profileSku: e.target.value }); }}
+                                   style={{ width:'100%', padding:'5px 8px', border:'1px solid '+T.border, borderRadius:3, fontSize:12, fontFamily:'monospace', background:T.bgInput, color:T.text }}/>
+                            <div style={{ fontSize:9, color:T.textFaint, marginTop:2 }}>
+                              Cutlist profile key. Cuts share a bar plan with other entries using the same SKU.
+                            </div>
+                          </div>
+
+                          {/* Bar length */}
+                          <div>
+                            <div style={{ fontSize:10, color:T.textSub, marginBottom:3 }}>Bar length (mm)</div>
+                            <input type="number" min="2000" max="7500" step="10"
+                                   value={cfg.barLengthMm}
+                                   onChange={function(e){
+                                     var v = e.target.value === '' ? 5800 : Number(e.target.value);
+                                     updFs(pt.id, { barLengthMm: isFinite(v) ? v : 5800 });
+                                   }}
+                                   style={{ width:'100%', padding:'5px 8px', border:'1px solid '+T.border, borderRadius:3, fontSize:12, fontFamily:'monospace', background:T.bgInput, color:T.text }}/>
+                            <div style={{ fontSize:9, color:T.textFaint, marginTop:2 }}>
+                              Stock bar length for this profile. Used by the cutting-list optimiser to pack cuts into bars.
+                            </div>
+                          </div>
+
+                          {/* Worked example */}
+                          <div style={{ gridColumn:'1 / span 2', marginTop:6, padding:'8px 12px', background:'#f0f9ff', border:'1px solid #bae6fd', borderRadius:4, fontSize:10, color:'#075985', lineHeight:1.5 }}>
+                            <b>Example:</b> a 900 × 1200mm sash with these settings produces:
+                            <br/>
+                            <span style={{ fontFamily:'monospace' }}>
+                              2 × {(900 - cfg.deductWidthMm).toFixed(0)}mm horizontal + 2 × {(1200 - cfg.deductHeightMm).toFixed(0)}mm vertical
+                            </span>
+                            {isSliding && (
+                              <div style={{ marginTop:4 }}>
+                                <b>Note:</b> sliding window with 2 panels of 900mm each — only the opening sash gets a screen, so just 4 cuts total.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>;
+                  })}
+
+                  {/* ───── Pricing & Production ─────
+                      Surfaces the existing pricingConfig.ancillaries and
+                      pricingConfig.productionTimes fields that the BOM and
+                      labour calculators already consume — so the user can
+                      tune fly-screen cost in one place without hunting
+                      through Pricing → Ancillaries and Pricing → Production
+                      Times separately.
+
+                      All edits write back to pricingConfig (NOT a parallel
+                      copy), which means changes here are identical to
+                      changes made on the Pricing pages. The xlsx exports
+                      and quote totals pick them up the same way. */}
+                  {(function(){
+                    var pc = appSettings.pricingConfig || {};
+                    var anc = pc.ancillaries || {};
+                    var pt = (pc.productionTimes || (typeof PRICING_DEFAULTS !== 'undefined' ? PRICING_DEFAULTS.productionTimes : {})) || {};
+                    var s7 = pt.S7_flyScreen || ((typeof PRICING_DEFAULTS !== 'undefined' && PRICING_DEFAULTS.productionTimes && PRICING_DEFAULTS.productionTimes.S7_flyScreen) || { ops: {}, rate: 36 });
+                    var perMetre = anc.flyScreenFramePerMetre != null ? anc.flyScreenFramePerMetre : 5.50;
+                    var perUnit  = anc.flyScreenPerUnit != null ? anc.flyScreenPerUnit : 45;
+                    function updAnc(key, val) {
+                      setAppSettings(function(p){
+                        var lpc = p.pricingConfig || {};
+                        var lanc = lpc.ancillaries || {};
+                        return Object.assign({}, p, { pricingConfig: Object.assign({}, lpc, { ancillaries: Object.assign({}, lanc, { [key]: val }) }) });
+                      });
+                    }
+
+                    // Worked-example calc on a 900×1200 awning sash.
+                    // Sash = 770 × 1070 (frame deduction 65mm × 2 = 130mm).
+                    // Awning default deduction 8/8 → screen = 762 × 1062.
+                    // Perimeter = 2*(762+1062) = 3648 mm = 3.648 m.
+                    var exPerim = 2 * ((900 - 130 - 8) + (1200 - 130 - 8));
+                    var exMaterial = (exPerim / 1000) * perMetre + perUnit;
+                    var ops = s7.ops || {};
+                    var s7Mins = (4 * ((ops.cutAlFrame && ops.cutAlFrame.t) || 0)
+                                + ((ops.cutMesh && ops.cutMesh.t) || 0)
+                                + ((ops.rollSpline && ops.rollSpline.t) || 0)
+                                + 4 * ((ops.pressCorner && ops.pressCorner.t) || 0)
+                                + ((ops.trimExcess && ops.trimExcess.t) || 0)
+                                + ((ops.fitPullTab && ops.fitPullTab.t) || 0));
+                    var rate = (typeof s7.rate === 'number') ? s7.rate : 36;
+                    var s7Cost = s7Mins * (rate / 60);
+                    var exTotal = exMaterial + s7Cost;
+
+                    var opsList = [
+                      ['cutAlFrame',  'Cut aluminium frame', 'per cut'],
+                      ['cutMesh',     'Cut mesh',            'per screen'],
+                      ['rollSpline',  'Roll spline',         'per screen'],
+                      ['pressCorner', 'Press-fit corner',    'per corner'],
+                      ['trimExcess',  'Trim excess mesh',    'per screen'],
+                      ['fitPullTab',  'Fit pull tab',        'per screen'],
+                    ];
+
+                    return <div style={{ marginTop:18, padding:14, background:T.bgCard, border:'1px solid '+T.borderLight, borderRadius:6 }}>
+                      <div style={{ fontSize:13, fontWeight:600, color:T.text, marginBottom:4 }}>Pricing</div>
+                      <div style={{ fontSize:10, color:T.textMuted, marginBottom:14, lineHeight:1.4 }}>
+                        Material cost inputs for fly screens. Edits write directly to <code>pricingConfig.ancillaries</code> — the same fields used by the BOM calculator and quote totals. Assembly time per task is configured on the Pricing → Production Times page (Stn 7 - Fly Screens).
+                      </div>
+
+                      {/* Material costs */}
+                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, marginBottom:14 }}>
+                        <div>
+                          <div style={{ fontSize:10, color:T.textSub, marginBottom:3 }}>Aluminium frame ($ / metre)</div>
+                          <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                            <span style={{ fontSize:11, color:T.textMuted }}>$</span>
+                            <input type="number" step="0.10" min="0" value={perMetre}
+                                   onChange={function(e){ updAnc('flyScreenFramePerMetre', +e.target.value); }}
+                                   style={{ width:'100%', padding:'5px 8px', border:'1px solid '+T.border, borderRadius:3, fontSize:12, fontFamily:'monospace', textAlign:'right', background:T.bgInput, color:T.text }}/>
+                          </div>
+                          <div style={{ fontSize:9, color:T.textFaint, marginTop:2 }}>Cost per linear metre of the aluminium extrusion. BOM = perimeter × this rate.</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize:10, color:T.textSub, marginBottom:3 }}>Misc. per screen ($ / unit)</div>
+                          <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                            <span style={{ fontSize:11, color:T.textMuted }}>$</span>
+                            <input type="number" step="0.10" min="0" value={perUnit}
+                                   onChange={function(e){ updAnc('flyScreenPerUnit', +e.target.value); }}
+                                   style={{ width:'100%', padding:'5px 8px', border:'1px solid '+T.border, borderRadius:3, fontSize:12, fontFamily:'monospace', textAlign:'right', background:T.bgInput, color:T.text }}/>
+                          </div>
+                          <div style={{ fontSize:9, color:T.textFaint, marginTop:2 }}>Mesh + spline + corner connectors + pull tab. Per fly screen, regardless of size.</div>
+                        </div>
+                      </div>
+
+                      {/* Read-only summary of S7 task times — full editing on
+                          Pricing → Production Times. Shown here as reference
+                          so the user can see the basis for the labour cost in
+                          the worked example below without editing twice. */}
+                      <div style={{ marginBottom:8, padding:10, background:'#f9fafb', border:'1px dashed '+T.border, borderRadius:4 }}>
+                        <div style={{ fontSize:10, color:T.textMuted, marginBottom:6, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                          <span><b>Stn 7 task times</b> — total <span style={{ fontFamily:'monospace', color:T.text }}>{s7Mins.toFixed(1)} min</span> per screen @ <span style={{ fontFamily:'monospace', color:T.text }}>${rate.toFixed(2)}/hr</span></span>
+                          <span style={{ fontSize:9, fontStyle:'italic' }}>Edit on Pricing → Production Times</span>
+                        </div>
+                        <div style={{ fontSize:10, color:T.textMuted, fontFamily:'monospace', lineHeight:1.6 }}>
+                          {opsList.map(function(o, i) {
+                            var key = o[0], label = o[1], unit = o[2];
+                            var t = (ops[key] && ops[key].t) != null ? ops[key].t : 0;
+                            return <span key={key}>
+                              {i > 0 ? ' · ' : ''}
+                              {label}: <span style={{ color:T.text }}>{t.toFixed(1)} min</span>
+                              <span style={{ color:T.textFaint }}> ({unit})</span>
+                            </span>;
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Worked example */}
+                      <div style={{ marginTop:12, padding:'8px 12px', background:'#f0f9ff', border:'1px solid #bae6fd', borderRadius:4, fontSize:10, color:'#075985', lineHeight:1.6 }}>
+                        <b>Worked example — 900 × 1200 awning sash:</b><br/>
+                        Screen size 762 × 1062 mm, perimeter <span style={{ fontFamily:'monospace' }}>{(exPerim).toFixed(0)} mm</span> = <span style={{ fontFamily:'monospace' }}>{(exPerim/1000).toFixed(3)} m</span><br/>
+                        Frame: <span style={{ fontFamily:'monospace' }}>{(exPerim/1000).toFixed(3)} m × ${perMetre.toFixed(2)}/m = ${((exPerim/1000)*perMetre).toFixed(2)}</span><br/>
+                        Misc: <span style={{ fontFamily:'monospace' }}>${perUnit.toFixed(2)}</span><br/>
+                        Labour: <span style={{ fontFamily:'monospace' }}>{s7Mins.toFixed(1)} min × ${(rate/60).toFixed(3)}/min = ${s7Cost.toFixed(2)}</span><br/>
+                        <b>Total per screen: <span style={{ fontFamily:'monospace' }}>${exTotal.toFixed(2)}</span></b>
+                        <span style={{ fontSize:9, color:'#0369a1', marginLeft:6 }}>(before waste &amp; markup)</span>
+                      </div>
+                    </div>;
+                  })()}
+
+                  <div style={{ marginTop:14, padding:'10px 14px', background:'#f5f5f5', border:'1px solid '+T.border, borderRadius:4, fontSize:10, color:T.textMuted, lineHeight:1.5 }}>
+                    <b>Where this shows up:</b> Production → Additional Profiles tab. The fly-screen frame cuts appear there alongside architraves, trims, and reveals — separate from the PVC profile cutlist (different bar length, different SKU).
+                    <br/><br/>
+                    <b>Tip:</b> turn off a type if your factory orders pre-cut fly screens from a supplier. The screen frame still renders in the 3D viewport (controlled by the editor toolbar's fly-screen toggle), but won't appear in the cutlist.
+                  </div>
+                </div>;
+              }
+
+              if (settingsPath === 'prod-mullions') {
+                // ─── Mullions / Transoms ──────────────────────────────────
+                // Three GLOBAL DXF uploads, distinct from per-product-type
+                // assemblies because mullion profiles are typically system-
+                // wide assets.
+                //
+                //   1. Inwards-opening mullion section  (T&T, French door)
+                //   2. Outwards-opening mullion section (awning, casement)
+                //   3. Mullion-transom intersection T-junction
+                //
+                // Each upload runs its own measurement function:
+                //   sections    → measureMullionSection (sightline, depth, sashMullionGap)
+                //   intersection → measureIntersection  (couplingAllowanceMm)
+                //
+                // Frames consume these via resolveMullionMetrics() at runtime,
+                // which auto-picks the right section by frame.productType's
+                // opening direction.
+                var ma = appSettings.mullionAssemblies || {};
+
+                // Tabs to switch between the 3 slots
+                var slots = [
+                  { id:'inwards',      label:'Mullion — Inwards (T&T, French door)',     hint:'Sash swings INTO the room. Used by Tilt & Turn, French Door, Hinged Door.' },
+                  { id:'outwards',     label:'Mullion — Outwards (Awning, Casement)',    hint:'Sash swings OUTSIDE. Used by Awning, Casement.' },
+                  { id:'intersection', label:'Mullion–Transom intersection',             hint:'T-junction where a horizontal transom meets a vertical mullion. Drives transom cut length via the coupling-block allowance.' },
+                ];
+                var slotIdx = settingsListIdx >= 0 && settingsListIdx < slots.length ? settingsListIdx : 0;
+                var slot = slots[slotIdx];
+                var entry = ma[slot.id] || {};
+
+                function updMull(slotId, patch) {
+                  setAppSettings(function(p) {
+                    var existing = (p.mullionAssemblies && p.mullionAssemblies[slotId]) || {};
+                    var next = Object.assign({}, p.mullionAssemblies || {});
+                    next[slotId] = Object.assign({}, existing, patch);
+                    return Object.assign({}, p, { mullionAssemblies: next });
+                  });
+                }
+                function clearMull(slotId) {
+                  if (!confirm('Clear the DXF and metrics for this mullion slot? Cuts using this slot will revert to legacy formulas.')) return;
+                  setAppSettings(function(p) {
+                    var next = Object.assign({}, p.mullionAssemblies || {});
+                    next[slotId] = null;
+                    return Object.assign({}, p, { mullionAssemblies: next });
+                  });
+                }
+                function uploadMullionDxf(slotId, file) {
+                  var reader = new FileReader();
+                  reader.onload = function(e) {
+                    var text = e.target.result;
+                    try {
+                      var asm = parseDxfAssembly(text);
+                      if (!asm.primitives || !asm.primitives.length) {
+                        alert('No drawable entities found in this DXF.');
+                        return;
+                      }
+                      var metrics;
+                      if (slotId === 'intersection') {
+                        metrics = (typeof measureIntersection === 'function') ? measureIntersection(asm) : null;
+                      } else {
+                        metrics = (typeof measureMullionSection === 'function') ? measureMullionSection(asm) : null;
+                      }
+                      updMull(slotId, {
+                        assembly: { parsed: asm, fileName: file.name, uploadedAt: Date.now(), rotateDeg: 0, showDimensions: false },
+                        metricsExtracted: metrics,
+                      });
+                    } catch (err) {
+                      alert('Failed to parse DXF: ' + err.message);
+                    }
+                  };
+                  reader.readAsText(file);
+                }
+
+                // Field defs depend on which slot
+                function fieldsFor(slotId) {
+                  if (slotId === 'intersection') {
+                    return [
+                      { key:'couplingAllowanceMm', label:'Coupling allowance', hint:'Material consumed at each end of a transom where it meets a mullion. Subtracted from transom cut length × 2 (one allowance per end).' },
+                    ];
+                  }
+                  return [
+                    { key:'mullionSightlineMm', label:'Mullion sightline', hint:'Visible face width of the mullion profile.' },
+                    { key:'mullionDepthMm',     label:'Mullion depth',     hint:'Depth of the mullion profile.' },
+                    { key:'sashMullionGapMm',   label:'Sash–mullion gap',  hint:'Gasket-line air gap between sash edge and mullion face. Same physical seal as frame–sash gap, but measured at the mullion location.' },
+                  ];
+                }
+
+                return <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+                  <div style={{ flex:1, display:'flex', overflow:'hidden' }}>
+                    <div style={{ width:280, borderRight:'1px solid '+T.border, background:T.bgPanel, overflowY:'auto' }}>
+                      {slots.map(function(s, i) {
+                        var hasAsm = !!(ma[s.id] && ma[s.id].assembly && ma[s.id].assembly.parsed);
+                        return (
+                          <div key={s.id} onClick={() => setSettingsListIdx(i)}
+                            style={{ padding:'10px 12px', cursor:'pointer', fontSize:11, background: i===slotIdx ? (dk?'#2a2a3a':'#f0f0f8') : 'transparent', borderBottom:'1px solid '+T.borderLight, color:T.text }}>
+                            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:6 }}>
+                              <div style={{ fontWeight: i===slotIdx?700:500, flex:1, lineHeight:1.3 }}>{s.label}</div>
+                              {hasAsm && <span style={{ fontSize:8, color:'#166534', background:'#dcfce7', padding:'1px 4px', borderRadius:2, fontWeight:700 }}>DXF</span>}
+                            </div>
+                            <div style={{ fontSize:9, color:T.textMuted, marginTop:3, lineHeight:1.4 }}>{s.hint}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ flex:1, padding:24, overflowY:'auto' }}>
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
+                        <div>
+                          <div style={{ fontSize:18, fontWeight:700, color:T.text }}>{slot.label}</div>
+                          <div style={{ fontSize:11, color:T.textMuted, marginTop:2 }}>{slot.hint}</div>
+                        </div>
+                        {entry.assembly && (
+                          <button onClick={() => clearMull(slot.id)}
+                            style={{ background:'transparent', color:'#dc2626', border:'1px solid #dc2626', borderRadius:4, padding:'6px 12px', fontSize:11, fontWeight:600, cursor:'pointer' }}>
+                            Clear
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Notes */}
+                      <div style={{ marginBottom:16, maxWidth:700 }}>
+                        <div style={{ fontSize:10, color:T.textSub, marginBottom:3 }}>Notes</div>
+                        <textarea value={entry.notes || ''}
+                          onChange={(e) => updMull(slot.id, { notes: e.target.value })}
+                          rows={2}
+                          style={{ width:'100%', padding:'6px 10px', fontSize:12, background:T.bgInput, color:T.text, border:'1px solid '+T.border, borderRadius:3, resize:'vertical', fontFamily:'inherit' }}/>
+                      </div>
+
+                      {/* DXF upload */}
+                      <div style={{ marginBottom:16 }}>
+                        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+                          <div style={{ fontSize:13, fontWeight:700, color:T.text }}>Section DXF</div>
+                          <div>
+                            <input type="file" accept=".dxf" id={'mullion-dxf-' + slot.id} style={{ display:'none' }}
+                              onChange={(e) => { var f = e.target.files && e.target.files[0]; if (f) uploadMullionDxf(slot.id, f); e.target.value = ''; }}/>
+                            <label htmlFor={'mullion-dxf-' + slot.id} style={{ background:'#1f2937', color:'white', borderRadius:4, padding:'6px 12px', fontSize:11, fontWeight:600, cursor:'pointer' }}>
+                              ⬆ {entry.assembly ? 'Replace DXF' : 'Upload DXF'}
+                            </label>
+                          </div>
+                        </div>
+                        {entry.assembly && entry.assembly.parsed ? (
+                          <div>
+                            <div style={{ fontSize:10, color:T.textMuted, marginBottom:8 }}>
+                              <b>{entry.assembly.fileName}</b> · {entry.assembly.parsed.primitives.length} entities · {Math.round(entry.assembly.parsed.bbox.w)} × {Math.round(entry.assembly.parsed.bbox.h)} mm
+                            </div>
+                            <div style={{ display:'flex', gap:14, alignItems:'center', marginBottom:10, flexWrap:'wrap' }}>
+                              <label style={{ fontSize:11, color:T.text, display:'flex', alignItems:'center', gap:6 }}>
+                                Rotate
+                                <select value={entry.assembly.rotateDeg || 0}
+                                  onChange={(e) => updMull(slot.id, { assembly: Object.assign({}, entry.assembly, { rotateDeg: +e.target.value }) })}
+                                  style={{ padding:'4px 8px', fontSize:11, background:T.bgInput, color:T.text, border:'1px solid '+T.border, borderRadius:3 }}>
+                                  <option value="0">0°</option><option value="90">90°</option><option value="-90">-90°</option><option value="180">180°</option>
+                                </select>
+                              </label>
+                            </div>
+                            <div style={{ width:'100%', height:440, background:dk ? '#0a0a10' : '#fafafa', borderRadius:6, padding:12, border:'1px solid '+T.borderLight }}>
+                              <div style={{ width:'100%', height:'100%' }}
+                                dangerouslySetInnerHTML={{ __html: renderAssemblySvg(entry.assembly.parsed, { padPx:4, rotateDeg: entry.assembly.rotateDeg || 0 }) }}/>
+                            </div>
+
+                            {/* Extracted dimensions */}
+                            {(function(){
+                              var ex = entry.metricsExtracted || {};
+                              var ov = entry.metricsOverride || {};
+                              function effective(k) { return (ov[k] != null) ? ov[k] : ex[k]; }
+                              function setOverride(k, v) {
+                                var newOv = Object.assign({}, ov);
+                                if (v === '' || v == null || isNaN(+v)) delete newOv[k];
+                                else newOv[k] = +v;
+                                updMull(slot.id, { metricsOverride: newOv });
+                              }
+                              function reExtract() {
+                                if (!entry.assembly || !entry.assembly.parsed) return;
+                                var newMetrics;
+                                if (slot.id === 'intersection') newMetrics = measureIntersection(entry.assembly.parsed);
+                                else newMetrics = measureMullionSection(entry.assembly.parsed);
+                                updMull(slot.id, { metricsExtracted: newMetrics });
+                              }
+                              var fields = fieldsFor(slot.id);
+                              return (
+                                <details style={{ marginTop:10 }} open>
+                                  <summary style={{ fontSize:11, color:T.textMuted, cursor:'pointer', fontWeight:600 }}>📐 Extracted dimensions</summary>
+                                  <div style={{ marginTop:8, padding:'12px 14px', background:'white', border:'1px solid '+T.border, borderRadius:4 }}>
+                                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10, flexWrap:'wrap', gap:8 }}>
+                                      <div style={{ fontSize:11, color:T.textSub, lineHeight:1.5, flex:1, minWidth:280 }}>
+                                        Measurements driving cut sizes for frames using this mullion DXF.
+                                        Edit any value to override.
+                                      </div>
+                                      <button onClick={reExtract}
+                                        style={{ background:T.bgInput, border:'1px solid '+T.border, borderRadius:3, padding:'5px 10px', fontSize:10, fontWeight:600, cursor:'pointer', color:T.text }}>
+                                        Re-extract from DXF
+                                      </button>
+                                    </div>
+                                    <table style={{ width:'100%', borderCollapse:'collapse', fontSize:11 }}>
+                                      <thead>
+                                        <tr style={{ background:'#f4f6f8', color:T.textMuted, fontSize:9, textTransform:'uppercase' }}>
+                                          <th style={{ textAlign:'left',  padding:'5px 8px' }}>Dimension</th>
+                                          <th style={{ textAlign:'right', padding:'5px 8px', width:90 }}>From DXF (mm)</th>
+                                          <th style={{ textAlign:'right', padding:'5px 8px', width:120 }}>Override (mm)</th>
+                                          <th style={{ textAlign:'right', padding:'5px 8px', width:90 }}>Effective</th>
+                                          <th style={{ textAlign:'left',  padding:'5px 8px' }}>Notes</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {fields.map(function(f) {
+                                          var exVal = ex[f.key];
+                                          var ovVal = ov[f.key];
+                                          var effVal = effective(f.key);
+                                          var isOverridden = ovVal != null;
+                                          return (
+                                            <tr key={f.key}>
+                                              <td style={{ padding:'4px 8px', borderBottom:'1px solid #f0f0f0', fontWeight:600 }}>{f.label}</td>
+                                              <td style={{ padding:'4px 8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontFamily:'monospace', color:T.textMuted }}>{exVal != null ? exVal : '—'}</td>
+                                              <td style={{ padding:'4px 8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>
+                                                <input type="number" step="0.5" placeholder={exVal != null ? String(exVal) : ''}
+                                                  value={ovVal != null ? ovVal : ''}
+                                                  onChange={(e) => setOverride(f.key, e.target.value)}
+                                                  style={{ width:90, padding:'3px 6px', fontSize:11, fontFamily:'monospace', textAlign:'right',
+                                                            background: isOverridden ? '#fef3c7' : T.bgInput,
+                                                            color:T.text, border:'1px solid ' + (isOverridden ? '#f59e0b' : T.border), borderRadius:3 }}/>
+                                              </td>
+                                              <td style={{ padding:'4px 8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontFamily:'monospace', fontWeight:700, color: isOverridden ? '#7c2d12' : T.text }}>{effVal != null ? effVal : '—'}</td>
+                                              <td style={{ padding:'4px 8px', borderBottom:'1px solid #f0f0f0', fontSize:10, color:T.textSub, lineHeight:1.4 }}>{f.hint}</td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </details>
+                              );
+                            })()}
+                          </div>
+                        ) : (
+                          <div style={{ padding:'28px 20px', background:'white', border:'1px dashed '+T.border, borderRadius:6, textAlign:'center', fontSize:12, color:T.textMuted, lineHeight:1.6 }}>
+                            No DXF uploaded for this slot.
+                            {slot.id === 'intersection' ? (
+                              <div style={{ marginTop:8, fontSize:11 }}>Upload a section DXF showing the T-junction where a transom meets a vertical mullion.</div>
+                            ) : (
+                              <div style={{ marginTop:8, fontSize:11 }}>Upload a section DXF showing a vertical slice through the mullion at its midpoint, with sash on each side.</div>
+                            )}
+                            <div style={{ marginTop:14, fontSize:11, color:T.textSub }}>Until uploaded, frames using this slot fall back to legacy formulas (no end-cap or coupling allowance, sash–mullion gap = frame–sash gap from product-type DXF).</div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Frame opening direction reference */}
+                      {slot.id !== 'intersection' && (
+                        <details style={{ marginTop:14 }}>
+                          <summary style={{ fontSize:11, color:T.textMuted, cursor:'pointer', fontWeight:600 }}>Which product types use this slot?</summary>
+                          <div style={{ marginTop:8, padding:'10px 12px', background:'white', border:'1px solid '+T.border, borderRadius:4, fontSize:11, color:T.text, lineHeight:1.6 }}>
+                            {slot.id === 'inwards' ? (
+                              <span>Tilt &amp; Turn · French Door · Hinged Door</span>
+                            ) : (
+                              <span>Awning · Casement · Sliding · Fixed (mullions only) · all sliding doors</span>
+                            )}
+                          </div>
+                        </details>
+                      )}
+                    </div>
+                  </div>
+                </div>;
+              }
+
+
               if (settingsPath === 'prod-hardware') {
                 // ─── Hardware & Milling Catalogue ──────────────────────────
                 // Read-only view of MILLING_SPECS (defined in 23a-milling-specs.js).
@@ -9053,21 +12105,30 @@ function SpartanCADPreview() {
                 const numStyle = { width: 70, padding: '3px 5px', border: '1px solid ' + T.border, borderRadius: 3, fontSize: 12, fontFamily: 'monospace', textAlign: 'right', background: T.bgInput, color: T.text };
                 return <div style={{ padding: 24, overflowY: 'auto', maxHeight: '100%' }}>
                   <div style={{ fontSize: 16, fontWeight: 700, color: T.text, marginBottom: 4 }}>Install Times</div>
-                  <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 16 }}>
-                    Per-frame install minutes = <b>base[property type][size bucket]</b> + <b>floor add-on</b>. Sales reps pick property type at project level (default for new windows) and per-window from the 3D view; floor level is per-window.
+                  <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 12 }}>
+                    All four sections below contribute to the same per-frame install minutes total. Edits to any of them propagate to both the saved <b>installMinutes</b> field and the install cost in the price.
+                  </div>
+                  <div style={{ fontSize: 11, color: T.text, background: T.bgCard, border: '1px solid ' + T.border, borderRadius: 6, padding: '8px 12px', marginBottom: 16, fontFamily: 'monospace' }}>
+                    install minutes = <b>matrix base</b>[install type][product] (× panels for bifold)<br/>
+                    &nbsp;&nbsp;+ <b>S_install ops</b> (sealTrim + cleanup, from Production Times)<br/>
+                    &nbsp;&nbsp;+ <b>property-type adjustment</b>[type][size]<br/>
+                    &nbsp;&nbsp;+ <b>floor add-on</b>[level]
                   </div>
 
-                  {/* Base minutes table */}
+                  {/* Property-type adjustment table (was 'Base minutes'). After
+                      WIP38 unification this layers ON TOP of the Install Times
+                      Matrix base, capturing site-specific extras (double brick
+                      slower, weatherboard flashing time, etc.). */}
                   <div style={{ marginBottom: 24, background: T.bgPanel, borderRadius: 8, border: '1px solid ' + T.border, overflow: 'hidden' }}>
                     <div style={{ padding: '10px 14px', background: T.bgCard, borderBottom: '1px solid ' + T.border }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>Base minutes per window</div>
-                      <div style={{ fontSize: 10, color: T.textMuted, marginTop: 1 }}>Split by property type and window size. Size buckets are divided by the threshold below.</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>Property-type adjustment</div>
+                      <div style={{ fontSize: 10, color: T.textMuted, marginTop: 1 }}>Additional minutes per window, on top of the matrix base. Use this for substrate-specific extras (double-brick takes longer; weatherboard needs flashing). Split by window size — large windows usually need more crew time.</div>
                     </div>
                     <div style={{ padding: '0 14px' }}>
                       <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr 1fr', gap: 8, padding: '8px 0', borderBottom: '1px solid ' + T.border, fontSize: 10, fontWeight: 700, color: T.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
                         <span>Property type</span>
-                        <span style={{ textAlign: 'right' }}>Under {ip.sizeThresholdSqm} m² (min)</span>
-                        <span style={{ textAlign: 'right' }}>Over {ip.sizeThresholdSqm} m² (min)</span>
+                        <span style={{ textAlign: 'right' }}>Under {ip.sizeThresholdSqm} m² (+min)</span>
+                        <span style={{ textAlign: 'right' }}>Over {ip.sizeThresholdSqm} m² (+min)</span>
                       </div>
                       {ptypes.map(pt => {
                         const row = ip.baseMinutes[pt.id] || { under: 0, over: 0 };
@@ -9497,7 +12558,9 @@ function SpartanCADPreview() {
                   });
                 };
                 const items = [
-                  ['flyScreenPerUnit','Fly Screen per unit'],['revealSetPerWindow','Reveal Set per window'],
+                  ['flyScreenPerUnit','Fly Screen — misc. (mesh, spline, corners, tab) per unit'],
+                  ['flyScreenFramePerMetre','Fly Screen — aluminium frame per metre'],
+                  ['revealSetPerWindow','Reveal Set per window'],
                   ['revealSetPerDoor','Reveal Set per door'],['sillPerWindow','External Sill per window'],
                   ['drainageCapsPerFrame','Drainage Caps per frame'],['cornerConnectors','Corner Connectors (each)'],
                   ['gasketPerMetre','EPDM Gasket per metre'],['sealantPerUnit','Sealant per unit'],
@@ -9537,7 +12600,6 @@ function SpartanCADPreview() {
               if (settingsPath === 'catalog-trims' ||
                   settingsPath === 'catalog-architraves' ||
                   settingsPath === 'catalog-reveals' ||
-                  settingsPath === 'catalog-flyscreens' ||
                   settingsPath === 'catalog-quads' ||
                   settingsPath === 'catalog-hardwood') {
                 // WIP30: catalog-trims renders ALL families in pricingConfig.trims
@@ -9570,9 +12632,6 @@ function SpartanCADPreview() {
                 } else if (settingsPath === 'catalog-reveals') {
                   familyKeys = allTrimsKeys.filter(isRevealFamily);
                   if (!familyKeys.length) familyKeys = ['reveals'];
-                } else if (settingsPath === 'catalog-flyscreens') {
-                  familyKeys = allTrimsKeys.filter(isFlyScreenFamily);
-                  if (!familyKeys.length) familyKeys = ['flyScreens'];
                 } else if (settingsPath === 'catalog-quads') {
                   familyKeys = allTrimsKeys.filter(isQuadFamily);
                   if (!familyKeys.length) familyKeys = ['quads18'];
@@ -9584,7 +12643,6 @@ function SpartanCADPreview() {
                   'catalog-trims':       'Cover Trim Catalogs',
                   'catalog-architraves': 'Architrave Catalog',
                   'catalog-reveals':     'Reveal Catalog',
-                  'catalog-flyscreens':  'Fly Screen Catalog',
                   'catalog-quads':       'Quad / Beading Catalog',
                   'catalog-hardwood':    'Hardwood (DAR) Catalog',
                 })[settingsPath];
@@ -9592,7 +12650,6 @@ function SpartanCADPreview() {
                   'catalog-trims':       'Aluplast cover mouldings + angle trims — 30×7mm (12×286), 50×7mm (12×288), 20×20 angle (12×290), 180×80×6 angle (12×299). These appear in the survey-mode Internal/External Trim dropdowns and feed the FFD-optimised cutting list. Generic dictionary codes (30 T, 50 T, 20x20 T, 180 T) link to their respective family for FFD packing.',
                   'catalog-architraves': 'Primed timber architraves (paint-grade). Currently 44×18 Single Bevel — more profiles arriving as drops land. These appear in the survey-mode Internal Trim dropdowns and feed the FFD-optimised cutting list. Generic dictionary codes (44x18 SB, 92x18 LT, etc.) link to their respective family for FFD packing.',
                   'catalog-reveals':     'Primed pine DAR reveal boards — three raw widths: 110×18 (stock), 138×18 (stock), 185×18 (CUSTOM ORDER — not held, requires advance order from supplier). Installer rips each down to the required width based on Window Depth + Frame Depth + Reveal Type (In-Line or Stepped). Auto-selection logic in survey mode picks the smallest SKU wider than the calculated rip width, then generates the cutting list (top/bottom + jambs) per the reveal-type formulas. When the 185 SKU is auto-picked the cutting list will flag the custom-order requirement so production can place the supplier order before scheduling.',
-                  'catalog-flyscreens':  'Fly screens catalog. Per-frame fly-screen pricing is currently flat (PRICING_DEFAULTS.ancillaries.flyScreenPerUnit). Add SKUs here when ranged by mesh/colour/size (WIP31).',
                   'catalog-quads':       'Quads (quarter-round beading) — small decorative trims used for scotia, bead, and corner finishing. Currently 18×18 Primed Pine — more profiles (12 Q, 12/19 Q HW) arriving as drops land. Generic dictionary codes (18 Q, 12 Q, etc.) link to their respective family for FFD packing in the survey-mode cut list.',
                   'catalog-hardwood':    'Hardwood DAR (Dressed All Round) — natural-finish Tasmanian Oak rectangular sections, stain-grade. Distinct material from primed pine architraves: priced higher, used where exposed timber is the design intent. Generic dictionary codes (42x19 HW, 65x19 HW, etc.) link to their respective family for FFD packing.',
                 })[settingsPath];
@@ -9610,12 +12667,109 @@ function SpartanCADPreview() {
                     if (field === 'priceExBar' && cur.lengthMm) {
                       cur.priceExPerMeter = +(val / (cur.lengthMm / 1000)).toFixed(3);
                     }
+                    if (field === 'lengthMm' && cur.priceExBar && val) {
+                      cur.priceExPerMeter = +(cur.priceExBar / (val / 1000)).toFixed(3);
+                    }
                     litems[idx] = cur;
                     var newCat = Object.assign({}, lcat, { items: litems });
                     var newTrims = Object.assign({}, ltrims, {});
                     newTrims[familyKey] = newCat;
                     return Object.assign({}, p, { pricingConfig: Object.assign({}, lpc, { trims: newTrims }) });
                   });
+                };
+                // Patch a top-level family field — description, productCode,
+                // supplier, isCustomOrder. crossSection.widthMm/thicknessMm
+                // use updFamilyCrossSection. The patched value is written
+                // verbatim; pass null/'' to clear a field.
+                var updFamilyMeta = function(familyKey, field, val) {
+                  setAppSettings(function(p) {
+                    var lpc = p.pricingConfig || {};
+                    var ltrims = lpc.trims || {};
+                    var lcat = ltrims[familyKey] || { items: [] };
+                    var newCat = Object.assign({}, lcat);
+                    if (val === null || val === undefined || val === '') delete newCat[field];
+                    else newCat[field] = val;
+                    var newTrims = Object.assign({}, ltrims, {});
+                    newTrims[familyKey] = newCat;
+                    return Object.assign({}, p, { pricingConfig: Object.assign({}, lpc, { trims: newTrims }) });
+                  });
+                };
+                var updFamilyCrossSection = function(familyKey, dim, val) {
+                  setAppSettings(function(p) {
+                    var lpc = p.pricingConfig || {};
+                    var ltrims = lpc.trims || {};
+                    var lcat = ltrims[familyKey] || { items: [] };
+                    var cs = Object.assign({}, lcat.crossSection || {});
+                    cs[dim] = (val === '' || val == null) ? null : Number(val);
+                    var newCat = Object.assign({}, lcat, { crossSection: cs });
+                    var newTrims = Object.assign({}, ltrims, {});
+                    newTrims[familyKey] = newCat;
+                    return Object.assign({}, p, { pricingConfig: Object.assign({}, lpc, { trims: newTrims }) });
+                  });
+                };
+                // Add a new blank item row to a family's items[]. New rows
+                // get a random id so React keys stay stable across edits.
+                var addItem = function(familyKey) {
+                  setAppSettings(function(p) {
+                    var lpc = p.pricingConfig || {};
+                    var ltrims = lpc.trims || {};
+                    var lcat = ltrims[familyKey] || { items: [] };
+                    var litems = (lcat.items || []).slice();
+                    var newId = 'item_' + Date.now() + '_' + Math.floor(Math.random()*999);
+                    // Inherit defaults from the most recent row if any
+                    var template = litems[litems.length-1] || {};
+                    litems.push({
+                      id: newId,
+                      sku: '',
+                      code: '',
+                      colour: 'New colour',
+                      colourFamily: template.colourFamily || 'plain',
+                      lengthMm: template.lengthMm || 5800,
+                      priceExBar: 0,
+                      priceExPerMeter: 0,
+                      stockQty: null,
+                      availability: 'available',
+                      image: null,
+                    });
+                    var newCat = Object.assign({}, lcat, { items: litems });
+                    var newTrims = Object.assign({}, ltrims, {});
+                    newTrims[familyKey] = newCat;
+                    return Object.assign({}, p, { pricingConfig: Object.assign({}, lpc, { trims: newTrims }) });
+                  });
+                };
+                var deleteItem = function(familyKey, idx) {
+                  var lpc = appSettings.pricingConfig || {};
+                  var lcat = (lpc.trims || {})[familyKey] || { items: [] };
+                  var label = ((lcat.items || [])[idx] && lcat.items[idx].colour) || 'this row';
+                  if (!confirm('Delete "' + label + '"? This affects the survey-mode dropdown immediately.')) return;
+                  setAppSettings(function(p) {
+                    var inner_lpc = p.pricingConfig || {};
+                    var ltrims = inner_lpc.trims || {};
+                    var inner_lcat = ltrims[familyKey] || { items: [] };
+                    var litems = (inner_lcat.items || []).slice();
+                    litems.splice(idx, 1);
+                    var newCat = Object.assign({}, inner_lcat, { items: litems });
+                    var newTrims = Object.assign({}, ltrims, {});
+                    newTrims[familyKey] = newCat;
+                    return Object.assign({}, p, { pricingConfig: Object.assign({}, inner_lpc, { trims: newTrims }) });
+                  });
+                };
+                // PNG/JPEG upload per item — base64 data URL stored on
+                // item.image. The same validation gates as the fly-screen
+                // profile uploader (1.5MB warn threshold, image type check).
+                var uploadItemImage = function(familyKey, idx, file) {
+                  if (!file) return;
+                  if (!/png|jpe?g/i.test(file.type)) {
+                    alert('Please use PNG or JPEG. Got: ' + (file.type || 'unknown'));
+                    return;
+                  }
+                  if (file.size > 1.5 * 1024 * 1024) {
+                    if (!confirm('This file is ' + (file.size/1024/1024).toFixed(1) + ' MB. Cross-section thumbnails are usually < 200 KB. Continue?')) return;
+                  }
+                  var reader = new FileReader();
+                  reader.onload = function(ev){ updItem(familyKey, idx, 'image', ev.target.result); };
+                  reader.onerror = function(){ alert('Failed to read file.'); };
+                  reader.readAsDataURL(file);
                 };
                 // WIP30: per-family defaults editor — patches one key inside
                 // catalog.defaults (cutAllowanceMm, jointStyle, etc). Used by
@@ -9667,6 +12821,33 @@ function SpartanCADPreview() {
                     return Object.assign({}, p, { pricingConfig: Object.assign({}, lpc, { trims: newTrims }) });
                   });
                 };
+                // Create a new family — given a family key + initial metadata,
+                // writes an empty {description, productCode, supplier,
+                // crossSection, defaults, items[]} skeleton to pricingConfig.
+                // Caller is responsible for applying the right family-key
+                // prefix so the family appears on the correct settings tab
+                // (e.g. 'architraves' prefix for the architraves page).
+                var createFamily = function(familyKey, meta) {
+                  setAppSettings(function(p) {
+                    var lpc = p.pricingConfig || {};
+                    var ltrims = lpc.trims || {};
+                    if (ltrims[familyKey]) return p;  // safety: don't clobber existing
+                    var skeleton = {
+                      description: meta.description || familyKey,
+                      productCode: meta.productCode || '',
+                      supplier: meta.supplier || '',
+                      crossSection: {
+                        widthMm: meta.widthMm != null ? Number(meta.widthMm) : null,
+                        thicknessMm: meta.thicknessMm != null ? Number(meta.thicknessMm) : null,
+                      },
+                      defaults: { cutAllowanceMm: 200, jointStyle: 'butt' },
+                      items: [],
+                    };
+                    var newTrims = Object.assign({}, ltrims, {});
+                    newTrims[familyKey] = skeleton;
+                    return Object.assign({}, p, { pricingConfig: Object.assign({}, lpc, { trims: newTrims }) });
+                  });
+                };
 
                 var thSty = { textAlign:'left', padding:'8px 10px', borderBottom:'1px solid '+T.border, fontSize:10, color:T.textMuted, textTransform:'uppercase', letterSpacing:0.4, fontWeight:700, background:'#f4f6f8' };
                 var thRight = Object.assign({}, thSty, { textAlign:'right' });
@@ -9683,10 +12864,96 @@ function SpartanCADPreview() {
                     <p style={{ margin:'6px 0 0 0', fontSize:11, color:T.textMuted, maxWidth:760, lineHeight:1.5 }}>{pageBlurb}</p>
                   </div>
 
+                  {/* ── Add-new-family inline form ─────────────────────
+                      Family-key prefix is enforced per page so the new
+                      family appears on the right tab. Trims tab is the
+                      catch-all, others use their distinguishing prefix.
+                      User picks a short suffix; we build the final key
+                      automatically (e.g. "92SB" → "architraves92SB").  */}
+                  {(function(){
+                    var prefixMap = {
+                      'catalog-trims':       '',           // No prefix — anything not matching another tab's prefix lives here
+                      'catalog-architraves': 'architraves',
+                      'catalog-quads':       'quads',
+                      'catalog-hardwood':    'hardwood',
+                      'catalog-reveals':     'reveals',
+                    };
+                    var prefix = prefixMap[settingsPath];
+                    if (prefix === undefined) return null;
+                    var labelHint = ({
+                      'catalog-trims':       'e.g. coverMouldings80, angleTrims40',
+                      'catalog-architraves': 'e.g. 92SB → "architraves92SB", 66LT → "architraves66LT"',
+                      'catalog-quads':       'e.g. 12 → "quads12", 19HW → "quads19HW"',
+                      'catalog-hardwood':    'e.g. 65 → "hardwood65", 90 → "hardwood90"',
+                      'catalog-reveals':     'e.g. 220 → "reveals220" (only one reveals family normally)',
+                    })[settingsPath];
+
+                    return <details style={{ marginBottom:18, background:T.bgPanel, border:'1px solid '+T.border, borderRadius:6 }}>
+                      <summary style={{ padding:'10px 14px', cursor:'pointer', fontSize:12, fontWeight:600, color:T.text, listStyle:'none', display:'flex', alignItems:'center', gap:8 }}>
+                        <span style={{ fontSize:14, color:T.accent }}>＋</span> Add new family
+                      </summary>
+                      <div style={{ padding:'4px 14px 14px 14px', fontSize:11, color:T.textMuted, lineHeight:1.5 }}>
+                        Add a new {settingsPath.replace('catalog-','')} family. Once created, you'll see it as a card below — add SKUs from there.
+                        <div style={{ marginTop:10, display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                          <div>
+                            <div style={{ fontSize:10, color:T.textSub, marginBottom:3 }}>Key suffix <span style={{ color:'#dc2626' }}>*</span></div>
+                            <input type="text" id={'newfam-key-' + settingsPath}
+                                   placeholder={prefix ? '92SB' : 'coverMouldings80'}
+                                   style={{ width:'100%', padding:'5px 8px', border:'1px solid '+T.border, borderRadius:3, fontSize:12, background:T.bgInput, color:T.text }}/>
+                            <div style={{ fontSize:9, color:T.textFaint, marginTop:2 }}>
+                              {prefix ? <>Final key: <code>{prefix}</code><i>(your suffix)</i></> : <>{labelHint}</>}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize:10, color:T.textSub, marginBottom:3 }}>Description <span style={{ color:'#dc2626' }}>*</span></div>
+                            <input type="text" id={'newfam-desc-' + settingsPath}
+                                   placeholder="e.g. 92×18 Single Bevel Architrave"
+                                   style={{ width:'100%', padding:'5px 8px', border:'1px solid '+T.border, borderRadius:3, fontSize:12, background:T.bgInput, color:T.text }}/>
+                          </div>
+                          <div>
+                            <div style={{ fontSize:10, color:T.textSub, marginBottom:3 }}>Width (mm)</div>
+                            <input type="number" id={'newfam-w-' + settingsPath}
+                                   placeholder="44"
+                                   style={{ width:'100%', padding:'5px 8px', border:'1px solid '+T.border, borderRadius:3, fontSize:12, background:T.bgInput, color:T.text, fontFamily:'monospace' }}/>
+                          </div>
+                          <div>
+                            <div style={{ fontSize:10, color:T.textSub, marginBottom:3 }}>Thickness (mm)</div>
+                            <input type="number" id={'newfam-t-' + settingsPath}
+                                   placeholder="18"
+                                   style={{ width:'100%', padding:'5px 8px', border:'1px solid '+T.border, borderRadius:3, fontSize:12, background:T.bgInput, color:T.text, fontFamily:'monospace' }}/>
+                          </div>
+                        </div>
+                        <button onClick={function(){
+                          var sfx = (document.getElementById('newfam-key-' + settingsPath).value || '').trim();
+                          var desc = (document.getElementById('newfam-desc-' + settingsPath).value || '').trim();
+                          var w = +(document.getElementById('newfam-w-' + settingsPath).value || 0);
+                          var t = +(document.getElementById('newfam-t-' + settingsPath).value || 0);
+                          if (!sfx || !desc) { alert('Key suffix and description are required.'); return; }
+                          if (!/^[a-zA-Z0-9_]+$/.test(sfx)) { alert('Key suffix must be letters/digits/underscore only.'); return; }
+                          var fullKey = prefix ? (prefix + sfx) : sfx;
+                          if ((appSettings.pricingConfig && appSettings.pricingConfig.trims && appSettings.pricingConfig.trims[fullKey])
+                              || (window.PRICING_DEFAULTS && window.PRICING_DEFAULTS.trims && window.PRICING_DEFAULTS.trims[fullKey])) {
+                            alert('A family with key "' + fullKey + '" already exists.');
+                            return;
+                          }
+                          createFamily(fullKey, { description: desc, widthMm: w || null, thicknessMm: t || null });
+                          // Clear inputs after success
+                          document.getElementById('newfam-key-' + settingsPath).value = '';
+                          document.getElementById('newfam-desc-' + settingsPath).value = '';
+                          document.getElementById('newfam-w-' + settingsPath).value = '';
+                          document.getElementById('newfam-t-' + settingsPath).value = '';
+                        }} style={{ marginTop:12, padding:'6px 14px', background:T.accent, color:'white', border:'none', borderRadius:4, fontSize:11, fontWeight:600, cursor:'pointer' }}>
+                          Create family
+                        </button>
+                      </div>
+                    </details>;
+                  })()}
+
                   {familyKeys.map(function(familyKey){
                     var cat = trims[familyKey] || null;
                     var items = (cat && Array.isArray(cat.items)) ? cat.items : [];
                     var familyTitle = cat ? (cat.description || familyKey) : familyKey;
+                    var isReveal = isRevealFamily(familyKey);
 
                     return <div key={familyKey} style={{ marginBottom:32, paddingBottom:20, borderBottom: familyKeys.length > 1 ? '2px solid '+T.border : 'none' }}>
                       <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12, marginBottom:8 }}>
@@ -9697,55 +12964,119 @@ function SpartanCADPreview() {
                             Recalc per-m
                           </button>
                           <button onClick={function(){ resetToDefaults(familyKey, familyTitle); }}
-                                  style={{ padding:'5px 9px', fontSize:10, background:T.bgInput, border:'1px solid '+T.border, color:T.text, borderRadius:4, cursor:'pointer' }}>
-                            Reset
+                                  style={{ padding:'5px 9px', fontSize:10, background:T.bgInput, border:'1px solid '+T.border, color:T.text, borderRadius:4, cursor:'pointer' }}
+                                  title="Restore this family from PRICING_DEFAULTS — local edits will be lost.">
+                            Reset to defaults
                           </button>
                         </div>
                       </div>
 
-                      {/* Catalog metadata + profile image */}
+                      {/* ── Family-level cross-section image + metadata ──
+                          The PRICING_DEFAULTS factory catalogs ship with a
+                          profileImage data URL on each family — a small
+                          line-drawing of the cross-section. We restore that
+                          here as a 240px panel on the left, with Replace/
+                          Remove buttons. The per-row item.image (in the
+                          items table below) is a separate slot for per-
+                          colour swatches or photos. */}
                       {cat && (
-                        <div style={{ display:'flex', gap:14, margin:'10px 0', alignItems:'flex-start' }}>
-                          {cat.profileImage && (
-                            <div style={{ flexShrink:0, background:'white', border:'1px solid '+T.border, borderRadius:6, padding:8, width:240 }}>
+                        <div style={{ display:'flex', gap:14, marginBottom:10, alignItems:'flex-start' }}>
+                          {(function(){
+                            var familyImgInputId = 'famimg-' + familyKey;
+                            return <div style={{ flexShrink:0, background:'white', border:'1px solid '+T.border, borderRadius:6, padding:8, width:240 }}>
                               <div style={{ fontSize:9, color:T.textMuted, textTransform:'uppercase', letterSpacing:0.4, fontWeight:700, marginBottom:6 }}>Cross-section profile</div>
-                              <img src={cat.profileImage} alt={(cat.description || 'profile') + ' cross-section'}
-                                   style={{ width:'100%', height:'auto', display:'block', borderRadius:3 }}/>
-                              {cat.crossSection && (
-                                <div style={{ fontSize:10, color:T.textMuted, marginTop:6, textAlign:'center' }}>
-                                  {cat.crossSection.widthMm}×{cat.crossSection.thicknessMm}mm
-                                </div>
+                              <input type="file" accept="image/png,image/jpeg" id={familyImgInputId} style={{ display:'none' }}
+                                     onChange={function(e){
+                                       var f = e.target.files && e.target.files[0];
+                                       if (!f) return;
+                                       if (!/png|jpe?g/i.test(f.type)) { alert('PNG or JPEG only.'); return; }
+                                       if (f.size > 1.5 * 1024 * 1024) {
+                                         if (!confirm('Image is ' + (f.size/1024/1024).toFixed(1) + ' MB. Profile diagrams are usually < 200 KB. Continue?')) return;
+                                       }
+                                       var reader = new FileReader();
+                                       reader.onload = function(ev){ updFamilyMeta(familyKey, 'profileImage', ev.target.result); };
+                                       reader.onerror = function(){ alert('Failed to read file.'); };
+                                       reader.readAsDataURL(f);
+                                       e.target.value = '';
+                                     }}/>
+                              {cat.profileImage ? (
+                                <>
+                                  <img src={cat.profileImage} alt={(cat.description || 'profile') + ' cross-section'}
+                                       style={{ width:'100%', height:'auto', display:'block', borderRadius:3 }}/>
+                                  {cat.crossSection && cat.crossSection.widthMm != null && (
+                                    <div style={{ fontSize:10, color:T.textMuted, marginTop:6, textAlign:'center', fontFamily:'monospace' }}>
+                                      {cat.crossSection.widthMm}×{cat.crossSection.thicknessMm || '—'}mm
+                                    </div>
+                                  )}
+                                  <div style={{ display:'flex', gap:4, marginTop:8 }}>
+                                    <label htmlFor={familyImgInputId} style={{ flex:1, textAlign:'center', padding:'4px 8px', background:T.bgInput, border:'1px solid '+T.border, color:T.text, borderRadius:3, fontSize:10, cursor:'pointer' }}>Replace</label>
+                                    <button onClick={function(){
+                                      if (confirm('Remove the cross-section image?')) updFamilyMeta(familyKey, 'profileImage', null);
+                                    }} style={{ flex:1, padding:'4px 8px', background:'transparent', border:'1px solid '+T.borderLight, color:'#dc2626', borderRadius:3, fontSize:10, cursor:'pointer' }}>Remove</button>
+                                  </div>
+                                </>
+                              ) : (
+                                <label htmlFor={familyImgInputId} style={{ display:'block', cursor:'pointer' }}>
+                                  <div style={{ background:'#fafafa', border:'1px dashed '+T.border, borderRadius:4, padding:'40px 12px', textAlign:'center', color:T.textMuted, fontSize:11 }}>
+                                    <div style={{ fontSize:28, color:'#bbb', marginBottom:6 }}>⬆</div>
+                                    <div style={{ fontWeight:600, color:T.text }}>Upload PNG/JPEG</div>
+                                    <div style={{ fontSize:9, color:T.textMuted, marginTop:4 }}>Cross-section diagram for this family</div>
+                                  </div>
+                                </label>
                               )}
-                            </div>
-                          )}
-                          <div style={{ flex:1, background:T.bgPanel, border:'1px solid '+T.border, borderRadius:6, padding:'10px 14px', display:'flex', gap:18, flexWrap:'wrap', fontSize:11, alignContent:'flex-start', alignItems:'center' }}>
-                            {cat.isCustomOrder && (
-                              <div title="This product is not held in regular stock — it must be ordered from supplier in advance. Surface this on the production brief whenever the SKU is auto-selected." style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 10px', background:'#fff3cd', border:'1px solid #f0c14b', borderRadius:4, fontWeight:700, fontSize:10, letterSpacing:0.6, color:'#7a4d00', textTransform:'uppercase' }}>
-                                <span>⚑ Custom Order</span>
-                              </div>
-                            )}
-                            <div><span style={{ color:T.textMuted }}>Product code: </span><b>{cat.productCode || '—'}</b></div>
-                            <div><span style={{ color:T.textMuted }}>Description: </span><b>{cat.description || '—'}</b></div>
-                            <div><span style={{ color:T.textMuted }}>Cross-section: </span><b>{cat.crossSection ? (cat.crossSection.widthMm + '×' + cat.crossSection.thicknessMm + 'mm') : '—'}</b></div>
-                            <div><span style={{ color:T.textMuted }}>Supplier: </span><b>{cat.supplier || '—'}</b></div>
-                            <div><span style={{ color:T.textMuted }}>SKUs: </span><b>{items.length}</b></div>
-                            {/* WIP30: per-family editable cut math overrides */}
-                            <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 8px', background:'white', border:'1px solid '+T.border, borderRadius:4 }}>
-                              <span style={{ color:T.textMuted }}>Cut allowance:</span>
+                            </div>;
+                          })()}
+
+                          {/* Metadata strip — flexes to fill remaining width */}
+                          <div style={{ flex:1, background:T.bgPanel, border:'1px solid '+T.border, borderRadius:6, padding:'10px 14px', display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr', gap:10, alignItems:'end' }}>
+                            <div>
+                              <div style={{ fontSize:9, color:T.textMuted, textTransform:'uppercase', letterSpacing:0.4, marginBottom:3 }}>Description</div>
+                              <input type="text" value={cat.description || ''}
+                                     onChange={function(e){ updFamilyMeta(familyKey, 'description', e.target.value); }}
+                                     style={Object.assign({}, inpSty, { fontSize:12, fontWeight:600 })}/>
+                          </div>
+                          <div>
+                            <div style={{ fontSize:9, color:T.textMuted, textTransform:'uppercase', letterSpacing:0.4, marginBottom:3 }}>Product code</div>
+                            <input type="text" value={cat.productCode || ''}
+                                   onChange={function(e){ updFamilyMeta(familyKey, 'productCode', e.target.value); }}
+                                   style={Object.assign({}, inpSty, { fontFamily:'monospace' })}/>
+                          </div>
+                          <div>
+                            <div style={{ fontSize:9, color:T.textMuted, textTransform:'uppercase', letterSpacing:0.4, marginBottom:3 }}>Supplier</div>
+                            <input type="text" value={cat.supplier || ''}
+                                   onChange={function(e){ updFamilyMeta(familyKey, 'supplier', e.target.value); }}
+                                   style={inpSty}/>
+                          </div>
+                          <div>
+                            <div style={{ fontSize:9, color:T.textMuted, textTransform:'uppercase', letterSpacing:0.4, marginBottom:3 }}>Width (mm)</div>
+                            <input type="number" value={(cat.crossSection && cat.crossSection.widthMm != null) ? cat.crossSection.widthMm : ''}
+                                   onChange={function(e){ updFamilyCrossSection(familyKey, 'widthMm', e.target.value); }}
+                                   style={Object.assign({}, inpSty, { fontFamily:'monospace', textAlign:'right' })}/>
+                          </div>
+                          <div>
+                            <div style={{ fontSize:9, color:T.textMuted, textTransform:'uppercase', letterSpacing:0.4, marginBottom:3 }}>Thickness (mm)</div>
+                            <input type="number" value={(cat.crossSection && cat.crossSection.thicknessMm != null) ? cat.crossSection.thicknessMm : ''}
+                                   onChange={function(e){ updFamilyCrossSection(familyKey, 'thicknessMm', e.target.value); }}
+                                   style={Object.assign({}, inpSty, { fontFamily:'monospace', textAlign:'right' })}/>
+                          </div>
+                          {/* Cut allowance + joint style on a second row */}
+                          <div style={{ gridColumn:'1 / -1', display:'flex', gap:14, alignItems:'center', paddingTop:8, borderTop:'1px solid '+T.borderLight, marginTop:4 }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:T.textMuted }}>
+                              <span>Cut allowance:</span>
                               <input type="number"
                                      value={(cat.defaults && typeof cat.defaults.cutAllowanceMm === 'number') ? cat.defaults.cutAllowanceMm : ''}
                                      placeholder="200"
-                                     title="mm added to each cut. Top/bottom = W + this; left/right = H + this. Negative values shorten cuts (e.g. -10 makes cuts 10mm shorter than the dimension). Blank uses the global 200mm default."
+                                     title="mm added to each cut. Top/bottom = W + this; left/right = H + this. Negative values shorten cuts. Blank uses the global 200mm default."
                                      onChange={function(e){
                                        var v = e.target.value === '' ? null : Number(e.target.value);
                                        if (v !== null && !isFinite(v)) v = null;
                                        updFamilyDefault(familyKey, 'cutAllowanceMm', v);
                                      }}
                                      style={{ width:60, padding:'2px 4px', border:'1px solid '+T.border, borderRadius:3, fontSize:11, background:T.bgInput, color:T.text, textAlign:'right' }}/>
-                              <span style={{ color:T.textMuted }}>mm</span>
+                              <span>mm</span>
                             </div>
-                            <div style={{ display:'flex', alignItems:'center', gap:6, padding:'4px 8px', background:'white', border:'1px solid '+T.border, borderRadius:4 }}>
-                              <span style={{ color:T.textMuted }}>Joint:</span>
+                            <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:T.textMuted }}>
+                              <span>Joint:</span>
                               <select value={(cat.defaults && cat.defaults.jointStyle) || 'butt'}
                                       onChange={function(e){ updFamilyDefault(familyKey, 'jointStyle', e.target.value); }}
                                       style={{ padding:'2px 4px', border:'1px solid '+T.border, borderRadius:3, fontSize:11, background:T.bgInput, color:T.text, fontWeight: (cat.defaults && cat.defaults.jointStyle === 'mitre') ? 700 : 400 }}>
@@ -9753,50 +13084,116 @@ function SpartanCADPreview() {
                                 <option value="mitre">Mitre 45°</option>
                               </select>
                             </div>
+                            <div style={{ fontSize:11, color:T.textMuted }}>SKUs: <b style={{ color:T.text }}>{items.length}</b></div>
+                            {cat.isCustomOrder && (
+                              <span title="Family-level custom-order flag" style={{ display:'flex', alignItems:'center', gap:6, padding:'3px 8px', background:'#fff3cd', border:'1px solid #f0c14b', borderRadius:4, fontWeight:700, fontSize:9, letterSpacing:0.6, color:'#7a4d00', textTransform:'uppercase' }}>
+                                ⚑ Custom Order
+                              </span>
+                            )}
                           </div>
+                        </div>
                         </div>
                       )}
 
-                      {/* Empty state for unpopulated catalogs */}
+                      {/* Empty-state skeleton — appears for both never-loaded
+                          factory families AND newly created user families
+                          before they have any items. Encourages adding rows. */}
                       {!cat && (
                         <div style={{ marginTop:14, padding:'24px 18px', background:T.bgPanel, border:'1px dashed '+T.border, borderRadius:8, fontSize:12, color:T.textMuted, textAlign:'center' }}>
                           <div style={{ fontSize:24, marginBottom:8 }}>📋</div>
                           <div style={{ fontWeight:700, color:T.text, marginBottom:4 }}>No catalog loaded for {familyKey}</div>
                           <div style={{ fontSize:11, maxWidth:480, margin:'0 auto', lineHeight:1.5 }}>
-                            Upload a catalog drop and it'll appear here. Future trim families slot into <code style={{ background:T.bgInput, padding:'1px 4px', borderRadius:2 }}>pricingConfig.trims.{familyKey}</code> with the same shape as cover mouldings.
+                            Use "Add new family" above to seed an empty family with this key, then add rows from there.
                           </div>
                         </div>
                       )}
 
-                      {/* Items table */}
-                      {cat && items.length > 0 && (
+                      {/* Items table — full edit, per-row image, delete + add */}
+                      {cat && (
                         <div style={{ background:'white', border:'1px solid '+T.border, borderRadius:6, overflow:'hidden', marginTop:10 }}>
                           <table style={{ width:'100%', borderCollapse:'collapse' }}>
                             <thead>
                               <tr>
+                                <th style={Object.assign({}, thSty, { width:64 })}>Image</th>
                                 <th style={thSty}>Colour</th>
-                                <th style={thSty}>Family</th>
-                                <th style={thRight}>Bar length</th>
+                                <th style={thSty}>Colour family</th>
                                 <th style={thSty}>SKU</th>
+                                <th style={thSty}>Code</th>
+                                <th style={thRight}>Bar length</th>
                                 <th style={thRight}>Price ex GST</th>
                                 <th style={thRight}>$/m ex</th>
                                 <th style={thRight}>Stock</th>
+                                <th style={thSty}>Avail.</th>
+                                {isReveal && <th style={thRight} title="Per-row override for the rip width auto-pick. Defaults to family width when blank.">Rip W</th>}
+                                <th style={Object.assign({}, thSty, { width:32 })}></th>
                               </tr>
                             </thead>
                             <tbody>
                               {items.map(function(it, idx){
+                                var inputId = 'imgupload-' + familyKey + '-' + idx;
                                 return (
                                   <tr key={it.id || idx} style={{ borderBottom:'1px solid #f0f0f0' }}>
-                                    <td style={Object.assign({}, tdSty, { fontWeight:600 })}>{it.colour}</td>
-                                    <td style={Object.assign({}, tdSty, { color:T.textMuted, fontSize:10 })}>{it.colourFamily || '—'}</td>
-                                    <td style={tdRight}>{it.lengthMm ? it.lengthMm + ' mm' : '—'}</td>
-                                    <td style={Object.assign({}, tdSty, { fontFamily:'monospace', fontSize:10, color:T.textMuted })}>{it.sku || '—'}</td>
+                                    {/* Image cell — click thumb (or blank box) to upload */}
+                                    <td style={Object.assign({}, tdSty, { padding:4 })}>
+                                      <input type="file" accept="image/png,image/jpeg" id={inputId} style={{ display:'none' }}
+                                             onChange={function(e){
+                                               var f = e.target.files && e.target.files[0];
+                                               if (f) uploadItemImage(familyKey, idx, f);
+                                               e.target.value = '';
+                                             }}/>
+                                      <label htmlFor={inputId} title={it.image ? 'Click to replace image' : 'Click to upload PNG/JPEG'}
+                                             style={{ display:'block', width:48, height:48, background:'#f4f4f4', border:'1px solid '+T.border, borderRadius:3, cursor:'pointer', overflow:'hidden', position:'relative' }}>
+                                        {it.image ? (
+                                          <img src={it.image} alt={it.colour || 'item'} style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+                                        ) : (
+                                          <span style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, color:'#9aa' }}>＋</span>
+                                        )}
+                                      </label>
+                                      {it.image && (
+                                        <div style={{ marginTop:2, textAlign:'center' }}>
+                                          <button onClick={function(){ if (confirm('Remove this image?')) updItem(familyKey, idx, 'image', null); }}
+                                                  style={{ background:'transparent', border:'none', color:'#dc2626', fontSize:9, cursor:'pointer', padding:0 }}>
+                                            remove
+                                          </button>
+                                        </div>
+                                      )}
+                                    </td>
+                                    <td style={tdSty}>
+                                      <input type="text" value={it.colour || ''}
+                                             onChange={function(e){ updItem(familyKey, idx, 'colour', e.target.value); }}
+                                             style={Object.assign({}, inpSty, { fontWeight:600 })}/>
+                                    </td>
+                                    <td style={tdSty}>
+                                      <select value={it.colourFamily || 'plain'}
+                                              onChange={function(e){ updItem(familyKey, idx, 'colourFamily', e.target.value); }}
+                                              style={Object.assign({}, inpSty, { fontSize:11 })}>
+                                        <option value="plain">Plain</option>
+                                        <option value="turner_oak">Turner Oak</option>
+                                        <option value="aludec">Aludec</option>
+                                        <option value="other">Other</option>
+                                      </select>
+                                    </td>
+                                    <td style={tdSty}>
+                                      <input type="text" value={it.sku || ''}
+                                             onChange={function(e){ updItem(familyKey, idx, 'sku', e.target.value); }}
+                                             style={Object.assign({}, inpSty, { fontFamily:'monospace', fontSize:10 })}/>
+                                    </td>
+                                    <td style={tdSty}>
+                                      <input type="text" value={it.code || ''}
+                                             onChange={function(e){ updItem(familyKey, idx, 'code', e.target.value); }}
+                                             style={Object.assign({}, inpSty, { fontFamily:'monospace', fontSize:10 })}/>
+                                    </td>
+                                    <td style={tdRight}>
+                                      <input type="number" value={it.lengthMm || 0}
+                                             onChange={function(e){ updItem(familyKey, idx, 'lengthMm', +e.target.value); }}
+                                             style={Object.assign({}, inpSty, { width:74, textAlign:'right', fontFamily:'monospace' })}/>
+                                    </td>
                                     <td style={tdRight}>
                                       <input type="number" step="0.01" value={typeof it.priceExBar === 'number' ? it.priceExBar : 0}
                                              onChange={function(e){ updItem(familyKey, idx, 'priceExBar', +e.target.value); }}
                                              style={Object.assign({}, inpSty, { width:80, textAlign:'right' })}/>
                                     </td>
-                                    <td style={Object.assign({}, tdRight, { color:T.textMuted, fontSize:11 })}>
+                                    <td style={Object.assign({}, tdRight, { color:T.textMuted, fontSize:11, fontFamily:'monospace' })}>
                                       ${typeof it.priceExPerMeter === 'number' ? it.priceExPerMeter.toFixed(3) : '—'}
                                     </td>
                                     <td style={tdRight}>
@@ -9808,9 +13205,50 @@ function SpartanCADPreview() {
                                              }}
                                              style={Object.assign({}, inpSty, { width:60, textAlign:'right' })}/>
                                     </td>
+                                    <td style={tdSty}>
+                                      <select value={it.availability || 'available'}
+                                              onChange={function(e){ updItem(familyKey, idx, 'availability', e.target.value); }}
+                                              title="discontinued = hidden from survey-mode dropdown; coming_soon = shown with [coming soon] flag"
+                                              style={Object.assign({}, inpSty, { fontSize:10 })}>
+                                        <option value="available">Available</option>
+                                        <option value="coming_soon">Coming soon</option>
+                                        <option value="discontinued">Discontinued</option>
+                                      </select>
+                                    </td>
+                                    {isReveal && (
+                                      <td style={tdRight}>
+                                        <input type="number" value={it.widthMm == null ? '' : it.widthMm}
+                                               placeholder={(cat.crossSection && cat.crossSection.widthMm) || '—'}
+                                               title="Per-SKU rip width override. Blank = uses family width. The auto-pick logic in survey mode reads this when present."
+                                               onChange={function(e){
+                                                 var v = e.target.value === '' ? null : +e.target.value;
+                                                 updItem(familyKey, idx, 'widthMm', v);
+                                               }}
+                                               style={Object.assign({}, inpSty, { width:60, textAlign:'right', fontFamily:'monospace' })}/>
+                                      </td>
+                                    )}
+                                    <td style={Object.assign({}, tdSty, { textAlign:'center', padding:4 })}>
+                                      <button onClick={function(){ deleteItem(familyKey, idx); }}
+                                              title="Delete this row"
+                                              style={{ background:'transparent', border:'1px solid '+T.borderLight, color:'#dc2626', borderRadius:3, padding:'2px 6px', fontSize:11, cursor:'pointer' }}>
+                                        ✕
+                                      </button>
+                                    </td>
                                   </tr>
                                 );
                               })}
+                              {/* Add-row footer */}
+                              <tr>
+                                <td colSpan={isReveal ? 12 : 11} style={{ padding:8, background:'#fafafa' }}>
+                                  <button onClick={function(){ addItem(familyKey); }}
+                                          style={{ padding:'5px 12px', fontSize:11, fontWeight:600, background:T.bgInput, border:'1px dashed '+T.border, color:T.accent, borderRadius:4, cursor:'pointer' }}>
+                                    ＋ Add row
+                                  </button>
+                                  <span style={{ fontSize:10, color:T.textMuted, marginLeft:10 }}>
+                                    {items.length === 0 ? 'No SKUs yet — add the first row to start.' : 'Adds a blank row pre-filled with the previous row\'s bar length and colour family.'}
+                                  </span>
+                                </td>
+                              </tr>
                             </tbody>
                           </table>
                         </div>
@@ -9819,8 +13257,13 @@ function SpartanCADPreview() {
                   })}
 
                   <div style={{ marginTop:8, fontSize:10, color:T.textMuted, lineHeight:1.6 }}>
-                    <div><b>id</b>, <b>colour</b>, <b>bar length</b>, <b>sku</b>, <b>family</b> are read-only — edit these in the source catalog drop, not the UI.</div>
-                    <div>Per-meter price recalculates automatically when you edit Price ex GST. Use "Recalc per-m" to force a refresh across all rows.</div>
+                    <div>Per-meter price recalculates automatically when you edit Price ex GST or Bar length. Use "Recalc per-m" to force a refresh across all rows in a family.</div>
+                    <div>Survey-mode dropdowns read directly from these catalogs — your edits, additions, and deletions appear immediately. Items marked <i>discontinued</i> are hidden; <i>coming soon</i> items are flagged.</div>
+                    {settingsPath === 'catalog-reveals' && (
+                      <div style={{ marginTop:6, padding:'6px 10px', background:'#fff7ed', border:'1px solid #fed7aa', borderRadius:4, color:'#9a3412' }}>
+                        <b>Reveals:</b> the In-Line / Stepped / No-Reveal logic in survey mode reads from <code>cat.crossSection.widthMm</code> per family (or the per-row <i>Rip W</i> override if set) plus Window Depth and Frame Depth. Auto-pick selects the smallest SKU wider than the calculated rip width.
+                      </div>
+                    )}
                   </div>
                 </div>;
               }

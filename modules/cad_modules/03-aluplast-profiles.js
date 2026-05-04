@@ -65,8 +65,33 @@ const PROFILE_DIMS = {
 
 };
 
+// ─── getProfileDims ─────────────────────────────────────────────────────────
+// Returns the canonical PROFILE_DIMS row for a product type, layered with
+// any user-edit overrides from window.__productTypeDimsOverrides. The bridge
+// useEffect in 39-main-app.js mirrors appSettings.pricingConfig.productTypeDims
+// onto that window slot, so React state changes flow through synchronously.
+//
+// Empty/null/NaN values are filtered out so an emptied input round-trips
+// back to the factory value cleanly.
 function getProfileDims(productType) {
-  return PROFILE_DIMS[productType] || PROFILE_DIMS.tilt_turn_window;
+  var base = PROFILE_DIMS[productType] || PROFILE_DIMS.tilt_turn_window;
+  try {
+    var ov = (typeof window !== 'undefined' && window.__productTypeDimsOverrides)
+             ? window.__productTypeDimsOverrides[productType] : null;
+    if (ov && typeof ov === 'object') {
+      var clean = null;
+      for (var k in ov) {
+        if (!Object.prototype.hasOwnProperty.call(ov, k)) continue;
+        var v = ov[k];
+        if (v === null || v === undefined || v === '') continue;
+        if (typeof v === 'number' && !isFinite(v)) continue;
+        if (!clean) clean = {};
+        clean[k] = v;
+      }
+      if (clean) return Object.assign({}, base, clean);
+    }
+  } catch (e) {}
+  return base;
 }
 
 // ─── getResolvedProfileDims ─────────────────────────────────────────────────
@@ -86,6 +111,11 @@ function getProfileDims(productType) {
 // PROFILE_DIMS value is kept — that's the legacy fallback for product types
 // whose "real" profile catalog entry hasn't been imported yet.
 //
+// EXCEPTION: explicit user overrides from Settings → Products → Product
+// dimensions ALWAYS beat the catalog sightline. Without this, a 200 mm
+// frameW override would be silently clobbered by the linked profile's
+// 75 mm sightline. The override is the user's explicit intent.
+//
 // Callers that don't have a pricingConfig handy can pass null/undefined and
 // will get the same hardcoded result as the legacy getProfileDims(productType).
 function getResolvedProfileDims(productType, pricingConfig, profileOverrides) {
@@ -97,6 +127,29 @@ function getResolvedProfileDims(productType, pricingConfig, profileOverrides) {
   var links = (pc.profileLinks && pc.profileLinks[productType]) || {};
   var sysDefault = (typeof profileKeysForType === 'function')
     ? profileKeysForType(productType) : { frame:null, sash:null, mullion:null };
+  // Detect explicit user dimension overrides — block catalog from clobbering
+  // them. Two paths feed in (window bridge + direct pricingConfig); we OR
+  // them, AND apply pcDims to pd so even if the bridge hasn't propagated
+  // yet, the override value lands.
+  var rawFactory = (typeof PROFILE_DIMS !== 'undefined' && PROFILE_DIMS[productType]) || {};
+  var pcDims = (pc.productTypeDims && pc.productTypeDims[productType]) || {};
+  function _hasNonEmpty(obj, field) {
+    if (!obj) return false;
+    var v = obj[field];
+    if (v === null || v === undefined || v === '') return false;
+    if (typeof v === 'number' && !isFinite(v)) return false;
+    return true;
+  }
+  for (var pcField in pcDims) {
+    if (Object.prototype.hasOwnProperty.call(pcDims, pcField) && _hasNonEmpty(pcDims, pcField)) {
+      pd[pcField] = pcDims[pcField];
+    }
+  }
+  function userOverrode(field) {
+    if (_hasNonEmpty(pcDims, field)) return true;
+    if (rawFactory[field] !== undefined && base[field] !== rawFactory[field]) return true;
+    return false;
+  }
   function resolveKey(role) {
     if (po[role]) return po[role];
     if (links[role]) return links[role];
@@ -114,9 +167,28 @@ function getResolvedProfileDims(productType, pricingConfig, profileOverrides) {
   var sFrame   = catalogSightline(resolveKey('frame'));
   var sSash    = catalogSightline(resolveKey('sash'));
   var sMullion = catalogSightline(resolveKey('mullion'));
-  if (sFrame   != null) pd.frameW   = sFrame;
-  if (sSash    != null) pd.sashW    = sSash;
-  if (sMullion != null) pd.mullionW = sMullion;
+  if (sFrame   != null && !userOverrode('frameW'))   pd.frameW   = sFrame;
+  if (sSash    != null && !userOverrode('sashW'))    pd.sashW    = sSash;
+  if (sMullion != null && !userOverrode('mullionW')) pd.mullionW = sMullion;
   return pd;
+}
+
+// True when the user has explicitly overridden a dimension via Settings.
+// Used by buildOuterFrame / buildSash to choose between the catalog
+// extrusion and the procedural fallback.
+function userHasDimOverride(productType, field) {
+  try {
+    if (typeof window === 'undefined' || !window.__productTypeDimsOverrides) return false;
+    var slot = window.__productTypeDimsOverrides[productType];
+    if (!slot || typeof slot !== 'object') return false;
+    var v = slot[field];
+    if (v === null || v === undefined || v === '') return false;
+    if (typeof v === 'number' && !isFinite(v)) return false;
+    return true;
+  } catch (e) { return false; }
+}
+
+if (typeof window !== 'undefined') {
+  window.userHasDimOverride = userHasDimOverride;
 }
 

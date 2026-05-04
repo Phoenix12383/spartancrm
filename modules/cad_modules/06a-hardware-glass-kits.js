@@ -256,11 +256,19 @@ function resolveGlassForFrame(frame, pricingConfig, appSettings) {
   // from the system; if missing, fall back to PROFILE_DIMS or catalog data.
   var sys = (typeof resolveSystemMetrics === 'function')
     ? resolveSystemMetrics(frame.productType, appSettings) : null;
+  var mullMetrics = (typeof resolveMullionMetrics === 'function')
+    ? resolveMullionMetrics(frame.productType, appSettings) : null;
   var fwMm = (sys && sys.frameSightlineMm) || pd.frameW || 70;
   var swMm = (sys && sys.sashSightlineMm)  || pd.sashW  || 77;
-  var mwMm = pd.mullionW || 84;
+  // Mullion sightline: from the mullion DXF if uploaded, otherwise the
+  // catalog-default mullion width.
+  var mwMm = (mullMetrics && mullMetrics.mullionSightlineMm) || pd.mullionW || 84;
   var frameSashGapMm     = (sys && sys.frameSashGapMm     != null) ? sys.frameSashGapMm     : 0;
   var paneClearance      = (sys && sys.sashGlassClearanceMm != null) ? sys.sashGlassClearanceMm : 6;
+  // Sash-mullion gap: from the mullion DXF if uploaded; falls back to
+  // frame-sash gap (same gasket type) when no mullion DXF is present.
+  var sashMullionGapMm = (mullMetrics && mullMetrics.sashMullionGapMm != null)
+    ? mullMetrics.sashMullionGapMm : frameSashGapMm;
   var W = Number(frame.width) || 0;
   var H = Number(frame.height) || 0;
   if (W <= 0 || H <= 0) return [];
@@ -278,16 +286,19 @@ function resolveGlassForFrame(frame, pricingConfig, appSettings) {
   var openHMm = H - fwMm * 2;
   var rows = [];
 
-  function emitPane(label, isSashed, cellW, cellH) {
+  // emitPane needs to know whether each side of the cell is bounded by the
+  // outer frame (use frameSashGap) or by an interior mullion (use
+  // sashMullionGap). For non-grid frames every side is the outer frame.
+  // For grid frames we pass per-cell side info via cellAirGapW/H args.
+  function emitPane(label, isSashed, cellW, cellH, airGapW, airGapH) {
     if (cellW <= 0 || cellH <= 0) return;
-    // Sashed cells: pane sits inside sash, which sits inside frame opening.
-    //   sash outer = cell − 2 × frameSashGap (the air gap at the gasket line)
-    //   pane       = sash outer − 2 × sashSightline − sashGlassClearance
-    // Fixed cells: pane sits directly inside frame.
+    var ggW = (airGapW != null) ? airGapW : frameSashGapMm;
+    var ggH = (airGapH != null) ? airGapH : frameSashGapMm;
     var paneW, paneH;
     if (isSashed) {
-      var sashOuterW = cellW - 2 * frameSashGapMm;
-      var sashOuterH = cellH - 2 * frameSashGapMm;
+      // sash outer = cell − sum(air gaps on left + right)
+      var sashOuterW = cellW - 2 * ggW;
+      var sashOuterH = cellH - 2 * ggH;
       paneW = sashOuterW - swMm * 2 - paneClearance;
       paneH = sashOuterH - swMm * 2 - paneClearance;
     } else {
@@ -309,15 +320,29 @@ function resolveGlassForFrame(frame, pricingConfig, appSettings) {
   }
 
   if (hasGrid) {
-    // Grid: cells split openW/openH minus mullions
-    var cellW = (openWMm - (nCols - 1) * mwMm) / nCols;
-    var cellH = (openHMm - (nRows - 1) * mwMm) / nRows;
+    // Grid: cells split openW/openH minus mullions and minus sash-mullion
+    // gaps on either side of each interior mullion.
+    var nVMull = nCols - 1;
+    var nHMull = nRows - 1;
+    // Total horizontal space taken by mullions + adjacent gaps.
+    var consumedW = nVMull * mwMm + nVMull * 2 * sashMullionGapMm;
+    var consumedH = nHMull * mwMm + nHMull * 2 * sashMullionGapMm;
+    var cellW = (openWMm - consumedW) / nCols;
+    var cellH = (openHMm - consumedH) / nRows;
+    // Average air gap per cell side: outer cells have one frame edge + one
+    // mullion edge; interior cells have two mullion edges. Use the average
+    // for simplicity — the difference is < 1mm in pane size for typical
+    // gaskets where frameSashGap ≈ sashMullionGap (~12mm).
+    // For correctness across asymmetric gaps, we'd need per-cell-side
+    // resolution. Defer until that diverges materially.
+    var avgGapW = nCols > 1 ? ((frameSashGapMm + sashMullionGapMm) / 2) : frameSashGapMm;
+    var avgGapH = nRows > 1 ? ((frameSashGapMm + sashMullionGapMm) / 2) : frameSashGapMm;
     for (var r = 0; r < nRows; r++) {
       for (var c = 0; c < nCols; c++) {
         var cell = ct[r][c];
         if (!cell || cell === 'solid') continue;
         var isSashed = (cell !== 'fixed');
-        emitPane('R' + (r+1) + 'C' + (c+1) + ' (' + cell + ')', isSashed, cellW, cellH);
+        emitPane('R' + (r+1) + 'C' + (c+1) + ' (' + cell + ')', isSashed, cellW, cellH, avgGapW, avgGapH);
       }
     }
   } else if (frame.productType === 'fixed_window') {
@@ -412,6 +437,56 @@ function resolveSystemMetrics(productType, appSettings) {
   return resolveProductAssembly(productType, appSettings);
 }
 
+// ─── Opening direction ────────────────────────────────────────────────────
+// Auto-detect whether a product type is inwards-opening (sash swings into
+// the room) or outwards-opening (sash swings away). This determines which
+// of the two global mullion DXFs supplies the sash-on-mullion gap.
+//
+// PRODUCTS[].inOut already exists for "show inwards-vs-outwards picker in
+// the design editor" but the convention is reversed (inOut = 'has both
+// directions available'); we use a fresh map for clarity.
+function getOpeningDirection(productType) {
+  // Inwards-opening: sash swings INTO the room
+  if (productType === 'tilt_turn_window') return 'inwards';
+  if (productType === 'french_door')      return 'inwards';
+  if (productType === 'hinged_door')      return 'inwards';
+  // Outwards-opening: sash swings OUTSIDE
+  if (productType === 'awning_window')    return 'outwards';
+  if (productType === 'casement_window')  return 'outwards';
+  // Sliding/fixed have no swing direction — use outwards as the safer
+  // default since most sliding-door mullions use the outwards-style gasket.
+  return 'outwards';
+}
+
+// ─── resolveMullionMetrics ────────────────────────────────────────────────
+// Look up the right mullion DXF based on the frame's opening direction,
+// merge with intersection metrics if both DXFs are uploaded. Returns null
+// when no mullion DXF has been uploaded for this direction — caller falls
+// back to the sash-edge gap from the assembly DXF as an approximation.
+function resolveMullionMetrics(productType, appSettings) {
+  if (!productType || !appSettings) return null;
+  var ma = appSettings.mullionAssemblies || {};
+  var direction = getOpeningDirection(productType);
+  var section = ma[direction];
+  var intersection = ma.intersection;
+  if (!section && !intersection) return null;
+  function eff(entry, k) {
+    if (!entry) return null;
+    var ov = entry.metricsOverride || {};
+    var ex = entry.metricsExtracted || {};
+    return (ov[k] != null) ? ov[k] : (ex[k] != null ? ex[k] : null);
+  }
+  return {
+    mullionSightlineMm:    eff(section, 'mullionSightlineMm'),
+    mullionDepthMm:        eff(section, 'mullionDepthMm'),
+    sashMullionGapMm:      eff(section, 'sashMullionGapMm'),
+    couplingAllowanceMm:   eff(intersection, 'couplingAllowanceMm'),
+    _direction:            direction,
+    _hasSection:           !!section,
+    _hasIntersection:      !!intersection,
+  };
+}
+
 if (typeof window !== 'undefined') {
   window.HARDWARE_KITS = HARDWARE_KITS;
   window.resolveHardwareForFrame = resolveHardwareForFrame;
@@ -420,4 +495,6 @@ if (typeof window !== 'undefined') {
   window.aggregateGlassForProject = aggregateGlassForProject;
   window.resolveProductAssembly = resolveProductAssembly;
   window.resolveSystemMetrics = resolveSystemMetrics;
+  window.getOpeningDirection = getOpeningDirection;
+  window.resolveMullionMetrics = resolveMullionMetrics;
 }

@@ -218,17 +218,41 @@ function deriveProfileCutsForFrame(frame, pricingConfig, appSettings) {
     // formula sashOuter = openWMm.
     var sysMetrics = (typeof resolveSystemMetrics === 'function')
       ? resolveSystemMetrics(frame.productType, appSettings) : null;
+    var mullMetrics = (typeof resolveMullionMetrics === 'function')
+      ? resolveMullionMetrics(frame.productType, appSettings) : null;
     var fsGap = (sysMetrics && sysMetrics.frameSashGapMm != null) ? sysMetrics.frameSashGapMm : 0;
+    // Sash-on-mullion gap: when a sash meets a mullion (in a grid or
+    // multi-panel layout), the gasket-line clearance there is from the
+    // mullion DXF. Falls back to the same value as frameSashGap if no
+    // mullion DXF is uploaded — same physical gasket, same gap.
+    var smGap = (mullMetrics && mullMetrics.sashMullionGapMm != null)
+      ? mullMetrics.sashMullionGapMm : fsGap;
     var openWMm = W - fwMm * 2;
     var openHMm = H - fwMm * 2;
-    // Apply the air gap to the sash perimeter (each side reduces by gap).
+    // Apply the air gap to the outer sash perimeter (each side reduces by gap).
     var sashOuterW = openWMm - 2 * fsGap;
     var sashOuterH = openHMm - 2 * fsGap;
     var panelWMm = (panels > 1 && !hasGrid) ? (sashOuterW / panels) : sashOuterW;
     var panelHMm = sashOuterH;
     if (hasGrid) {
-      panelWMm = sashOuterW / nCols;
-      panelHMm = sashOuterH / nRows;
+      // Each grid cell = (open dim − Σ mullion widths − Σ sash-mullion gaps) / nCells
+      // For nCols cells, there are (nCols − 1) mullions and (nCols − 1) × 2
+      // sash-mullion gap pairs (each interior mullion has a sash on each
+      // side, each contributing one gap). Plus the two outer frame-sash
+      // gaps already accounted for in sashOuterW.
+      // Simpler form: span available for sashes = sashOuterW − (nCols−1)×mwMm − (nCols−1)×2×smGap.
+      // Resolve the mullion sightline the same way frame sightline was
+      // resolved earlier — prefer the linked profile's catalog entry, fall
+      // back to PROFILE_DIMS for system-default linkage.
+      var mwMm = (prkMullion.source === 'system default')
+        ? (pd.mullionW || 84)
+        : sightlineFor(prkMullion.key, pd.mullionW || 84);
+      var nVMull = nCols - 1;
+      var nHMull = nRows - 1;
+      var availW = sashOuterW - nVMull * mwMm - nVMull * 2 * smGap;
+      var availH = sashOuterH - nHMull * mwMm - nHMull * 2 * smGap;
+      panelWMm = availW / nCols;
+      panelHMm = availH / nRows;
     }
     for (var si = 0; si < numSashes; si++) {
       var sashIdx = si + 1;
@@ -242,18 +266,121 @@ function deriveProfileCutsForFrame(frame, pricingConfig, appSettings) {
   // ─── Mullions / transoms ──────────────────────────────────────────────
   // Verticals span the open height; horizontals (transoms) span the open width.
   // Joint to frame is butt (0 mitres) per standard fabrication.
+  //
+  // Two corrections from system metrics when available:
+  //  • Mullion-to-frame end-cap allowance: mullion ends meet the frame
+  //    head/sill. Treat the same gap as frameSashGap for the inwards-
+  //    facing sash side. Subtract 2× this from the mullion length.
+  //  • Coupling allowance: when a transom meets a vertical mullion, the
+  //    coupling block at the join consumes material. Subtract 2× this
+  //    from each transom length (one per end).
   var numVMullions = hasGrid ? (nCols - 1) : (panels > 1 ? panels - 1 : 0);
   var numHMullions = hasGrid ? (nRows - 1) : 0;
   if (!hasGrid && frame.transomPct && frame.transomPct > 0.05 && frame.transomPct < 0.95) {
     numHMullions = 1;
   }
+  // Resolve mullion metrics (global, opening-direction-aware).
+  var mullionMetrics = (typeof resolveMullionMetrics === 'function')
+    ? resolveMullionMetrics(frame.productType, appSettings) : null;
+  // End-cap clearance: where a mullion meets the frame head/sill. We re-use
+  // the assembly's frameSashGap as a proxy when no dedicated value exists,
+  // because the gasket-line geometry is the same physical seal.
+  var mullionEndCapMm = (sysMetrics && sysMetrics.frameSashGapMm != null)
+    ? sysMetrics.frameSashGapMm : 0;
+  // Coupling allowance: when a horizontal transom butts into a vertical
+  // mullion, the coupling block consumes material on each end. Only
+  // applies when both verticals and horizontals are present (i.e. grid).
+  var couplingMm = (mullionMetrics && mullionMetrics.couplingAllowanceMm != null)
+    ? mullionMetrics.couplingAllowanceMm : 0;
   var oH = H - fwMm * 2;
   var oW = W - fwMm * 2;
+  // Mullion / transom cut length = open dim − 2× end-cap.
+  // For transoms in a grid that meet a vertical mullion, additionally
+  // subtract 2× coupling allowance.
   for (var vm = 0; vm < numVMullions; vm++) {
-    pushCut('mullion_v_' + (vm + 1), 'vertical', oH, prkMullion.key, prkMullion.source, 0, 'Mullion ' + prkMullion.key);
+    var vLen = oH - 2 * mullionEndCapMm;
+    pushCut('mullion_v_' + (vm + 1), 'vertical', vLen, prkMullion.key, prkMullion.source, 0, 'Mullion ' + prkMullion.key);
   }
   for (var hm = 0; hm < numHMullions; hm++) {
-    pushCut('mullion_h_' + (hm + 1), 'horizontal', oW, prkMullion.key, prkMullion.source, 0, 'Mullion ' + prkMullion.key);
+    var hLen = oW - 2 * mullionEndCapMm;
+    // If this is a grid with vertical mullions, the transom is broken into
+    // segments — but we treat each transom row as a single continuous
+    // length here for fabrication simplicity (the factory cuts to length
+    // and joins at the mullion via a coupling block in-place).
+    // The coupling allowance reduces the transom length by 2× its value
+    // when the transom meets vertical mullions.
+    if (numVMullions > 0) hLen -= 2 * couplingMm;
+    pushCut('mullion_h_' + (hm + 1), 'horizontal', hLen, prkMullion.key, prkMullion.source, 0, 'Mullion ' + prkMullion.key);
+  }
+
+  // ─── Fly screen aluminium frame cuts ──────────────────────────────────
+  // Per Settings → Products → Fly screens, each opening sash on a
+  // window with showFlyScreen=true emits 4 frame cuts:
+  //
+  //   2 horizontal: panelWMm − cfg.deductWidthMm
+  //   2 vertical:   panelHMm − cfg.deductHeightMm
+  //
+  // The deductions account for the gasket clearance + corner-joiner
+  // overlap on the screen frame extrusion. Different window types have
+  // different gasket profiles, so each gets its own deduction.
+  //
+  // Sliding windows: cellTypes contains the per-panel state ('fixed' or
+  // a sash style). Only non-fixed sashes get a fly screen. For a 2-panel
+  // slider with one fixed and one sliding, that's exactly one screen.
+  // The same logic applies to bifold / multi-panel sliders if those
+  // ever set frame.showFlyScreen.
+  //
+  // Casement / awning / T&T: every sash is opening, so every sash gets a
+  // screen.
+  //
+  // Fixed windows: numSashes is 0, the loop doesn't run, no screens
+  // emitted (matches the "no opening sash" reality).
+  if (frame.showFlyScreen !== false && numSashes > 0) {
+    var fsCfg = (appSettings && appSettings.flyScreenConfig && appSettings.flyScreenConfig[frame.productType]) || null;
+    if (fsCfg && fsCfg.enabled) {
+      var fsProfileKey = fsCfg.profileSku || 'flyscreen_alum_15x7';
+      var deductW = (typeof fsCfg.deductWidthMm === 'number') ? fsCfg.deductWidthMm : 0;
+      var deductH = (typeof fsCfg.deductHeightMm === 'number') ? fsCfg.deductHeightMm : 0;
+      var fsLabel = 'Fly screen frame ' + fsProfileKey;
+      // Determine how many fly screens this frame needs.
+      // Sliding windows: only the OPENING sash (count of cellTypes !== 'fixed' / 'solid').
+      // For sliding without explicit cellTypes, fall back to (panels - 1)
+      // which represents the convention "one fixed + the rest open".
+      // Actually for sliding the "opening sash" count needs care:
+      // a 2-panel slider has 1 fixed + 1 sliding → 1 screen.
+      // A 3-panel slider typically has 1 fixed + 2 sliding → 2 screens
+      // (or the centre fixed and two sliding outers, depending on
+      // configuration). We default to the panels-minus-one convention
+      // when cellTypes isn't available. With cellTypes (preferred), the
+      // existing numSashes already counts only non-fixed cells, which
+      // for sliders = the opening panel count exactly.
+      var numFlyScreens;
+      if (frame.productType === 'sliding_window') {
+        if (hasGrid && ct) {
+          // Count opening (non-fixed) cells — same as numSashes.
+          numFlyScreens = numSashes;
+        } else {
+          // No explicit cell types — use the standard slider convention:
+          // panels − 1 opening sashes (one fixed). 1 panel = 0 (no slide
+          // mechanism). Cap at 0 floor.
+          numFlyScreens = Math.max(0, panels - 1);
+        }
+      } else {
+        // Casement / awning / T&T / etc. — one screen per sash.
+        numFlyScreens = numSashes;
+      }
+      for (var fsi = 0; fsi < numFlyScreens; fsi++) {
+        var screenIdx = fsi + 1;
+        var hCutLen = panelWMm - deductW;
+        var vCutLen = panelHMm - deductH;
+        // Fly-screen frames are corner-joined with plastic L-pieces, not
+        // mitred + welded. Mitre count = 0 so no weld allowance is added.
+        pushCut('flyscreen_' + screenIdx, 'top',    hCutLen, fsProfileKey, 'fly screen config', 0, fsLabel);
+        pushCut('flyscreen_' + screenIdx, 'bottom', hCutLen, fsProfileKey, 'fly screen config', 0, fsLabel);
+        pushCut('flyscreen_' + screenIdx, 'left',   vCutLen, fsProfileKey, 'fly screen config', 0, fsLabel);
+        pushCut('flyscreen_' + screenIdx, 'right',  vCutLen, fsProfileKey, 'fly screen config', 0, fsLabel);
+      }
+    }
   }
 
   return cuts;
@@ -268,11 +395,26 @@ function computeProfileCuts(projectItems, pricingConfig, appSettings) {
 
   // Resolve bar length for a given profile key. Falls back to 5850mm — the
   // standard Aluplast extrusion length — if the catalog doesn't list it.
+  //
+  // Fly-screen profile keys are resolved separately because they live in
+  // appSettings.flyScreenConfig, not pricingConfig.profileCosts. We scan
+  // every per-product-type fly-screen entry for a matching profileSku
+  // and use the FIRST matching barLengthMm. (If two product types use the
+  // same SKU with different bar lengths, the first wins — this is rare in
+  // practice and the cutlist already groups by SKU + colour.)
   function barLenMmFor(profileKey) {
     var costs = (pc.profileCosts) || {};
     var e = costs[profileKey] || costs[profileKey + '_white'] || costs[profileKey + '_colour'];
     var m = e && e.barLen;
     if (typeof m === 'number' && m > 0) return Math.round(m * 1000);
+    // Fly-screen lookup
+    var fsAll = (appSettings && appSettings.flyScreenConfig) || {};
+    for (var t in fsAll) {
+      var fsCfg = fsAll[t];
+      if (fsCfg && fsCfg.profileSku === profileKey && typeof fsCfg.barLengthMm === 'number' && fsCfg.barLengthMm > 0) {
+        return Math.round(fsCfg.barLengthMm);
+      }
+    }
     return 5850;
   }
 

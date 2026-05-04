@@ -35,7 +35,7 @@
 // trimCatalogs:           pricingConfig.trims (map of family→catalog) or null
 // allowanceMm:            override the 200mm allowance (default 200)
 // ═══════════════════════════════════════════════════════════════════════════
-function computeTrimCuts(projectItems, measurementsByFrameId, trimCatalogs, allowanceMm) {
+function computeTrimCuts(projectItems, measurementsByFrameId, trimCatalogs, allowanceMm, appSettings) {
   var allow = (typeof allowanceMm === 'number' && isFinite(allowanceMm)) ? allowanceMm : 200;
   var items = Array.isArray(projectItems) ? projectItems : [];
   var byId = measurementsByFrameId || {};
@@ -91,24 +91,31 @@ function computeTrimCuts(projectItems, measurementsByFrameId, trimCatalogs, allo
     Object.keys(trimCatalogs).forEach(function(famKey) {
       if (famKey.indexOf('reveals') !== 0) return;
       var fam = trimCatalogs[famKey];
-      if (!fam || !fam.crossSection || !fam.items || !fam.items.length) return;
-      // Use the first non-discontinued item as the bar reference. Reveal
-      // families are single-SKU today but this stays correct if multi-SKU
-      // is added later (e.g. different bar lengths).
-      var ref = null;
-      for (var ri = 0; ri < fam.items.length; ri++) {
-        if (fam.items[ri].availability !== 'discontinued') { ref = fam.items[ri]; break; }
-      }
-      if (!ref) return;
-      revealSkus.push({
-        famKey:         famKey,
-        familyLabel:    fam.description || famKey,
-        widthMm:        fam.crossSection.widthMm,
-        thicknessMm:    fam.crossSection.thicknessMm,
-        itemId:         ref.id,
-        sku:            ref.sku,
-        lengthMm:       ref.lengthMm,
-        isCustomOrder:  !!fam.isCustomOrder,
+      if (!fam || !fam.items || !fam.items.length) return;
+      // Per-row entries — each non-discontinued item is registered as a
+      // separate pickable SKU. Effective width is item.widthMm when set,
+      // otherwise falls back to family.crossSection.widthMm. This means:
+      //   • Families with one item + family-level crossSection still work
+      //     (the legacy single-SKU-per-family case).
+      //   • Multi-item families now get per-row width discrimination so
+      //     the auto-picker can choose between SKU-level rip widths.
+      var famDefaultW = (fam.crossSection && fam.crossSection.widthMm) || null;
+      var famDefaultT = (fam.crossSection && fam.crossSection.thicknessMm) || null;
+      fam.items.forEach(function(it) {
+        if (it.availability === 'discontinued') return;
+        var effW = (typeof it.widthMm === 'number' && isFinite(it.widthMm)) ? it.widthMm : famDefaultW;
+        var effT = (typeof it.thicknessMm === 'number' && isFinite(it.thicknessMm)) ? it.thicknessMm : famDefaultT;
+        if (!effW) return;  // can't pick without a width
+        revealSkus.push({
+          famKey:         famKey,
+          familyLabel:    fam.description || famKey,
+          widthMm:        effW,
+          thicknessMm:    effT,
+          itemId:         it.id,
+          sku:            it.sku,
+          lengthMm:       it.lengthMm,
+          isCustomOrder:  !!(fam.isCustomOrder || it.isCustomOrder),
+        });
       });
     });
     revealSkus.sort(function(a, b) { return a.widthMm - b.widthMm; });
@@ -309,6 +316,190 @@ function computeTrimCuts(projectItems, measurementsByFrameId, trimCatalogs, allo
       }
     }
   });
+
+  // ─── Fly screen aluminium frame cuts ──────────────────────────────────
+  // Per Settings → Products → Fly screens, each opening sash on a window
+  // (with frame.showFlyScreen !== false) emits 4 frame cuts:
+  //
+  //   2 horizontal: sashW − cfg.deductWidthMm
+  //   2 vertical:   sashH − cfg.deductHeightMm
+  //
+  // The deductions account for gasket clearance + corner-joiner overlap
+  // on the screen frame extrusion. Each window product type has its own
+  // deduction (gasket profiles vary). Doors are excluded because they
+  // don't ship with fly screens in residential applications (gates and
+  // commercial entrances are out of scope here).
+  //
+  // Sliding windows: only the OPENING sash gets a screen. A 2-panel
+  // slider has 1 fixed + 1 opening → 1 screen. A 3-panel slider has
+  // 1 fixed + 2 opening → 2 screens. cellTypes marks fixed cells when
+  // present; fall back to (panelCount − 1) when not.
+  //
+  // Casement / awning / T&T / fixed: every sash is opening, so every
+  // sash gets a screen (fixed has 0 sashes, so emits nothing).
+  //
+  // The cuts join the same `cuts` array as trims/reveals and flow through
+  // the byTrim aggregation + FFD bar packer below — so they appear in
+  // Production → Additional Profiles alongside architraves and reveals,
+  // grouped by their own SKU + colour.
+  // Fall back to hardcoded defaults if appSettings.flyScreenConfig is
+  // missing — happens when a user's saved appSettings predates the
+  // flyScreenConfig field. Without this fallback the new feature looks
+  // broken on existing saved projects.
+  var flyScreenCfg = (appSettings && appSettings.flyScreenConfig) || {
+    awning_window:    { enabled: true,  deductWidthMm: 8, deductHeightMm: 8, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+    casement_window:  { enabled: true,  deductWidthMm: 8, deductHeightMm: 8, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+    tilt_turn_window: { enabled: true,  deductWidthMm: 6, deductHeightMm: 6, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+    fixed_window:     { enabled: false, deductWidthMm: 0, deductHeightMm: 0, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+    sliding_window:   { enabled: true,  deductWidthMm: 5, deductHeightMm: 5, profileSku: 'flyscreen_alum_15x7', barLengthMm: 5800 },
+  };
+  // Single profile cross-section image shared by every fly-screen cut.
+  // The user uploads this once at Settings → Catalogs → Fly screens. We
+  // attach it to each cut + the byTrim group so the production tab can
+  // render a thumbnail next to the row.
+  var flyScreenProfileImage = (appSettings && appSettings.flyScreenProfileImage) || null;
+  // Material rates from pricingConfig.ancillaries — same fields the BOM
+  // calculator and Pricing → Ancillaries page use, so edits flow through
+  // identically. Falls back to PRICING_DEFAULTS when appSettings hasn't
+  // landed pricingConfig yet.
+  var flyScreenAnc = (appSettings && appSettings.pricingConfig && appSettings.pricingConfig.ancillaries)
+                   || (typeof PRICING_DEFAULTS !== 'undefined' && PRICING_DEFAULTS.ancillaries)
+                   || {};
+  var flyScreenFramePerMetre = (flyScreenAnc.flyScreenFramePerMetre != null) ? flyScreenAnc.flyScreenFramePerMetre : 5.50;
+  var flyScreenPerUnit       = (flyScreenAnc.flyScreenPerUnit != null) ? flyScreenAnc.flyScreenPerUnit : 45;
+  if (flyScreenCfg) {
+    items.forEach(function(f) {
+      // Only windows have fly screens (not doors).
+      var pt = f.productType;
+      if (!pt || pt.indexOf('window') === -1) return;
+      // Honour the editor's fly-screen toggle. Default to true when the
+      // field isn't set (matches the legacy default in the editor).
+      if (f.showFlyScreen === false) return;
+      var cfg = flyScreenCfg[pt];
+      if (!cfg || !cfg.enabled) return;
+
+      var measFrame = byId[f.id] || {};
+      var W = (typeof measFrame.measuredWidthMm === 'number' && measFrame.measuredWidthMm > 0) ? measFrame.measuredWidthMm
+            : (typeof f.widthMm === 'number' ? f.widthMm : (typeof f.width === 'number' ? f.width : 0));
+      var H = (typeof measFrame.measuredHeightMm === 'number' && measFrame.measuredHeightMm > 0) ? measFrame.measuredHeightMm
+            : (typeof f.heightMm === 'number' ? f.heightMm : (typeof f.height === 'number' ? f.height : 0));
+      if (!W || !H) return;
+
+      // Resolve profile dims for this frame (frame sightline, mullion width, etc.).
+      var pd;
+      try {
+        if (typeof getResolvedProfileDims === 'function') {
+          pd = getResolvedProfileDims(pt, null, f.profileOverrides || null);
+        } else if (typeof getProfileDims === 'function') {
+          pd = getProfileDims(pt);
+        }
+      } catch (e) { pd = null; }
+      if (!pd) pd = { frameW: 65, mullionW: 84 };
+
+      var ct = f.cellTypes;
+      var nRows = (ct && ct.length) ? ct.length : 1;
+      var nCols = (ct && ct[0] && ct[0].length) ? ct[0].length : 1;
+      var hasGrid = nRows > 1 || nCols > 1;
+      var panels = f.panelCount || 1;
+
+      // Count opening (non-fixed) sashes — same convention as the profile
+      // cutlist module. Fixed windows have numSashes = 0 so the loop is
+      // a no-op even if enabled in settings (defensive).
+      var numSashes = (pt === 'fixed_window') ? 0 : panels;
+      if (hasGrid) {
+        numSashes = 0;
+        for (var rr = 0; rr < nRows; rr++) {
+          for (var cc = 0; cc < nCols; cc++) {
+            var cell = ct[rr][cc];
+            if (cell && cell !== 'fixed' && cell !== 'solid') numSashes++;
+          }
+        }
+      }
+      if (numSashes === 0) return;
+
+      // Sash dimensions — uniform sash assumption (matches profile cutlist).
+      var openWMm = W - pd.frameW * 2;
+      var openHMm = H - pd.frameW * 2;
+      var panelWMm, panelHMm;
+      if (hasGrid) {
+        var nVMull = nCols - 1;
+        var nHMull = nRows - 1;
+        var availW = openWMm - nVMull * pd.mullionW;
+        var availH = openHMm - nHMull * pd.mullionW;
+        panelWMm = availW / nCols;
+        panelHMm = availH / nRows;
+      } else if (panels > 1) {
+        panelWMm = (openWMm - (panels - 1) * pd.mullionW) / panels;
+        panelHMm = openHMm;
+      } else {
+        panelWMm = openWMm;
+        panelHMm = openHMm;
+      }
+
+      // How many fly screens this frame needs.
+      // Sliding window: only opening sashes (panels − 1 typically, or
+      // count of non-fixed cells when cellTypes is present).
+      // Other windows: one screen per sash.
+      var numFlyScreens;
+      if (pt === 'sliding_window') {
+        if (hasGrid) {
+          numFlyScreens = numSashes;          // numSashes already excludes fixed cells
+        } else {
+          numFlyScreens = Math.max(0, panels - 1);
+        }
+      } else {
+        numFlyScreens = numSashes;
+      }
+      if (numFlyScreens === 0) return;
+
+      var hCutLen = Math.max(0, panelWMm - (cfg.deductWidthMm || 0));
+      var vCutLen = Math.max(0, panelHMm - (cfg.deductHeightMm || 0));
+      if (hCutLen <= 0 && vCutLen <= 0) return;
+
+      var fcExt2 = resolveColour(f.colour);
+      var fcInt2 = resolveColour(f.colourInt || f.colour);
+      // Fly screens are always one colour (no ext/int split — single
+      // aluminium extrusion). Group key uses the resolved label so each
+      // colour gets its own bar pool. fcExt2 is { id, label } from
+      // resolveColour above.
+      var colourLabel = (fcExt2 && fcExt2.label) || (fcExt2 && fcExt2.id) || 'white';
+      var fsTrimValue = 'flyscreen_' + (cfg.profileSku || 'flyscreen_alum_15x7') + '_' + colourLabel;
+      var fsTrimLabel = (cfg.profileSku || 'Fly screen') + ' — ' + colourLabel;
+
+      function pushFlyScreenCut(side, lengthMm, screenIdx) {
+        if (lengthMm <= 0) return;
+        cuts.push({
+          frameId: f.id,
+          frameName: f.name || ('Frame ' + f.id),
+          frameColourExt: fcExt2,
+          frameColourInt: fcInt2,
+          surface: 'flyscreen',
+          side: side,
+          lengthMm: Math.round(lengthMm),
+          allowanceMm: 0,        // already accounted for via deduction
+          jointStyle: 'butt',    // corner joiners, not mitred
+          trimValue: fsTrimValue,
+          trimLabel: fsTrimLabel,
+          isCatalogItem: false,
+          catalogId: null,
+          colour: colourLabel,
+          lengthBarMm: cfg.barLengthMm || 5800,
+          dictMappedFamily: null,
+          flyScreenIdx: screenIdx,
+          flyScreenSku: cfg.profileSku || 'flyscreen_alum_15x7',
+          profileImage: flyScreenProfileImage,
+        });
+      }
+      for (var fsi = 0; fsi < numFlyScreens; fsi++) {
+        var screenIdx = fsi + 1;
+        pushFlyScreenCut('top',    hCutLen, screenIdx);
+        pushFlyScreenCut('bottom', hCutLen, screenIdx);
+        pushFlyScreenCut('left',   vCutLen, screenIdx);
+        pushFlyScreenCut('right',  vCutLen, screenIdx);
+      }
+    });
+  }
+
   // Aggregate by trimValue.
   var byTrim = {};
   cuts.forEach(function(c) {
@@ -341,6 +532,13 @@ function computeTrimCuts(projectItems, measurementsByFrameId, trimCatalogs, allo
         byTrim[key].revealStockThickMm   = c.revealStockThickMm;
         byTrim[key].revealIsCustomOrder  = c.revealIsCustomOrder;
         byTrim[key].revealOversized      = c.revealOversized;
+      }
+      // Fly-screen profile cross-section image (data URL). Propagated
+      // from the cut so the production tab can show a thumbnail next
+      // to the cutting-list row.
+      if (c.surface === 'flyscreen' && c.profileImage) {
+        byTrim[key].profileImage = c.profileImage;
+        byTrim[key].flyScreenSku = c.flyScreenSku;
       }
     }
     byTrim[key].totalLengthMm += c.lengthMm;
@@ -448,6 +646,33 @@ function computeTrimCuts(projectItems, measurementsByFrameId, trimCatalogs, allo
     // Overwrite coarse barsRequired with FFD-optimised count.
     b.barsRequired = bars.length;
   });
+
+  // ─── Fly-screen material cost computation ─────────────────────────────
+  // For each byTrim group with surface=flyscreen, compute:
+  //   • frameMaterialCost = totalLengthMm/1000 × per-metre rate
+  //   • miscCost = numberOfScreens × per-unit miscellaneous (mesh, spline,
+  //     corners, pull tab — non-aluminium components)
+  //   • totalMaterialCost = frame + misc
+  // Number of screens = cutCount / 4 (each screen has 4 cuts: top/bot/L/R).
+  // The Production tab displays this cost on the by-trim summary row, and
+  // the BOM calculator can read it for accurate quote totals (instead of
+  // the legacy flat-per-frame approximation).
+  Object.keys(byTrim).forEach(function(k) {
+    var b = byTrim[k];
+    if (!b.cuts || !b.cuts.length) return;
+    var firstCut = b.cuts[0];
+    if (firstCut.surface !== 'flyscreen') return;
+    var numScreens = Math.round((b.cutCount || 0) / 4);
+    var frameMat = (b.totalLengthMm / 1000) * flyScreenFramePerMetre;
+    var miscMat  = numScreens * flyScreenPerUnit;
+    b.numScreens = numScreens;
+    b.frameMaterialCost = +frameMat.toFixed(2);
+    b.miscMaterialCost = +miscMat.toFixed(2);
+    b.totalMaterialCost = +(frameMat + miscMat).toFixed(2);
+    b.flyScreenFramePerMetre = flyScreenFramePerMetre;
+    b.flyScreenPerUnit = flyScreenPerUnit;
+  });
+
   return { cuts: cuts, byTrim: byTrim, frameColours: frameColours, allowanceMm: allow };
 }
 

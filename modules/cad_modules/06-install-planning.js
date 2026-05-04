@@ -98,3 +98,114 @@ if (typeof window !== 'undefined') {
   window.floorBucketToLevel = floorBucketToLevel;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// computeFrameInstallMinutes — SINGLE SOURCE OF TRUTH for per-frame install
+// minutes. Both calculateFramePrice (for the install COST in the price) and
+// autoCalcInstallPlanning (for the saved installMinutes field on the frame
+// + Check Measure hours/days) must call this. Until WIP38 they each had their
+// own formula reading different parts of the settings tree, so editing the
+// Install Times Matrix moved the price but not the saved minutes, and editing
+// Install Planning baseMinutes/floorAddOn moved the saved minutes but not the
+// price. supply_only frames also still saved 60 minutes — wrong by definition.
+//
+// Formula (all parts read from the same pc object the Settings UI writes to):
+//
+//   if installationType === 'supply_only': return 0
+//
+//   matrixBase = pc.stations.S_install.installTimes[installType][productType].t
+//                (× panels for bifold_door)        ← Install Times Matrix UI
+//   + sealTrim + cleanup                          ← S_install ops in Production Times UI
+//   + propertyTypeAdd[propertyType][sizeBucket]   ← WIP9 baseMinutes (now additive)
+//   + floorAddOn[floorBucket]                     ← WIP9 floor add-on (unchanged)
+//
+// The WIP9 baseMinutes table previously acted as the absolute base for the
+// saved installMinutes. After unification it becomes an ADDITIVE adjustment
+// per property-type/size: the matrix gives the product baseline, the WIP9
+// table layers site-specific extras on top (double brick takes longer, etc.).
+// User edits to the WIP9 table still take effect; the UI label has been
+// updated to reflect the additive semantics.
+//
+// Returns { minutes: Number, detail: String, supplyOnly: Boolean,
+//           parts: { matrixBase, panelsMult, sealTrim, cleanup,
+//                    propertyTypeAdd, floorAddOn } }
+// so callers that want to surface the breakdown can do so without a second
+// pass.
+// ═══════════════════════════════════════════════════════════════════════════
+function computeFrameInstallMinutes(frame, pc) {
+  if (!frame) return { minutes: 0, detail: '', supplyOnly: false, parts: {} };
+  pc = pc || (typeof PRICING_DEFAULTS !== 'undefined' ? PRICING_DEFAULTS : {})
+        || (typeof window !== 'undefined' && window.PRICING_DEFAULTS) || {};
+
+  var installationType = frame.installationType
+    || (frame.supplyOnly === true ? 'supply_only' : 'retrofit');
+
+  // supply_only: zero minutes — no install at all. This is what was wrong
+  // pre-WIP38: autoCalcInstallPlanning ignored installationType entirely and
+  // saved a non-zero installMinutes for supply_only frames.
+  if (installationType === 'supply_only') {
+    return {
+      minutes: 0, detail: 'supply only - no install', supplyOnly: true,
+      parts: { matrixBase: 0, panelsMult: 0, sealTrim: 0, cleanup: 0, propertyTypeAdd: 0, floorAddOn: 0 }
+    };
+  }
+
+  var productType = frame.productType;
+  var panels = (typeof frame.panelCount === 'number' && frame.panelCount > 0) ? frame.panelCount : 1;
+  var stations = (pc && pc.stations) || {};
+  var sInst = stations.S_install || {};
+  var ip = (pc && pc.installPlanning) || {};
+
+  // ─── WIP23 matrix base (per install type, per product type) ──────────────
+  var itTable = (sInst.installTimes && sInst.installTimes[installationType]) || {};
+  var itEntry = itTable[productType];
+  var matrixBase = (itEntry && typeof itEntry.t === 'number' && isFinite(itEntry.t))
+    ? itEntry.t : 45; // fallback identical to pre-WIP38 calculateFramePrice
+  var panelsMult = (productType === 'bifold_door') ? panels : 1;
+  var minutes = matrixBase * panelsMult;
+
+  // ─── S_install ops: sealTrim + cleanup (universal add-ons) ───────────────
+  var ops = sInst.ops || {};
+  var sealTrim = (ops.sealTrim && typeof ops.sealTrim.t === 'number') ? ops.sealTrim.t : 0;
+  var cleanup  = (ops.cleanup  && typeof ops.cleanup.t  === 'number') ? ops.cleanup.t  : 0;
+  minutes += sealTrim + cleanup;
+
+  // ─── WIP9 property-type adjustment (additive on top of matrix base) ──────
+  // Was the absolute base in autoCalcInstallPlanning pre-WIP38; now an
+  // additive layer so the Install Times Matrix UI is also respected.
+  var threshold = (typeof ip.sizeThresholdSqm === 'number') ? ip.sizeThresholdSqm : 2.0;
+  var areaSqm = ((Number(frame.width) || 0) * (Number(frame.height) || 0)) / 1e6;
+  var sizeBucket = (areaSqm < threshold) ? 'under' : 'over';
+  var ptype = frame.propertyType || 'brick_veneer';
+  var baseTable = ip.baseMinutes || {};
+  var baseRow = baseTable[ptype] || baseTable.brick_veneer || { under: 0, over: 0 };
+  var propertyTypeAdd = Number(baseRow[sizeBucket]) || 0;
+  minutes += propertyTypeAdd;
+
+  // ─── WIP9 floor add-on (additive — captures scaffold/crane/access cost) ──
+  var floorTable = ip.floorAddOn || {};
+  var floorN = Number(frame.floorLevel) || 0;
+  var floorBucket = (typeof floorLevelToBucket === 'function')
+    ? floorLevelToBucket(floorN)
+    : (floorN <= 0 ? 'ground' : floorN === 1 ? 'first' : floorN === 2 ? 'second' : floorN === 3 ? 'third' : 'above3');
+  var floorAdd = Number(floorTable[floorBucket]) || 0;
+  minutes += floorAdd;
+
+  var detail = installationType + ' · ' + productType
+    + (productType === 'bifold_door' ? (' (' + panels + ' panel × ' + matrixBase + ')') : (' base ' + matrixBase + 'min'))
+    + ' + seal ' + sealTrim + ' + clean ' + cleanup
+    + (propertyTypeAdd ? (' + ' + ptype + '/' + sizeBucket + ' ' + propertyTypeAdd) : '')
+    + (floorAdd ? (' + ' + floorBucket + ' ' + floorAdd) : '');
+
+  return {
+    minutes: minutes,
+    detail: detail,
+    supplyOnly: false,
+    parts: {
+      matrixBase: matrixBase, panelsMult: panelsMult,
+      sealTrim: sealTrim, cleanup: cleanup,
+      propertyTypeAdd: propertyTypeAdd, floorAddOn: floorAdd
+    }
+  };
+}
+if (typeof window !== 'undefined') window.computeFrameInstallMinutes = computeFrameInstallMinutes;
+

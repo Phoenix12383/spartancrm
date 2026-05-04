@@ -51,7 +51,139 @@ function extrudeMitred(shape, len) {
   }
   pos.needsUpdate = true;
   geo.computeVertexNormals();
+
+  // UV remap. ExtrudeGeometry's default UVs wrap textures around the
+  // cross-section perimeter on side faces, which stretches grain
+  // unpredictably and never aligns to bar length. We override here based
+  // on each vertex's face normal — the dominant axis tells us which
+  // pair of position coordinates to use as the UV plane:
+  //
+  //   • Cap face (normal ≈ ±Z, mitre cut): UV = (px, py).
+  //     The cut end shows the cross-section, with grain consistent
+  //     across both halves of the bar at the corner.
+  //   • Wide-face side (normal ≈ ±Y, the broad visible face of the bar):
+  //     UV = (px, pz). U runs across the profile width, V along the
+  //     bar's length — grain follows the bar.
+  //   • Edge-face side (normal ≈ ±X, the narrow side viewed end-on):
+  //     UV = (py, pz). U runs across the profile DEPTH, V along the
+  //     bar. Without this, the X coordinate is nearly constant across
+  //     the face and the texture stretches as horizontal stripes.
+  //
+  // The 600mm tile matches typical Renolit foil sample widths — a 1.8m
+  // bar gets three texture repeats along its length, a 3m bar five.
+  // Picking the UV pair by dominant normal axis is what makes the
+  // texture wrap correctly around all face orientations.
+  var TILE = 0.6;
+  var nrm = geo.getAttribute('normal');
+  var uv = geo.getAttribute('uv');
+  if (nrm && uv) {
+    for (var k = 0; k < pos.count; k++) {
+      var nx = Math.abs(nrm.getX(k));
+      var ny = Math.abs(nrm.getY(k));
+      var nz = Math.abs(nrm.getZ(k));
+      var px = pos.getX(k), py = pos.getY(k), pz = pos.getZ(k);
+      // Pick the UV pair based on which axis dominates the normal.
+      // The dominant-axis component is "perpendicular" to the face, so
+      // we use the OTHER two coordinates as U and V.
+      if (nz >= nx && nz >= ny) {
+        // Cap face — UV from cross-section (X, Y).
+        uv.setXY(k, px / TILE, py / TILE);
+      } else if (nx >= ny) {
+        // Edge-face side (X-perpendicular) — UV from depth × length (Y, Z).
+        uv.setXY(k, py / TILE, pz / TILE);
+      } else {
+        // Wide-face side (Y-perpendicular) — UV from width × length (X, Z).
+        uv.setXY(k, px / TILE, pz / TILE);
+      }
+    }
+    uv.needsUpdate = true;
+  }
   return geo;
+}
+
+// ─── Weld beads at mitre corners ──────────────────────────────────────────
+// On a real welded uPVC frame, you see a thin raised diagonal seam at each
+// of the four corners — the polished weld where the two members were
+// heat-fused. Adds the single most "this is a real welded window" visual
+// cue, especially visible on white frames in raking light.
+//
+// For each of the four corners of a W×H frame with profile width pw and
+// depth Dm, builds a thin tapered ridge running along the 45° diagonal
+// (from outer corner to inner corner, length = pw × √2) on both the
+// exterior and interior faces.
+//
+// Material: clones the frame's exterior material and bumps clearcoat +
+// drops clearcoat roughness so the bead reads as a glossier line under
+// directional light. polygonOffset keeps it sitting just proud of the bar
+// surface without z-fighting.
+//
+// `zOff` matches the buildMitredRect convention so beads land on a sash
+// at the right depth offset.
+function buildWeldBeads(W, H, pw, Dm, mat, mi, zOff) {
+  var g = new THREE.Group();
+  var zo = zOff || 0;
+  function beadMat(src) {
+    if (!src || typeof src.clone !== 'function') return src;
+    var b = src.clone();
+    if (typeof b.clearcoat === 'number') {
+      b.clearcoat = Math.min(1, (b.clearcoat || 0) + 0.35);
+      b.clearcoatRoughness = Math.max(0, (b.clearcoatRoughness != null ? b.clearcoatRoughness : 0.3) - 0.15);
+    }
+    if (typeof b.roughness === 'number') {
+      b.roughness = Math.max(0.05, b.roughness - 0.1);
+    }
+    b.polygonOffset = true;
+    b.polygonOffsetFactor = -1;
+    b.polygonOffsetUnits = -1;
+    return b;
+  }
+  var matExt = beadMat(mat);
+  var matInt = beadMat(mi || mat);
+
+  // Bead profile (cross-section of the raised ridge, swept along the
+  // diagonal). Tiny tapered triangle, ~1.4mm base, ~0.35mm raised.
+  var beadW = 0.0014, beadH = 0.00035;
+  var beadShape = new THREE.Shape();
+  beadShape.moveTo(-beadW/2, 0);
+  beadShape.lineTo(beadW/2, 0);
+  beadShape.lineTo(0, beadH);
+  // Length of the diagonal — runs from outer corner to inner corner of
+  // the mitre. The visible portion is pw × √2 (the full width of the bar
+  // turned 45°).
+  var diagLen = pw * Math.SQRT2;
+
+  var corners = [
+    { x: -W/2, y:  H/2, ang:  -Math.PI / 4 },     // top-left:    diag points down-right
+    { x:  W/2, y:  H/2, ang:  -3 * Math.PI / 4 }, // top-right:   down-left
+    { x: -W/2, y: -H/2, ang:   Math.PI / 4 },     // bottom-left: up-right
+    { x:  W/2, y: -H/2, ang:   3 * Math.PI / 4 }, // bottom-right: up-left
+  ];
+  var faces = [
+    { z:  Dm/2 + 0.0001 + zo, mat: matExt, normalUp: true },   // exterior
+    { z: -Dm/2 - 0.0001 + zo, mat: matInt, normalUp: false },  // interior
+  ];
+
+  corners.forEach(function(c) {
+    faces.forEach(function(f) {
+      var geo = new THREE.ExtrudeGeometry(beadShape, {
+        depth: diagLen, bevelEnabled: false, steps: 1,
+      });
+      // Reorient: rotate so extrusion runs along +X (was +Z).
+      geo.rotateY(Math.PI / 2);
+      // Up direction (was +Y) → ±Z depending on which face.
+      if (f.normalUp) geo.rotateX(-Math.PI / 2);
+      else            geo.rotateX(Math.PI / 2);
+      // Rotate around Z by the corner's diagonal angle.
+      geo.rotateZ(c.ang);
+      // Translate to the corner.
+      geo.translate(c.x, c.y, f.z);
+      geo.computeVertexNormals();
+      var m = new THREE.Mesh(geo, f.mat);
+      m.castShadow = false; m.receiveShadow = false;
+      g.add(m);
+    });
+  });
+  return g;
 }
 
 // Build a rectangular frame with 4 mitred members
@@ -99,6 +231,13 @@ function buildMitredRect(W, H, pw, extSh, intSh, mat, mi, zOff) {
   addMember(H, function(x,y,z){return [-W/2+x, z-H/2, y-D/2+zo]}, false);
   // Right: mapping reflects X → needs winding flip
   addMember(H, function(x,y,z){return [W/2-x, z-H/2, y-D/2+zo]}, true);
+  // Weld beads at the four mitre corners — thin glossy diagonal seams on
+  // both exterior and interior faces. Uses the global D constant for
+  // depth (defined in 24-materials-textures.js).
+  try {
+    var beads = buildWeldBeads(W, H, pw, D, mat, mi, zo);
+    if (beads) g.add(beads);
+  } catch (e) { /* graceful — beads are aesthetic-only */ }
   return g;
 }
 
@@ -231,7 +370,7 @@ function buildDetailedMullionBar(length, mw, dd, mat, rebSide, matInt, productTy
   if (productType && typeof getMullionProfileEntry === 'function') {
     var _ent = getMullionProfileEntry(productType);
     if (_ent && typeof buildMullionBarFromCatalog === 'function') {
-      var _bar = buildMullionBarFromCatalog(length, _ent, mat, productType, 'vertical');
+      var _bar = buildMullionBarFromCatalog(length, _ent, mat, productType, 'vertical', matInt);
       if (_bar) return _bar;
     }
   }
@@ -280,7 +419,7 @@ function buildDetailedTransomBar(length, mw, dd, mat, rebSide, matInt, productTy
   if (productType && typeof getMullionProfileEntry === 'function') {
     var _ent = getMullionProfileEntry(productType);
     if (_ent && typeof buildMullionBarFromCatalog === 'function') {
-      var _bar = buildMullionBarFromCatalog(length, _ent, mat, productType, 'horizontal');
+      var _bar = buildMullionBarFromCatalog(length, _ent, mat, productType, 'horizontal', matInt);
       if (_bar) return _bar;
     }
   }
@@ -346,7 +485,7 @@ function buildOuterFrame(W, H, mat, hasThreshold, matInt, frameWidth, productTyp
                                     chambers: profEntry.chambersMm && profEntry.chambersMm.length } : null;
     if (profEntry && profEntry.outerHullMm && profEntry.outerHullMm.length) {
       var catalogFrame = null;
-      try { catalogFrame = buildOuterFrameFromCatalog(W, H, profEntry, mat, productType); }
+      try { catalogFrame = buildOuterFrameFromCatalog(W, H, profEntry, mat, productType, null, matInt); }
       catch (e) { console.warn('[cad] buildOuterFrameFromCatalog threw for', productType, ':', e); }
       if (catalogFrame && catalogFrame.children && catalogFrame.children.length) {
         _dbg.path = 'catalog'; return catalogFrame;
