@@ -14,6 +14,17 @@
 
 defineAction('accounts-mark-invoice-paid', function(target, ev){
   var invId=target.dataset.invoiceId;
+  // Route through updateInvoiceStatus (25-invoicing.js) so that
+  // _autoAdvanceJobOnInvoicePaid runs — without this, marking an invoice
+  // paid here flipped only invoice.status; the linked progress claim on
+  // the job stayed at 'pending' and transitionJobStatus never fired,
+  // leaving jobs stuck at c_awaiting_2nd_payment / g_final_payment even
+  // though Accounts had recorded the payment. Defensive fallback retained
+  // for the load-order-fluke case.
+  if (typeof updateInvoiceStatus === 'function') {
+    updateInvoiceStatus(invId, 'paid');
+    return;
+  }
   var invs=getInvoices();
   invs=invs.map(function(x){
     return x.id===invId?Object.assign({},x,{status:'paid',paidDate:new Date().toISOString().slice(0,10)}):x;
@@ -118,7 +129,43 @@ function renderAccCashFlow(){var invoices=typeof getInvoices==='function'?getInv
 
 function renderAccRecon(){var invoices=typeof getInvoices==='function'?getInvoices():[];var recon=getReconItems();var unmatched=recon.filter(function(r){return!r.matched;});var matched=recon.filter(function(r){return r.matched;});var h='<div style="margin-bottom:20px"><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:24px;margin:0">\u2705 Reconciliation</h2><p style="color:#6b7280;font-size:13px;margin:4px 0 0">Match payments to invoices \u2014 forward remittances to <strong>accounts@spartandoubleglazing.com.au</strong></p></div>';h+='<div class="card" style="padding:16px;margin-bottom:16px;border-left:4px solid #3b82f6"><div style="display:flex;align-items:center;gap:12px"><div style="width:44px;height:44px;border-radius:10px;background:#eff6ff;display:flex;align-items:center;justify-content:center;font-size:20px">\ud83d\udce7</div><div style="flex:1"><div style="font-size:13px;font-weight:700">Dedicated Accounts Email</div><div style="font-size:14px;font-weight:700;color:#3b82f6;font-family:monospace;margin-top:2px">accounts@spartandoubleglazing.com.au</div></div><button data-action="accounts-toggle-recon-form" class="btn-r" style="font-size:12px;padding:8px 16px">\u2795 Add Payment</button></div></div>';h+='<div id="reconForm" style="display:none" class="card" style="padding:16px;margin-bottom:16px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;padding:16px"><div style="flex:1"><label style="font-size:10px;font-weight:600;color:#6b7280;display:block;margin-bottom:2px">From</label><input class="inp" id="recon_from" placeholder="Client/bank ref"></div><div style="flex:1"><label style="font-size:10px;font-weight:600;color:#6b7280;display:block;margin-bottom:2px">Amount</label><input class="inp" id="recon_amt" type="number" placeholder="0"></div><div style="flex:1"><label style="font-size:10px;font-weight:600;color:#6b7280;display:block;margin-bottom:2px">Reference</label><input class="inp" id="recon_ref" placeholder="Bank ref"></div><div><label style="font-size:10px;font-weight:600;color:#6b7280;display:block;margin-bottom:2px">Date</label><input class="inp" id="recon_date" type="date" value="'+new Date().toISOString().slice(0,10)+'"></div><button data-action="accounts-add-recon-payment" class="btn-r" style="padding:8px 14px">\u2705 Add</button></div></div>';if(unmatched.length>0){h+='<div class="card" style="padding:0;overflow:hidden;margin-bottom:16px"><div style="padding:14px 20px;border-bottom:1px solid #f0f0f0;background:#fef3c7"><h4 style="font-size:14px;font-weight:700;margin:0;color:#92400e">\u26a0\ufe0f Unmatched ('+unmatched.length+')</h4></div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th class="th">From</th><th class="th" style="text-align:right">Amount</th><th class="th">Ref</th><th class="th">Date</th><th class="th">Match To</th></tr></thead><tbody>';unmatched.forEach(function(r,i){var pots=invoices.filter(function(inv){return inv.status!=='paid'&&Math.abs((Number(inv.total)||0)-r.amount)<1;});h+='<tr style="'+(i%2?'background:#fafafa':'')+'"><td class="td" style="font-weight:600">'+r.from+'</td><td class="td" style="text-align:right;font-weight:700;color:#22c55e">$'+r.amount.toLocaleString()+'</td><td class="td" style="font-family:monospace;font-size:11px">'+r.ref+'</td><td class="td">'+r.date+'</td><td class="td">'+(pots.length>0?'<select class="sel" style="font-size:11px;padding:3px 6px" data-action="accounts-match-recon" data-recon-id="'+r.id+'"><option value="">Match\u2026</option>'+pots.map(function(p){return '<option value="'+p.id+'">'+p.invoiceNumber+' $'+Number(p.total).toLocaleString()+'</option>';}).join('')+'</select>':'<span style="color:#9ca3af;font-size:10px">No match</span>')+'</td></tr>';});h+='</tbody></table></div>';}if(matched.length>0){h+='<div class="card" style="padding:0;overflow:hidden"><div style="padding:14px 20px;border-bottom:1px solid #f0f0f0;background:#f0fdf4"><h4 style="font-size:14px;font-weight:700;margin:0;color:#15803d">\u2705 Matched ('+matched.length+')</h4></div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr><th class="th">From</th><th class="th" style="text-align:right">Amount</th><th class="th">Invoice</th><th class="th">Date</th></tr></thead><tbody>';matched.forEach(function(r,i){h+='<tr style="'+(i%2?'background:#fafafa':'')+'"><td class="td">'+r.from+'</td><td class="td" style="text-align:right;font-weight:600">$'+r.amount.toLocaleString()+'</td><td class="td" style="font-weight:600;color:#22c55e">'+(r.matchedInvoice||'')+'</td><td class="td">'+r.date+'</td></tr>';});h+='</tbody></table></div>';}return '<div>'+h+'</div>';}
 
-function matchReconToInvoice(reconId,invoiceId){var r=getReconItems();var inv=getInvoices();var invObj=inv.find(function(i){return i.id===invoiceId;});r=r.map(function(ri){return ri.id===reconId?Object.assign({},ri,{matched:true,matchedInvoiceId:invoiceId,matchedInvoice:invObj?invObj.invoiceNumber:invoiceId}):ri;});saveReconItems(r);inv=inv.map(function(i){return i.id===invoiceId?Object.assign({},i,{status:'paid',paidDate:new Date().toISOString().slice(0,10)}):i;});saveInvoices(inv);addToast('\u2705 Payment matched','success');renderPage();}
+function matchReconToInvoice(reconId, invoiceId) {
+  var invObj = getInvoices().find(function (i) { return i.id === invoiceId; });
+
+  // Recon-side: stamp matched + remember which invoice it was matched to.
+  // Persist BEFORE updateInvoiceStatus runs so the renderPage that fires
+  // from inside updateInvoiceStatus sees the matched recon item.
+  var r = getReconItems().map(function (ri) {
+    return ri.id === reconId
+      ? Object.assign({}, ri, {
+          matched: true,
+          matchedInvoiceId: invoiceId,
+          matchedInvoice: invObj ? invObj.invoiceNumber : invoiceId
+        })
+      : ri;
+  });
+  saveReconItems(r);
+
+  addToast('\u2705 Payment matched', 'success');
+
+  // Invoice-side: route through updateInvoiceStatus so
+  // _autoAdvanceJobOnInvoicePaid runs (mirrors the linked progress
+  // claim on the linked job and advances job.status). Without this the
+  // invoice was correctly flipped to paid but the bookkeeper's match
+  // never propagated to Jobs CRM. Defensive fallback retained for the
+  // load-order-fluke case.
+  if (typeof updateInvoiceStatus === 'function') {
+    updateInvoiceStatus(invoiceId, 'paid');
+    return;
+  }
+  var inv = getInvoices().map(function (i) {
+    return i.id === invoiceId
+      ? Object.assign({}, i, { status: 'paid', paidDate: new Date().toISOString().slice(0, 10) })
+      : i;
+  });
+  saveInvoices(inv);
+  renderPage();
+}
 
 
 // ── Supplier Bills ───────────────────────────────────────────────────────────
