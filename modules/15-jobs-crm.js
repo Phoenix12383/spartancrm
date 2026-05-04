@@ -286,7 +286,7 @@ function renderJobDashboard() {
     dayInstalls.slice(0,2).forEach(function(j){
       var c=contacts.find(function(ct){return ct.id===j.contactId;});
       h += '<div style="font-size:10px;color:#6b7280;margin-top:2px;padding-left:8px;border-left:2px solid #3b82f6;margin-left:2px">'
-        +'<span style="font-weight:600;color:#c41230">'+(j.jobNumber||'')+'</span> '+(c?c.fn+' '+c.ln:'')+' \u00b7 '+(j.suburb||'')+'</div>';
+        +jobLink(j)+' '+(c?c.fn+' '+c.ln:'')+' \u00b7 '+(j.suburb||'')+'</div>';
     });
     h += '</div>';
   });

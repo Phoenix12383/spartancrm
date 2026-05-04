@@ -41,6 +41,154 @@ function updateService(id, changes) {
   saveServiceCalls(list);
 }
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-03) ────────
+defineAction('service-new-call', function(target, ev) {
+  var jn = prompt('Job number or ID to create service call for:');
+  if (!jn) return;
+  var jobs = getState().jobs || [];
+  var job = jobs.find(function(j){return j.jobNumber===jn || j.id===jn;});
+  if (!job) {
+    addToast('Job not found. Enter exact job number e.g. VIC-4001', 'error');
+    return;
+  }
+  var type = prompt('Type (warranty/callback/repair/adjustment/complaint/leak/hardware/glass):', 'callback');
+  var pri = prompt('Priority (low/medium/high/urgent):', 'medium');
+  var desc = prompt('Description of issue:', '');
+  addServiceCall(job.id, type, pri, desc);
+});
+
+defineAction('service-status-filter-all', function(target, ev) {
+  setState({svcStatusFilter: ''});
+});
+
+defineAction('service-status-filter', function(target, ev) {
+  var key = target.dataset.statusKey;
+  setState({svcStatusFilter: key});
+});
+
+defineAction('service-list-row', function(target, ev) {
+  var id = target.dataset.serviceId;
+  setState({serviceDetailId: id});
+});
+
+defineAction('service-job-link', function(target, ev) {
+  ev.stopPropagation();
+  var jobId = target.dataset.jobId;
+  setState({crmMode: 'jobs', page: 'jobs', jobDetailId: jobId});
+});
+
+defineAction('service-detail-back', function(target, ev) {
+  setState({serviceDetailId: null});
+});
+
+defineAction('service-detail-job-link', function(target, ev) {
+  ev.preventDefault();
+  var jobId = target.dataset.jobId;
+  setState({crmMode: 'jobs', page: 'jobs', jobDetailId: jobId});
+});
+
+defineAction('service-update-type', function(target, ev) {
+  var id = target.dataset.svcId;
+  updateService(id, {type: target.value});
+});
+
+defineAction('service-update-priority', function(target, ev) {
+  var id = target.dataset.svcId;
+  updateService(id, {priority: target.value});
+});
+
+defineAction('service-update-status', function(target, ev) {
+  var id = target.dataset.svcId;
+  var changes = {status: target.value};
+  if (target.value === 'completed') {
+    changes.completedAt = new Date().toISOString();
+  }
+  updateService(id, changes);
+});
+
+defineAction('service-update-installer', function(target, ev) {
+  var id = target.dataset.svcId;
+  updateService(id, {
+    assignedTo: target.value,
+    status: target.value ? 'assigned' : 'new'
+  });
+});
+
+defineAction('service-update-time', function(target, ev) {
+  var id = target.dataset.svcId;
+  updateService(id, {scheduledTime: target.value});
+});
+
+defineAction('service-map-date-input', function(target, ev) {
+  svcMapDate = target.value;
+  renderPage();
+});
+
+defineAction('service-map-schedule-row', function(target, ev) {
+  var id = target.dataset.serviceId;
+  setState({crmMode: 'service', page: 'servicelist', serviceDetailId: id});
+});
+
+defineAction('service-map-booking-assign', function(target, ev) {
+  var id = target.dataset.svcId;
+  updateService(id, {
+    assignedTo: target.value,
+    status: target.value ? 'assigned' : 'new'
+  });
+});
+
+defineAction('service-map-booking-button', function(target, ev) {
+  var svcId = target.dataset.svcId;
+  var dateInputId = target.dataset.dateInputId;
+  var d = document.getElementById(dateInputId).value;
+  var svc = getServiceCalls().find(function(s){return s.id===svcId;});
+  updateService(svcId, {scheduledDate: d, status: 'scheduled'});
+  addToast(svc.serviceNumber + ' scheduled', 'success');
+});
+
+defineAction('service-sched-prev-week', function(target, ev) {
+  svcSchedOffset--;
+  renderPage();
+});
+
+defineAction('service-sched-this-week', function(target, ev) {
+  svcSchedOffset = 0;
+  renderPage();
+});
+
+defineAction('service-sched-next-week', function(target, ev) {
+  svcSchedOffset++;
+  renderPage();
+});
+
+defineAction('service-sched-gap-book', function(target, ev) {
+  if (!target.value) return;
+  var svcId = target.value;
+  var instId = target.dataset.instId;
+  var ds = target.dataset.ds;
+  updateService(svcId, {
+    scheduledDate: ds,
+    assignedTo: instId,
+    status: 'scheduled'
+  });
+  addToast('Service call booked', 'success');
+  target.value = '';
+});
+
+defineAction('service-sched-rec-book', function(target, ev) {
+  var svcId = target.dataset.svcId;
+  var ds = target.dataset.ds;
+  var instId = target.dataset.instId;
+  var instName = target.dataset.instName;
+  var svcNum = target.dataset.svcNum;
+  updateService(svcId, {
+    scheduledDate: ds,
+    assignedTo: instId,
+    status: 'scheduled'
+  });
+  addToast(svcNum + ' booked with ' + instName, 'success');
+});
+
 function renderServiceList() {
   var svcs = getServiceCalls();
   var contacts = getState().contacts || [];
@@ -67,15 +215,15 @@ function renderServiceList() {
   var header = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">'
     +'<div><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:22px;margin:0">Service Calls</h2>'
     +'<p style="color:#6b7280;font-size:13px;margin:4px 0 0">Warranty, callbacks, repairs \u2014 linked to jobs</p></div>'
-    +'<button onclick="var jn=prompt(\'Job number or ID to create service call for:\');if(!jn)return;var jobs=getState().jobs||[];var job=jobs.find(function(j){return j.jobNumber===jn||j.id===jn;});if(!job){addToast(\'Job not found. Enter exact job number e.g. VIC-4001\',\'error\');return;}var type=prompt(\'Type (warranty/callback/repair/adjustment/complaint/leak/hardware/glass):\',\'callback\');var pri=prompt(\'Priority (low/medium/high/urgent):\',\'medium\');var desc=prompt(\'Description of issue:\',\'\');addServiceCall(job.id,type,pri,desc);" class="btn-r" style="font-size:12px;gap:6px">'+Icon({n:'plus',size:14})+' New Service Call</button></div>';
+    +'<button data-action="service-new-call" class="btn-r" style="font-size:12px;gap:6px">'+Icon({n:'plus',size:14})+' New Service Call</button></div>';
 
   // Status filter pills
   var statusFilter = '<div style="display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap">';
-  statusFilter += '<button onclick="setState({svcStatusFilter:\'\'});renderPage()" class="btn-'+(!(getState().svcStatusFilter)?'r':'w')+'" style="font-size:11px;padding:4px 12px">All</button>';
+  statusFilter += '<button data-action="service-status-filter-all" class="btn-'+(!(getState().svcStatusFilter)?'r':'w')+'" style="font-size:11px;padding:4px 12px">All</button>';
   SERVICE_STATUSES.forEach(function(st){
     var cnt = svcs.filter(function(s){return s.status===st.key;}).length;
     var active = getState().svcStatusFilter===st.key;
-    statusFilter += '<button onclick="setState({svcStatusFilter:\''+st.key+'\'});renderPage()" class="btn-'+(active?'r':'w')+'" style="font-size:11px;padding:4px 12px">'+st.label+' ('+cnt+')</button>';
+    statusFilter += '<button data-action="service-status-filter" data-status-key="'+st.key+'" class="btn-'+(active?'r':'w')+'" style="font-size:11px;padding:4px 12px">'+st.label+' ('+cnt+')</button>';
   });
   statusFilter += '</div>';
 
@@ -98,9 +246,9 @@ function renderServiceList() {
       var pr = SERVICE_PRIORITIES[svc.priority]||SERVICE_PRIORITIES.medium;
       var inst = getInstallers().find(function(i){return i.id===svc.assignedTo;});
       var age = Math.floor((new Date()-new Date(svc.created))/86400000);
-      table += '<tr style="cursor:pointer" onclick="setState({serviceDetailId:\''+svc.id+'\'})" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'\'">'
+      table += '<tr style="cursor:pointer" data-action="service-list-row" data-service-id="'+svc.id+'" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'\'">'
         +'<td class="td" style="font-weight:700;color:#c41230">'+svc.serviceNumber+'</td>'
-        +'<td class="td"><span style="color:#3b82f6;cursor:pointer" onclick="event.stopPropagation();setState({crmMode:\'jobs\',page:\'jobs\',jobDetailId:\''+svc.jobId+'\'})">'+svc.jobNumber+'</span></td>'
+        +'<td class="td"><span style="color:#3b82f6;cursor:pointer" data-action="service-job-link" data-job-id="'+svc.jobId+'">'+svc.jobNumber+'</span></td>'
         +'<td class="td">'+svc.contactName+'</td>'
         +'<td class="td"><span class="bdg" style="font-size:10px">'+(SERVICE_TYPES[svc.type]||svc.type)+'</span></td>'
         +'<td class="td"><span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:'+pr.bg+';color:'+pr.col+'">'+pr.label+'</span></td>'
@@ -129,11 +277,11 @@ function renderServiceDetail(svcId) {
 
   var h = '<div>'
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">'
-    +'<button onclick="setState({serviceDetailId:null})" class="btn-g" style="padding:4px 8px">'+Icon({n:'left',size:14})+'</button>'
+    +'<button data-action="service-detail-back" class="btn-g" style="padding:4px 8px">'+Icon({n:'left',size:14})+'</button>'
     +'<h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:20px;margin:0">'+svc.serviceNumber+'</h2>'
     +'<span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:10px;background:'+pr.bg+';color:'+pr.col+'">'+pr.label+'</span>'
     +'<span style="font-size:11px;font-weight:600;color:'+st.col+'">\u25cf '+st.label+'</span>'
-    +'<span style="font-size:11px;color:#6b7280;margin-left:auto">'+age+' days old \u00b7 Linked to <a href="#" onclick="event.preventDefault();setState({crmMode:\'jobs\',page:\'jobs\',jobDetailId:\''+svc.jobId+'\'})" style="color:#3b82f6">'+svc.jobNumber+'</a></span>'
+    +'<span style="font-size:11px;color:#6b7280;margin-left:auto">'+age+' days old \u00b7 Linked to <a href="#" data-action="service-detail-job-link" data-job-id="'+svc.jobId+'" style="color:#3b82f6">'+svc.jobNumber+'</a></span>'
     +'</div>';
 
   h += '<div style="display:grid;grid-template-columns:2fr 1fr;gap:16px">';
@@ -142,9 +290,9 @@ function renderServiceDetail(svcId) {
     +'<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9ca3af;margin-bottom:10px">Service Details</div>'
     +'<div style="display:grid;gap:10px">'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
-    +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Type</label><select class="sel" style="font-size:13px;padding:8px" onchange="updateService(\''+svc.id+'\',{type:this.value});renderPage()">'+Object.entries(SERVICE_TYPES).map(function(e){return '<option value="'+e[0]+'"'+(svc.type===e[0]?' selected':'')+'>'+e[1]+'</option>';}).join('')+'</select></div>'
-    +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Priority</label><select class="sel" style="font-size:13px;padding:8px" onchange="updateService(\''+svc.id+'\',{priority:this.value});renderPage()">'+Object.keys(SERVICE_PRIORITIES).map(function(k){return '<option value="'+k+'"'+(svc.priority===k?' selected':'')+'>'+SERVICE_PRIORITIES[k].label+'</option>';}).join('')+'</select></div></div>'
-    +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Status</label><select class="sel" style="font-size:13px;padding:8px" onchange="updateService(\''+svc.id+'\',{status:this.value'+(this.value==='completed'?',completedAt:new Date().toISOString()':'')+'}); renderPage()">'+SERVICE_STATUSES.map(function(s){return '<option value="'+s.key+'"'+(svc.status===s.key?' selected':'')+'>'+s.label+'</option>';}).join('')+'</select></div>'
+    +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Type</label><select class="sel" style="font-size:13px;padding:8px" data-action="service-update-type" data-svc-id="'+svc.id+'">'+Object.entries(SERVICE_TYPES).map(function(e){return '<option value="'+e[0]+'"'+(svc.type===e[0]?' selected':'')+'>'+e[1]+'</option>';}).join('')+'</select></div>'
+    +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Priority</label><select class="sel" style="font-size:13px;padding:8px" data-action="service-update-priority" data-svc-id="'+svc.id+'">'+Object.keys(SERVICE_PRIORITIES).map(function(k){return '<option value="'+k+'"'+(svc.priority===k?' selected':'')+'>'+SERVICE_PRIORITIES[k].label+'</option>';}).join('')+'</select></div></div>'
+    +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Status</label><select class="sel" style="font-size:13px;padding:8px" data-action="service-update-status" data-svc-id="'+svc.id+'">'+SERVICE_STATUSES.map(function(s){return '<option value="'+s.key+'"'+(svc.status===s.key?' selected':'')+'>'+s.label+'</option>';}).join('')+'</select></div>'
     +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Description</label><textarea class="inp" rows="3" style="font-size:13px" onblur="updateService(\''+svc.id+'\',{description:this.value})">'+svc.description+'</textarea></div>'
     +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Resolution Notes</label><textarea class="inp" rows="3" style="font-size:13px" onblur="updateService(\''+svc.id+'\',{resolution:this.value})">'+svc.resolution+'</textarea></div>'
     +'</div></div></div>';
@@ -153,9 +301,9 @@ function renderServiceDetail(svcId) {
   h += '<div><div class="card" style="padding:16px;margin-bottom:14px">'
     +'<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9ca3af;margin-bottom:10px">Schedule & Assignment</div>'
     +'<div style="display:grid;gap:10px">'
-    +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Assigned Installer</label><select class="sel" style="font-size:13px;padding:8px" onchange="updateService(\''+svc.id+'\',{assignedTo:this.value,status:this.value?\'assigned\':\'new\'});renderPage()"><option value="">Unassigned</option>'+installers.map(function(i){return '<option value="'+i.id+'"'+(svc.assignedTo===i.id?' selected':'')+'>'+i.name+'</option>';}).join('')+'</select></div>'
+    +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Assigned Installer</label><select class="sel" style="font-size:13px;padding:8px" data-action="service-update-installer" data-svc-id="'+svc.id+'"><option value="">Unassigned</option>'+installers.map(function(i){return '<option value="'+i.id+'"'+(svc.assignedTo===i.id?' selected':'')+'>'+i.name+'</option>';}).join('')+'</select></div>'
     +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Scheduled Date</label><input type="date" class="inp" value="'+(svc.scheduledDate||'')+'" style="font-size:13px;padding:8px" onblur="updateService(\''+svc.id+'\',{scheduledDate:this.value,status:this.value?\'scheduled\':\'assigned\'});renderPage()"></div>'
-    +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Scheduled Time</label><select class="sel" style="font-size:13px;padding:8px" onchange="updateService(\''+svc.id+'\',{scheduledTime:this.value})"><option value="">Select time</option>'+['07:00','07:30','08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','13:00','14:00','15:00','16:00'].map(function(t){return '<option value="'+t+'"'+(svc.scheduledTime===t?' selected':'')+'>'+formatTime12(t)+'</option>';}).join('')+'</select></div>'
+    +'<div><label style="font-size:10px;font-weight:600;color:#6b7280">Scheduled Time</label><select class="sel" style="font-size:13px;padding:8px" data-action="service-update-time" data-svc-id="'+svc.id+'"><option value="">Select time</option>'+['07:00','07:30','08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','13:00','14:00','15:00','16:00'].map(function(t){return '<option value="'+t+'"'+(svc.scheduledTime===t?' selected':'')+'>'+formatTime12(t)+'</option>';}).join('')+'</select></div>'
     +'</div></div>'
     +'<div class="card" style="padding:16px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9ca3af;margin-bottom:10px">Site Info</div>'
     +'<div style="font-size:13px;color:#374151;line-height:1.8">'
@@ -195,7 +343,7 @@ function renderServiceMap() {
     +'<div class="card" style="flex:1;min-width:110px;padding:12px 16px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Unbooked</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;color:#f59e0b;margin-top:2px">'+unbooked.length+'</div></div>'
     +'<div class="card" style="flex:1;min-width:110px;padding:12px 16px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase">Today</div><div style="font-size:20px;font-weight:800;font-family:Syne,sans-serif;color:#22c55e;margin-top:2px">'+bookedToday.length+'</div></div></div>';
 
-  var filters='<div style="display:flex;gap:8px;margin-bottom:14px"><input type="date" value="'+svcMapDate+'" oninput="svcMapDate=this.value;renderPage()" class="inp" style="font-size:13px;padding:7px 10px"></div>';
+  var filters='<div style="display:flex;gap:8px;margin-bottom:14px"><input type="date" value="'+svcMapDate+'" data-action="service-map-date-input" class="inp" style="font-size:13px;padding:7px 10px"></div>';
 
   // Left: map + daily schedule
   var left='<div style="display:flex;flex-direction:column;gap:14px">';
@@ -204,7 +352,7 @@ function renderServiceMap() {
   if(bookedToday.length===0){left+='<div style="padding:20px;text-align:center;color:#9ca3af;font-size:12px">No service calls scheduled for this date</div>';}
   else{bookedToday.sort(function(a,b){return(a.scheduledTime||'99').localeCompare(b.scheduledTime||'99');}).forEach(function(svc,i){
     var inst=installers.find(function(x){return x.id===svc.assignedTo;});var pr=SERVICE_PRIORITIES[svc.priority]||SERVICE_PRIORITIES.medium;
-    left+='<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;'+(i<bookedToday.length-1?'border-bottom:1px solid #f9fafb':'')+';cursor:pointer" onclick="setState({crmMode:\'service\',page:\'servicelist\',serviceDetailId:\''+svc.id+'\'})">'
+    left+='<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;'+(i<bookedToday.length-1?'border-bottom:1px solid #f9fafb':'')+';cursor:pointer" data-action="service-map-schedule-row" data-service-id="'+svc.id+'">'
       +'<div style="min-width:45px;font-size:13px;font-weight:700">'+(svc.scheduledTime?formatTime12(svc.scheduledTime):'\u2014')+'</div>'
       +(inst?'<div style="width:10px;height:10px;border-radius:50%;background:'+inst.colour+';flex-shrink:0"></div>':'')
       +'<div style="flex:1"><div style="font-size:12px;font-weight:600">'+svc.serviceNumber+' \u2014 '+svc.contactName+'</div>'
@@ -223,9 +371,9 @@ function renderServiceMap() {
       right+='<div style="display:flex;align-items:center;gap:6px;padding:8px 16px;border-bottom:1px solid #fafafa">'
         +'<div style="flex:1;min-width:0"><div style="font-size:11px"><span style="font-weight:700;color:#c41230">'+svc.serviceNumber+'</span> '+svc.contactName+'</div>'
         +'<div style="font-size:10px;color:#6b7280">'+(SERVICE_TYPES[svc.type]||'')+' \u00b7 <span style="font-weight:600;color:'+pr.col+'">'+pr.label+'</span></div></div>'
-        +'<select class="sel" style="font-size:9px;padding:2px 3px;width:70px" onchange="updateService(\''+svc.id+'\',{assignedTo:this.value,status:this.value?\'assigned\':\'new\'});renderPage()"><option value="">Assign</option>'+installers.map(function(i){return '<option value="'+i.id+'">'+i.name.split(' ')[0]+'</option>';}).join('')+'</select>'
+        +'<select class="sel" style="font-size:9px;padding:2px 3px;width:70px" data-action="service-map-booking-assign" data-svc-id="'+svc.id+'"><option value="">Assign</option>'+installers.map(function(i){return '<option value="'+i.id+'">'+i.name.split(' ')[0]+'</option>';}).join('')+'</select>'
         +'<input type="date" class="inp" style="font-size:9px;padding:2px 3px;width:105px" value="'+svcMapDate+'" id="svcb_d_'+svc.id+'">'
-        +'<button onclick="var d=document.getElementById(\'svcb_d_'+svc.id+'\').value;updateService(\''+svc.id+'\',{scheduledDate:d,status:\'scheduled\'});addToast(\''+svc.serviceNumber+' scheduled\',\'success\');renderPage();" class="btn-r" style="font-size:9px;padding:2px 8px">Book</button></div>';});
+        +'<button data-action="service-map-booking-button" data-svc-id="'+svc.id+'" data-date-input-id="svcb_d_'+svc.id+'" class="btn-r" style="font-size:9px;padding:2px 8px">Book</button></div>';});
     right+='</div>';});right+='</div>';}
   right+='</div></div>';
 
@@ -258,9 +406,9 @@ function renderSvcSchedule() {
 
   // Week nav
   var nav = '<div style="display:flex;align-items:center;gap:6px;margin-bottom:14px">'
-    +'<button onclick="svcSchedOffset--;renderPage()" class="btn-w" style="padding:5px 10px;font-size:12px">\u2190</button>'
-    +'<button onclick="svcSchedOffset=0;renderPage()" class="btn-'+(svcSchedOffset===0?'r':'w')+'" style="padding:5px 14px;font-size:12px;font-weight:700">This Week</button>'
-    +'<button onclick="svcSchedOffset++;renderPage()" class="btn-w" style="padding:5px 10px;font-size:12px">\u2192</button>'
+    +'<button data-action="service-sched-prev-week" class="btn-w" style="padding:5px 10px;font-size:12px">\u2190</button>'
+    +'<button data-action="service-sched-this-week" class="btn-'+(svcSchedOffset===0?'r':'w')+'" style="padding:5px 14px;font-size:12px;font-weight:700">This Week</button>'
+    +'<button data-action="service-sched-next-week" class="btn-w" style="padding:5px 10px;font-size:12px">\u2192</button>'
     +'<span style="font-family:Syne,sans-serif;font-weight:700;font-size:14px;margin-left:8px">'+fmtShortDate(weekDates[0])+' \u2014 '+fmtShortDate(weekDates[6])+'</span></div>';
 
   // KPIs — capacity focused, no revenue
@@ -366,7 +514,7 @@ function renderSvcSchedule() {
       if (hasFree) {
         grid += '<div style="background:#eff6ff;border:1px dashed #93c5fd;border-radius:6px;padding:4px 6px;margin-top:2px;text-align:center">'
           +'<div style="font-size:9px;font-weight:700;color:#3b82f6">'+freeH+'h free</div>'
-          +'<select class="sel" style="font-size:9px;padding:1px 3px;width:100%;margin-top:2px;color:#3b82f6;border-color:#93c5fd" onchange="if(this.value){updateService(this.value,{scheduledDate:\''+ds+'\',assignedTo:\''+inst.id+'\',status:\'scheduled\'});addToast(\'Service call booked\',\'success\');renderPage();this.value=\'\';}">'
+          +'<select class="sel" style="font-size:9px;padding:1px 3px;width:100%;margin-top:2px;color:#3b82f6;border-color:#93c5fd" data-action="service-sched-gap-book" data-inst-id="'+inst.id+'" data-ds="'+ds+'">'
           +'<option value="">+ Service call</option>'
           +unbooked.map(function(s){var pr=SERVICE_PRIORITIES[s.priority]||SERVICE_PRIORITIES.medium; return '<option value="'+s.id+'">'+s.serviceNumber+' '+s.suburb+' ('+pr.label+')</option>';}).join('')
           +'</select></div>';
@@ -402,7 +550,7 @@ function renderSvcSchedule() {
         +'<td class="td">'+dayLabel+' \u00b7 after '+timeLabel+' \u00b7 '+r.gap.freeH+'h gap</td>'
         +'<td class="td"><div style="display:flex;align-items:center;gap:4px"><div style="width:16px;height:16px;border-radius:50%;background:'+r.gap.inst.colour+';color:#fff;font-size:8px;font-weight:700;display:flex;align-items:center;justify-content:center">'+(r.gap.inst.name||'?')[0]+'</div>'+r.gap.inst.name+'</div></td>'
         +'<td class="td">'+matchLabel+'</td>'
-        +'<td class="td"><button onclick="updateService(\''+r.svc.id+'\',{scheduledDate:\''+r.gap.ds+'\',assignedTo:\''+r.gap.inst.id+'\',status:\'scheduled\'});addToast(\''+r.svc.serviceNumber+' booked with '+r.gap.inst.name+'\',\'success\');renderPage();" class="btn-r" style="font-size:10px;padding:3px 10px">Book</button></td></tr>';
+        +'<td class="td"><button data-action="service-sched-rec-book" data-svc-id="'+r.svc.id+'" data-ds="'+r.gap.ds+'" data-inst-id="'+r.gap.inst.id+'" data-inst-name="'+r.gap.inst.name+'" data-svc-num="'+r.svc.serviceNumber+'" class="btn-r" style="font-size:10px;padding:3px 10px">Book</button></td></tr>';
     });
     recsHtml += '</tbody></table>';
   }
@@ -414,4 +562,3 @@ function renderSvcSchedule() {
     +nav+kpi+grid+recsHtml
     +'</div>';
 }
-

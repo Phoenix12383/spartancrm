@@ -4,6 +4,126 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-03) ────────
+
+defineAction('auth-audit-entity-type', function(target, ev) {
+  setAuditFilter('entityType', target.value);
+});
+
+defineAction('auth-audit-user', function(target, ev) {
+  setAuditFilter('userId', target.value);
+});
+
+defineAction('auth-audit-action', function(target, ev) {
+  setAuditFilter('action', target.value);
+});
+
+defineAction('auth-audit-date-from', function(target, ev) {
+  setAuditFilter('dateFrom', target.value);
+});
+
+defineAction('auth-audit-date-to', function(target, ev) {
+  setAuditFilter('dateTo', target.value);
+});
+
+defineAction('auth-audit-search', function(target, ev) {
+  setAuditFilter('search', target.value);
+});
+
+defineAction('auth-clear-audit-filters', function(target, ev) {
+  clearAuditFilters();
+});
+
+defineAction('auth-export-audit-csv', function(target, ev) {
+  exportAuditCsv();
+});
+
+defineAction('auth-toggle-audit-expand', function(target, ev) {
+  var entryId = target.dataset.entryId;
+  toggleAuditExpand(entryId);
+});
+
+defineAction('auth-audit-prev-page', function(target, ev) {
+  var pageNum = parseInt(target.dataset.pageNum, 10);
+  setAuditPage(pageNum);
+});
+
+defineAction('auth-audit-next-page', function(target, ev) {
+  var pageNum = parseInt(target.dataset.pageNum, 10);
+  setAuditPage(pageNum);
+});
+
+defineAction('auth-audit-entity-nav', function(target, ev) {
+  ev.preventDefault();
+  var nav = target.dataset.nav;
+  if (nav) eval(nav);
+});
+
+defineAction('auth-emergency-reset-login', function(target, ev) {
+  ev.preventDefault();
+  emergencyResetLogin();
+});
+
+defineAction('auth-admin-close-modal', function(target, ev) {
+  adminCloseModal();
+});
+
+defineAction('auth-admin-modal-bg', function(target, ev) {
+  if (ev.target === target) adminCloseModal();
+});
+
+defineAction('auth-admin-draft-name', function(target, ev) {
+  adminDraftSet('name', target.value);
+});
+
+defineAction('auth-admin-draft-email', function(target, ev) {
+  adminDraftSet('email', target.value);
+});
+
+defineAction('auth-admin-draft-role', function(target, ev) {
+  adminDraftSet('role', target.value);
+});
+
+defineAction('auth-admin-draft-branch', function(target, ev) {
+  adminDraftSet('branch', target.value);
+});
+
+defineAction('auth-admin-draft-phone', function(target, ev) {
+  adminDraftSet('phone', target.value);
+});
+
+defineAction('auth-admin-draft-color', function(target, ev) {
+  adminDraftSet('color', target.value);
+});
+
+defineAction('auth-admin-draft-pw', function(target, ev) {
+  adminDraftSet('pw', target.value);
+});
+
+defineAction('auth-admin-toggle-svc-state', function(target, ev) {
+  var state = target.dataset.st;
+  adminDraftToggleSvcState(state, target.checked);
+});
+
+defineAction('auth-admin-toggle-perm', function(target, ev) {
+  var perm = target.dataset.perm;
+  adminDraftTogglePerm(perm, target.checked);
+});
+
+defineAction('auth-admin-toggle-perm-editor', function(target, ev) {
+  var editor = document.getElementById('permEditor');
+  editor.style.display = editor.style.display === 'block' ? 'none' : 'block';
+});
+
+defineAction('auth-admin-delete-user', function(target, ev) {
+  var userId = target.dataset.userId;
+  adminDeleteUser(userId);
+});
+
+defineAction('auth-admin-save-user', function(target, ev) {
+  adminSaveUser();
+});
+
 // True when the app is running inside the Capacitor Android/iOS wrapper.
 // Render functions read this to lock the wrapper to Sales-CRM-only navigation.
 function isNativeWrapper() {
@@ -374,32 +494,32 @@ function renderAuditPage() {
     + '<div class="card" style="padding:14px 16px;margin-bottom:14px">'
     +   '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:10px">'
     +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Entity type</label>'
-    +       '<select class="sel" id="audit_entity_type" onchange="setAuditFilter(\'entityType\',this.value)">'
+    +       '<select class="sel" id="audit_entity_type" data-on-change="auth-audit-entity-type">'
     +         '<option value="">All</option>'
     +         AUDIT_ENTITY_TYPES.map(function (t) { return '<option value="' + t + '"' + (auditPageFilter.entityType === t ? ' selected' : '') + '>' + t + '</option>'; }).join('')
     +       '</select></div>'
     +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">User</label>'
-    +       '<select class="sel" id="audit_user" onchange="setAuditFilter(\'userId\',this.value)">'
+    +       '<select class="sel" id="audit_user" data-on-change="auth-audit-user">'
     +         '<option value="">All</option>'
     +         users.map(function (u) { return '<option value="' + u.id + '"' + (auditPageFilter.userId === u.id ? ' selected' : '') + '>' + (u.name || u.id) + '</option>'; }).join('')
     +       '</select></div>'
     +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Action</label>'
-    +       '<select class="sel" id="audit_action" onchange="setAuditFilter(\'action\',this.value)">'
+    +       '<select class="sel" id="audit_action" data-on-change="auth-audit-action">'
     +         '<option value="">All</option>'
     +         Object.keys(AUDIT_ACTIONS).sort().map(function (k) { return '<option value="' + k + '"' + (auditPageFilter.action === k ? ' selected' : '') + '>' + AUDIT_ACTIONS[k] + ' (' + k + ')</option>'; }).join('')
     +       '</select></div>'
     +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">From</label>'
-    +       '<input class="inp" id="audit_from" type="date" value="' + (auditPageFilter.dateFrom || '') + '" onchange="setAuditFilter(\'dateFrom\',this.value)"></div>'
+    +       '<input class="inp" id="audit_from" type="date" value="' + (auditPageFilter.dateFrom || '') + '" data-on-change="auth-audit-date-from"></div>'
     +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">To</label>'
-    +       '<input class="inp" id="audit_to" type="date" value="' + (auditPageFilter.dateTo || '') + '" onchange="setAuditFilter(\'dateTo\',this.value)"></div>'
+    +       '<input class="inp" id="audit_to" type="date" value="' + (auditPageFilter.dateTo || '') + '" data-on-change="auth-audit-date-to"></div>'
     +     '<div><label style="font-size:11px;color:#6b7280;display:block;margin-bottom:4px">Search summary</label>'
-    +       '<input class="inp" id="audit_search" type="search" placeholder="Free text…" value="' + (auditPageFilter.search || '').replace(/"/g, '&quot;') + '" oninput="setAuditFilter(\'search\',this.value)"></div>'
+    +       '<input class="inp" id="audit_search" type="search" placeholder="Free text…" value="' + (auditPageFilter.search || '').replace(/"/g, '&quot;') + '" data-on-input="auth-audit-search"></div>'
     +   '</div>'
     +   '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#6b7280">'
     +     '<div>' + totalEntries + ' entr' + (totalEntries === 1 ? 'y' : 'ies') + (hasFilters ? ' (filtered)' : '') + '</div>'
     +     '<div style="display:flex;gap:8px">'
-    +       (hasFilters ? '<button class="btn-w" onclick="clearAuditFilters()" style="font-size:12px">Clear filters</button>' : '')
-    +       '<button class="btn-w" onclick="exportAuditCsv()" style="font-size:12px">⬇ Export CSV</button>'
+    +       (hasFilters ? '<button class="btn-w" data-action="auth-clear-audit-filters" style="font-size:12px">Clear filters</button>' : '')
+    +       '<button class="btn-w" data-action="auth-export-audit-csv" style="font-size:12px">⬇ Export CSV</button>'
     +     '</div>'
     +   '</div>'
     + '</div>';
@@ -408,7 +528,7 @@ function renderAuditPage() {
   var rows = pageEntries.map(function (e) {
     var nav = _auditEntityNav(e.entityType, e.entityId);
     var entityCell = e.entityType
-      ? (nav ? '<a href="javascript:void(0)" onclick="' + nav + '" style="color:#c41230;text-decoration:none;font-weight:500">' + e.entityType + (e.entityId ? '/' + e.entityId.slice(0, 12) : '') + '</a>'
+      ? (nav ? '<a href="#" data-action="auth-audit-entity-nav" data-nav="' + nav + '" style="color:#c41230;text-decoration:none;font-weight:500">' + e.entityType + (e.entityId ? '/' + e.entityId.slice(0, 12) : '') + '</a>'
               : '<span style="color:#6b7280">' + e.entityType + (e.entityId ? '/' + e.entityId.slice(0, 12) : '') + '</span>')
       : '<span style="color:#9ca3af">—</span>';
     var actionLabel = AUDIT_ACTIONS[e.action] || e.action;
@@ -432,7 +552,7 @@ function renderAuditPage() {
       +   '<td class="td" style="font-size:12px;font-weight:500">' + actionLabel + '</td>'
       +   '<td class="td" style="font-size:12px;color:#1a1a1a">' + (e.summary || '').replace(/</g, '&lt;') + '</td>'
       +   '<td class="td" style="text-align:right">' + (hasDiff
-            ? '<button onclick="toggleAuditExpand(\'' + e.id + '\')" class="btn-g" style="font-size:11px;padding:3px 8px">' + (expanded ? '▾ Hide' : '▸ Show') + '</button>'
+            ? '<button data-action="auth-toggle-audit-expand" data-entry-id="' + e.id + '" class="btn-g" style="font-size:11px;padding:3px 8px">' + (expanded ? '▾ Hide' : '▸ Show') + '</button>'
             : '<span style="color:#9ca3af;font-size:11px">—</span>') + '</td>'
       + '</tr>'
       + diffRow;
@@ -447,9 +567,9 @@ function renderAuditPage() {
     + '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-top:1px solid #f0f0f0;font-size:12px;color:#6b7280">'
     +   '<div>Showing ' + (pageEntries.length === 0 ? 0 : (pageStart + 1)) + '–' + (pageStart + pageEntries.length) + ' of ' + totalEntries + '</div>'
     +   '<div style="display:flex;align-items:center;gap:8px">'
-    +     '<button class="btn-w" onclick="setAuditPage(' + (auditPageNum - 1) + ')" ' + (auditPageNum === 0 ? 'disabled' : '') + ' style="font-size:11px;padding:4px 10px">← Prev</button>'
+    +     '<button class="btn-w" data-action="auth-audit-prev-page" data-page-num="' + (auditPageNum - 1) + '" ' + (auditPageNum === 0 ? 'disabled' : '') + ' style="font-size:11px;padding:4px 10px">← Prev</button>'
     +     '<span>Page ' + (auditPageNum + 1) + ' of ' + totalPages + '</span>'
-    +     '<button class="btn-w" onclick="setAuditPage(' + (auditPageNum + 1) + ')" ' + (auditPageNum >= totalPages - 1 ? 'disabled' : '') + ' style="font-size:11px;padding:4px 10px">Next →</button>'
+    +     '<button class="btn-w" data-action="auth-audit-next-page" data-page-num="' + (auditPageNum + 1) + '" ' + (auditPageNum >= totalPages - 1 ? 'disabled' : '') + ' style="font-size:11px;padding:4px 10px">Next →</button>'
     +   '</div>'
     + '</div>';
 
@@ -901,7 +1021,7 @@ function canManageUsers() { return hasPermission('data.manage_users'); }
 function renderLoginScreen(){
 // Emergency reset is a developer-only escape hatch; hide from end users.
 var _devReset = (typeof isDevMode === 'function' && isDevMode())
-  ? '<div style="margin-top:18px;text-align:center;font-size:11px;color:#9ca3af">Locked out? <a href="#" onclick="event.preventDefault();emergencyResetLogin()" style="color:#6b7280;text-decoration:underline">Emergency reset</a></div>'
+  ? '<div style="margin-top:18px;text-align:center;font-size:11px;color:#9ca3af">Locked out? <a href="#" data-action="auth-emergency-reset-login" style="color:#6b7280;text-decoration:underline">Emergency reset</a></div>'
   : '';
 document.getElementById('app').innerHTML='<div class="login-bg"><div class="login-card"><div style="text-align:center;margin-bottom:28px"><img src="data:image/png;base64,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" style="width:56px;height:56px;border-radius:14px;margin:0 auto 14px;display:block;object-fit:contain" alt="Spartan DG"><h1 style="font-family:Syne,sans-serif;font-weight:800;font-size:22px;margin:0">SPARTAN CRM</h1><p style="font-size:13px;color:#6b7280;margin:4px 0 0">Double Glazing \u00b7 Sign in</p></div><div id="loginErr" style="display:none;padding:10px;background:#fee2e2;border:1px solid #fecaca;border-radius:8px;color:#b91c1c;font-size:12px;margin-bottom:14px;text-align:center"></div><div style="margin-bottom:14px"><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Email</label><input id="loginEmail" class="inp" type="email" placeholder="you@spartandoubleglazing.com.au" autofocus></div><div style="margin-bottom:20px"><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Password</label><input id="loginPw" class="inp" type="password" placeholder="Enter password" onkeydown="if(event.key===\'Enter\')doLogin()"></div><button onclick="doLogin()" class="btn-r" style="width:100%;justify-content:center;padding:10px;font-size:14px">Sign In</button><div style="display:flex;align-items:center;gap:12px;margin:16px 0"><div style="flex:1;height:1px;background:#e5e7eb"></div><span style="font-size:11px;color:#9ca3af;white-space:nowrap">or</span><div style="flex:1;height:1px;background:#e5e7eb"></div></div><button onclick="googleSignInForLogin()" style="width:100%;padding:10px;border:1px solid #e5e7eb;border-radius:10px;background:#fff;cursor:pointer;font-family:inherit;font-size:13px;font-weight:600;color:#374151;display:flex;align-items:center;justify-content:center;gap:10px" onmouseover="this.style.background=\'#f9fafb\'" onmouseout="this.style.background=\'#fff\'"><svg width="16" height="16" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>Sign in with Google</button>'+_devReset+'</div></div>';
 }
@@ -1070,12 +1190,12 @@ function renderAdminUserModal(){
   if (!isNew && !existingUser) return '';
   var titleName = isNew ? '' : existingUser.name;
   var deletableId = (!isNew && existingUser && existingUser.id !== (getCurrentUser()||{}).id) ? existingUser.id : null;
-  return '<div class="modal-bg" onclick="if(event.target===this)adminCloseModal()"><div class="modal" style="max-width:480px">'
-  +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">'+(isNew?'Add New User':'Edit User: '+_escAttr(titleName))+'</h3><button onclick="adminCloseModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button></div>'
+  return '<div class="modal-bg" data-action="auth-admin-modal-bg"><div class="modal" style="max-width:480px">'
+  +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">'+(isNew?'Add New User':'Edit User: '+_escAttr(titleName))+'</h3><button data-action="auth-admin-close-modal" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button></div>'
   +'<div class="modal-body" style="display:flex;flex-direction:column;gap:14px">'
-  +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Full Name *</label><input class="inp" id="au_name" value="'+_escAttr(d.name)+'" placeholder="Jane Smith" oninput="adminDraftSet(\'name\',this.value)"></div>'
-  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Email *</label><input class="inp" id="au_email" value="'+_escAttr(d.email)+'" type="email" placeholder="jane@spartandg.com.au" oninput="adminDraftSet(\'email\',this.value)"></div></div>'
-  +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Role</label><select class="sel" id="au_role" onchange="adminDraftSet(\'role\',this.value)">'
+  +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Full Name *</label><input class="inp" id="au_name" value="'+_escAttr(d.name)+'" placeholder="Jane Smith" data-on-input="auth-admin-draft-name"></div>'
+  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Email *</label><input class="inp" id="au_email" value="'+_escAttr(d.email)+'" type="email" placeholder="jane@spartandg.com.au" data-on-input="auth-admin-draft-email"></div></div>'
+  +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px"><div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Role</label><select class="sel" id="au_role" data-on-change="auth-admin-draft-role">'
   +'<option value="admin"'+(d.role==='admin'?' selected':'')+'>Admin</option>'
   +'<option value="sales_manager"'+(d.role==='sales_manager'?' selected':'')+'>Sales Manager</option>'
   +'<option value="sales_rep"'+(d.role==='sales_rep'?' selected':'')+'>Sales Rep</option>'
@@ -1085,12 +1205,12 @@ function renderAdminUserModal(){
   +'<option value="accounts"'+(d.role==='accounts'?' selected':'')+'>Accounts</option>'
   +'<option value="service_staff"'+(d.role==='service_staff'?' selected':'')+'>Service Staff</option>'
   +'<option value="viewer"'+(d.role==='viewer'?' selected':'')+'>Viewer</option></select></div>'
-  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Branch</label><select class="sel" id="au_branch" onchange="adminDraftSet(\'branch\',this.value)">'
+  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Branch</label><select class="sel" id="au_branch" data-on-change="auth-admin-draft-branch">'
   +'<option value="All"'+(d.branch==='All'?' selected':'')+'>All</option>'
   +'<option value="VIC"'+(d.branch==='VIC'?' selected':'')+'>VIC</option>'
   +'<option value="ACT"'+(d.branch==='ACT'?' selected':'')+'>ACT</option>'
   +'<option value="SA"'+(d.branch==='SA'?' selected':'')+'>SA</option></select></div></div>'
-  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Phone</label><input class="inp" id="au_phone" value="'+_escAttr(d.phone)+'" placeholder="+61 4xx xxx xxx" oninput="adminDraftSet(\'phone\',this.value)"></div>'
+  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Phone</label><input class="inp" id="au_phone" value="'+_escAttr(d.phone)+'" placeholder="+61 4xx xxx xxx" data-on-input="auth-admin-draft-phone"></div>'
   +function(){
     // Service states — AU states this user can claim unassigned leads from.
     // Shown for all roles (harmless for non-sales) so admin can configure
@@ -1100,16 +1220,16 @@ function renderAdminUserModal(){
       +'<div style="display:flex;flex-wrap:wrap;gap:4px">'
       +ALL_AU_STATES.map(function(st){
         var on = cur.indexOf(st) >= 0;
-        return '<label style="display:flex;align-items:center;gap:4px;font-size:11px;padding:3px 9px;border-radius:6px;cursor:pointer;background:'+(on?'#fef2f2':'#f3f4f6')+';border:1px solid '+(on?'#fca5a5':'#e5e7eb')+'"><input type="checkbox" class="svcstate-cb" data-st="'+st+'" '+(on?'checked':'')+' onchange="adminDraftToggleSvcState(\''+st+'\',this.checked)" style="accent-color:#c41230;width:12px;height:12px">'+st+'</label>';
+        return '<label style="display:flex;align-items:center;gap:4px;font-size:11px;padding:3px 9px;border-radius:6px;cursor:pointer;background:'+(on?'#fef2f2':'#f3f4f6')+';border:1px solid '+(on?'#fca5a5':'#e5e7eb')+'"><input type="checkbox" class="svcstate-cb" data-st="'+st+'" '+(on?'checked':'')+' data-on-change="auth-admin-toggle-svc-state" style="accent-color:#c41230;width:12px;height:12px">'+st+'</label>';
       }).join('')
       +'</div></div>';
   }()
   +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Map pin colour</label>'
   +'<div style="display:flex;align-items:center;gap:10px">'
-  +'<input type="color" id="au_color" value="'+_escAttr(d.color||'#c41230')+'" style="width:50px;height:34px;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;padding:2px" onchange="adminDraftSet(\'color\',this.value)" oninput="adminDraftSet(\'color\',this.value)">'
+  +'<input type="color" id="au_color" value="'+_escAttr(d.color||'#c41230')+'" style="width:50px;height:34px;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;padding:2px" data-on-change="auth-admin-draft-color" data-on-input="auth-admin-draft-color">'
   +'<span style="font-size:11px;color:#6b7280">Used on the Leads / Schedule / Calendar maps for this rep\u2019s pins.</span>'
   +'</div></div>'
-  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">'+(isNew?'Password *':'New Password (blank = keep current)')+'</label><input class="inp" id="au_pw" type="password" value="'+_escAttr(d.pw)+'" placeholder="'+(isNew?'Set password':'Leave blank to keep')+'" oninput="adminDraftSet(\'pw\',this.value)"></div>'
+  +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">'+(isNew?'Password *':'New Password (blank = keep current)')+'</label><input class="inp" id="au_pw" type="password" value="'+_escAttr(d.pw)+'" placeholder="'+(isNew?'Set password':'Leave blank to keep')+'" data-on-input="auth-admin-draft-pw"></div>'
   +'<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:12px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-size:12px;font-weight:600;color:#0369a1">Role Permissions</div><button onclick="document.getElementById(\'permEditor\').style.display=document.getElementById(\'permEditor\').style.display===\'block\'?\'none\':\'block\'" style="font-size:10px;padding:3px 8px;border:1px solid #bae6fd;border-radius:4px;background:#fff;cursor:pointer;color:#0369a1;font-weight:600">Customise \u25bc</button></div><div style="font-size:11px;color:#475569;line-height:1.7"><strong>Admin:</strong> Full access<br><strong>Sales Manager:</strong> Sales + Jobs + limited Accounts<br><strong>Sales Rep:</strong> Own leads, deals, contacts<br><strong>Production Manager:</strong> Factory + Jobs production<br><strong>Production Staff:</strong> Factory floor only<br><strong>Installer:</strong> Assigned jobs, CM, schedule<br><strong>Accounts:</strong> All financials, read-only ops<br><strong>Service Staff:</strong> Service CRM + view Jobs<br><strong>Viewer:</strong> Read-only</div>'
   +'<div id="permEditor" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #bae6fd">'
   +'<div style="font-size:10px;font-weight:700;color:#0369a1;margin-bottom:6px;text-transform:uppercase">Custom Permission Overrides (Admin Only)</div>'
@@ -1118,7 +1238,7 @@ function renderAdminUserModal(){
   +'</div>'
   +'<div style="padding:16px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;border-radius:0 0 16px 16px;display:flex;justify-content:'+(isNew?'flex-end':'space-between')+';gap:10px">'
   +(deletableId?'<button onclick="adminDeleteUser(\''+deletableId+'\')" style="padding:8px 14px;border:1px solid #fca5a5;border-radius:8px;background:#fef2f2;color:#b91c1c;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600">Delete User</button>':'<div></div>')
-  +'<div style="display:flex;gap:8px"><button class="btn-w" onclick="adminCloseModal()">Cancel</button><button class="btn-r" onclick="adminSaveUser()">'+(isNew?'Create User':'Save Changes')+'</button></div>'
+  +'<div style="display:flex;gap:8px"><button class="btn-w" data-action="auth-admin-close-modal">Cancel</button><button class="btn-r" data-action="auth-admin-save-user">'+(isNew?'Create User':'Save Changes')+'</button></div>'
   +'</div></div></div>';
 }
 
@@ -1269,3 +1389,13 @@ const addToast = (msg, type='success') => {
   setTimeout(()=>setState({toasts:_state.toasts.filter(t=>t.id!==id)}), 3500);
 };
 
+// Expose state-management primitives on window. Top-level `const` declarations
+// in classic <script> tags don't attach to the global object, so inline event
+// handlers like `onclick="setState({leadDetailId:null})"` (still in use across
+// 13-leads-maps.js, 22-jobs-page.js, 17-install-schedule.js, etc. pending the
+// data-action migration) can't resolve them via the window scope chain. These
+// re-exports let the inline handlers find them. Remove once every inline
+// handler has been migrated to data-action.
+window.setState = setState;
+window.getState = getState;
+window.addToast = addToast;

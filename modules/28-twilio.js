@@ -9,6 +9,108 @@
 var _twilioDevice = null;
 window._twilioReady = false;
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-03) ────────
+defineAction('twilio-mute', function(target, ev) {
+  var isMuted = !_twilioActiveCall || !_twilioActiveCall.muted;
+  twilioMute(isMuted);
+});
+
+defineAction('twilio-hangup', function(target, ev) {
+  twilioHangup();
+});
+
+defineAction('twilio-decline-incoming', function(target, ev) {
+  twilioDeclineIncoming();
+});
+
+defineAction('twilio-answer-incoming', function(target, ev) {
+  twilioAnswerIncoming();
+});
+
+defineAction('twilio-backspace-dial', function(target, ev) {
+  backspacePhonePageDial();
+});
+
+defineAction('twilio-dial-digit', function(target, ev) {
+  var digit = target.dataset.digit;
+  if (digit) setPhonePageDialDigit(digit);
+});
+
+defineAction('twilio-dial-from-page', function(target, ev) {
+  dialFromPhonePage();
+});
+
+defineAction('twilio-dial-recent', function(target, ev) {
+  var num = target.dataset.number;
+  if (num) dialRecentNumber(num);
+});
+
+defineAction('twilio-play-recording', function(target, ev) {
+  var callSid = target.dataset.callSid;
+  var slotId = target.dataset.slotId;
+  if (callSid && slotId) loadAndPlayRecording(callSid, slotId);
+});
+
+defineAction('twilio-call-back', function(target, ev) {
+  var phone = target.dataset.phone;
+  var entityId = target.dataset.entityId;
+  var entityType = target.dataset.entityType;
+  if (phone) twilioCall(phone, entityId || null, entityType || null);
+});
+
+defineAction('twilio-set-phone-tab', function(target, ev) {
+  var tab = target.dataset.tab;
+  if (tab) setPhonePageTab(tab);
+});
+
+defineAction('twilio-mobile-backspace', function(target, ev) {
+  mobileDialerBackspace();
+});
+
+defineAction('twilio-mobile-press', function(target, ev) {
+  var digit = target.dataset.digit;
+  if (digit) mobileDialerPress(digit);
+});
+
+defineAction('twilio-mobile-cancel', function(target, ev) {
+  cancelMobileDialer();
+});
+
+defineAction('twilio-mobile-sms', function(target, ev) {
+  mobileDialerSms();
+});
+
+defineAction('twilio-mobile-call', function(target, ev) {
+  mobileDialerCall();
+});
+
+defineAction('twilio-dial-input-change', function(target, ev) {
+  setPhonePageDialFromInput(target.value);
+});
+
+defineAction('twilio-modal-bg-click', function(target, ev) {
+  if (ev.target === target) cancelMobileDialer();
+});
+
+defineAction('twilio-view-record', function(target, ev) {
+  var entityId = target.dataset.entityId;
+  var entityType = target.dataset.entityType;
+  if (!entityId || !entityType || typeof setState !== 'function') return;
+  if (entityType === 'contact') setState({ contactDetailId: entityId, page: 'contacts' });
+  else if (entityType === 'lead') setState({ leadDetailId: entityId, page: 'leads' });
+  else if (entityType === 'deal') setState({ dealDetailId: entityId, page: 'deals' });
+});
+
+defineAction('twilio-open-call-record', function(target, ev) {
+  var entityId = target.dataset.entityId;
+  var entityType = target.dataset.entityType;
+  if (!entityId || !entityType || typeof setState !== 'function') return;
+  if (entityType === 'contact') setState({ contactDetailId: entityId, page: 'contacts' });
+  else if (entityType === 'lead') setState({ leadDetailId: entityId, page: 'leads' });
+  else if (entityType === 'deal') setState({ dealDetailId: entityId, page: 'deals' });
+  else if (entityType === 'job') setState({ jobDetailId: entityId, page: 'jobs' });
+});
+
 // Register (or refresh) the Twilio Voice SDK device for the current rep.
 //
 // Called from 99-init.js after a successful login, and silently from the
@@ -602,9 +704,9 @@ function renderActiveCallPanel() {
     +     '<div style="font-size:14px;font-weight:700;line-height:1.2">' + (displayName || ac.phone || 'Outbound call') + '</div>'
     +     '<div style="font-size:11px;opacity:.85;line-height:1.3"><span id="callStatusLabel">' + (ac.status === 'in-call' ? 'In call' : 'Ringing…') + '</span> · <span id="callTimer">' + _twilioFmtDuration(initialElapsed) + '</span> · ' + (ac.phone || '') + '</div>'
     +   '</div>'
-    +   (openRecordOnclick ? '<button onclick="' + openRecordOnclick + '" style="background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.4);color:#fff;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Open record</button>' : '')
-    +   '<button id="callMuteBtn" onclick="twilioMute(!_twilioActiveCall || !_twilioActiveCall.muted)" style="background:#fff;border:none;color:#15803d;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">' + (ac.muted ? '🔊 Unmute' : '🔇 Mute') + '</button>'
-    +   '<button onclick="twilioHangup()" style="background:#dc2626;border:none;color:#fff;padding:6px 16px;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">📞 End</button>'
+    +   (ac.entityId && ac.entityType ? '<button data-action="twilio-open-call-record" data-entity-id="' + ac.entityId + '" data-entity-type="' + ac.entityType + '" style="background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.4);color:#fff;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Open record</button>' : '')
+    +   '<button id="callMuteBtn" data-action="twilio-mute" style="background:#fff;border:none;color:#15803d;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">' + (ac.muted ? '🔊 Unmute' : '🔇 Mute') + '</button>'
+    +   '<button data-action="twilio-hangup" style="background:#dc2626;border:none;color:#fff;padding:6px 16px;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit">📞 End</button>'
     + '</div>';
 }
 
@@ -820,8 +922,8 @@ function renderIncomingCallBanner() {
     +     '<div style="font-size:16px;font-weight:700;line-height:1.2">' + displayName + '</div>'
     +     '<div style="font-size:12px;opacity:.85;line-height:1.3">' + subtitle + '</div>'
     +   '</div>'
-    +   '<button onclick="twilioDeclineIncoming()" style="background:#dc2626;border:none;color:#fff;padding:10px 22px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;min-height:44px">✕ Decline</button>'
-    +   '<button onclick="twilioAnswerIncoming()" style="background:#16a34a;border:none;color:#fff;padding:10px 26px;border-radius:8px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;min-height:44px;box-shadow:0 0 0 0 rgba(22,163,74,.6);animation:spartanAnswerPulse 1.2s ease-out infinite">📞 Answer</button>'
+    +   '<button data-action="twilio-decline-incoming" style="background:#dc2626;border:none;color:#fff;padding:10px 22px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;min-height:44px">✕ Decline</button>'
+    +   '<button data-action="twilio-answer-incoming" style="background:#16a34a;border:none;color:#fff;padding:10px 26px;border-radius:8px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;min-height:44px;box-shadow:0 0 0 0 rgba(22,163,74,.6);animation:spartanAnswerPulse 1.2s ease-out infinite">📞 Answer</button>'
     + '</div>'
     + '<style>@keyframes spartanIncomingPulse{from{box-shadow:0 2px 12px rgba(30,64,175,.5)}to{box-shadow:0 2px 24px rgba(30,64,175,.9)}}@keyframes spartanAnswerPulse{0%{box-shadow:0 0 0 0 rgba(22,163,74,.6)}70%{box-shadow:0 0 0 14px rgba(22,163,74,0)}100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}}</style>';
 }
@@ -1110,24 +1212,24 @@ function renderDialpad() {
     + '<div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#6b7280;letter-spacing:.06em;margin-bottom:10px">Dialpad</div>'
 
     + '<div style="display:flex;gap:6px;align-items:center;margin-bottom:14px">'
-    +   '<input id="phoneDialInput" value="' + (_phonePageState.dialNumber || '').replace(/"/g, '&quot;') + '" placeholder="+61 4xx xxx xxx" oninput="setPhonePageDialFromInput(this.value)" style="flex:1;font-family:monospace;font-size:18px;font-weight:600;letter-spacing:1px;padding:10px 12px;border:2px solid #e5e7eb;border-radius:10px;outline:none">'
-    +   '<button onclick="backspacePhonePageDial()" title="Backspace" style="padding:10px 14px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:10px;cursor:pointer;font-size:16px">⌫</button>'
+    +   '<input id="phoneDialInput" value="' + (_phonePageState.dialNumber || '').replace(/"/g, '&quot;') + '" placeholder="+61 4xx xxx xxx" data-on-input="twilio-dial-input-change" style="flex:1;font-family:monospace;font-size:18px;font-weight:600;letter-spacing:1px;padding:10px 12px;border:2px solid #e5e7eb;border-radius:10px;outline:none">'
+    +   '<button data-action="twilio-backspace-dial" title="Backspace" style="padding:10px 14px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:10px;cursor:pointer;font-size:16px">⌫</button>'
     + '</div>'
 
     + '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">'
     +   keys.map(function(k){
-          return '<button onclick="setPhonePageDialDigit(\'' + k + '\')" class="dialpad-key" style="font-size:22px;font-weight:600;padding:18px 0;background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;cursor:pointer;font-family:inherit;min-height:60px" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#f9fafb\'">' + k + '</button>';
+          return '<button data-action="twilio-dial-digit" data-digit="' + k + '" class="dialpad-key" style="font-size:22px;font-weight:600;padding:18px 0;background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;cursor:pointer;font-family:inherit;min-height:60px" onmouseover="this.style.background=\'#f3f4f6\'" onmouseout="this.style.background=\'#f9fafb\'">' + k + '</button>';
         }).join('')
     + '</div>'
 
-    + '<button onclick="dialFromPhonePage()" style="width:100%;padding:14px;background:#22c55e;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;min-height:50px">📞 Call</button>'
+    + '<button data-action="twilio-dial-from-page" style="width:100%;padding:14px;background:#22c55e;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;gap:8px;min-height:50px">📞 Call</button>'
 
     + (recentUnique.length > 0 ? (
         '<div style="margin-top:16px;padding-top:14px;border-top:1px solid #f0f0f0">'
         +   '<div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#9ca3af;letter-spacing:.05em;margin-bottom:8px">Recent</div>'
         +   '<div style="display:flex;flex-wrap:wrap;gap:6px">'
         +     recentUnique.map(function(n){
-                return '<button onclick="dialRecentNumber(\'' + n + '\')" style="font-size:12px;font-family:monospace;padding:5px 10px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:18px;cursor:pointer">' + n + '</button>';
+                return '<button data-action="twilio-dial-recent" data-number="' + n + '" style="font-size:12px;font-family:monospace;padding:5px 10px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:18px;cursor:pointer">' + n + '</button>';
               }).join('')
         +   '</div>'
         + '</div>'
@@ -1187,23 +1289,17 @@ function renderCallHistoryRow(call, opts) {
     if (_phoneAudioBlobs[call.twilio_sid]) {
       recordingHtml = '<div id="' + slotId + '"><audio controls src="' + _phoneAudioBlobs[call.twilio_sid] + '" style="height:30px;vertical-align:middle"></audio></div>';
     } else {
-      recordingHtml = '<div id="' + slotId + '"><button onclick="loadAndPlayRecording(\'' + call.twilio_sid + '\',\'' + slotId + '\')" style="font-size:11px;padding:4px 12px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;font-family:inherit">▶ Play recording</button></div>';
+      recordingHtml = '<div id="' + slotId + '"><button data-action="twilio-play-recording" data-call-sid="' + call.twilio_sid + '" data-slot-id="' + slotId + '" style="font-size:11px;padding:4px 12px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;font-family:inherit">▶ Play recording</button></div>';
     }
   }
 
   // Action buttons
   var actions = '';
   if (call.direction === 'outbound' && phoneShown) {
-    actions += '<button onclick="twilioCall(\'' + phoneShown + '\',\'' + (call.entity_id||'') + '\',\'' + (call.entity_type||'') + '\')" style="font-size:11px;padding:4px 10px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;font-family:inherit;margin-left:6px">📞 Call back</button>';
+    actions += '<button data-action="twilio-call-back" data-phone="' + phoneShown + '" data-entity-id="' + (call.entity_id||'') + '" data-entity-type="' + (call.entity_type||'') + '" style="font-size:11px;padding:4px 10px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;font-family:inherit;margin-left:6px">📞 Call back</button>';
   }
   if (call.entity_id && call.entity_type) {
-    var nav = '';
-    if (call.entity_type === 'contact') nav = "setState({contactDetailId:'" + call.entity_id + "',page:'contacts'})";
-    else if (call.entity_type === 'lead') nav = "setState({leadDetailId:'" + call.entity_id + "',page:'leads'})";
-    else if (call.entity_type === 'deal') nav = "setState({dealDetailId:'" + call.entity_id + "',page:'deals'})";
-    if (nav) {
-      actions += '<button onclick="' + nav + '" style="font-size:11px;padding:4px 10px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;font-family:inherit;margin-left:6px">View record</button>';
-    }
+    actions += '<button data-action="twilio-view-record" data-entity-id="' + call.entity_id + '" data-entity-type="' + call.entity_type + '" style="font-size:11px;padding:4px 10px;background:#fff;border:1px solid #e5e7eb;border-radius:6px;cursor:pointer;font-family:inherit;margin-left:6px">View record</button>';
   }
 
   return '<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:' + rowBg + ';border:1px solid #e5e7eb;border-radius:10px;margin-bottom:6px">'
@@ -1310,7 +1406,7 @@ function renderPhonePage() {
 
   function tabBtn(id, label, count) {
     var on = _phonePageState.tab === id;
-    return '<button onclick="setPhonePageTab(\'' + id + '\')" style="padding:8px 14px;background:' + (on ? '#1a1a1a' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';border:1px solid ' + (on ? '#1a1a1a' : '#e5e7eb') + ';border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">' + label + ' <span style="opacity:.7;font-weight:400">' + count + '</span></button>';
+    return '<button data-action="twilio-set-phone-tab" data-tab="' + id + '" style="padding:8px 14px;background:' + (on ? '#1a1a1a' : '#fff') + ';color:' + (on ? '#fff' : '#374151') + ';border:1px solid ' + (on ? '#1a1a1a' : '#e5e7eb') + ';border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">' + label + ' <span style="opacity:.7;font-weight:400">' + count + '</span></button>';
   }
 
   return ''
@@ -1473,9 +1569,9 @@ function renderMobileDialerModal() {
     rows.map(function(row) {
       return row.map(function(d) {
         if (d === '⌫') {
-          return '<button onclick="mobileDialerBackspace()" style="' + cellBase + ';font-size:18px;color:#6b7280" aria-label="Backspace">⌫</button>';
+          return '<button data-action="twilio-mobile-backspace" style="' + cellBase + ';font-size:18px;color:#6b7280" aria-label="Backspace">⌫</button>';
         }
-        return '<button onclick="mobileDialerPress(\'' + d + '\')" style="' + cellBase + '" aria-label="' + d + '">' + d + '</button>';
+        return '<button data-action="twilio-mobile-press" data-digit="' + d + '" style="' + cellBase + '" aria-label="' + d + '">' + d + '</button>';
       }).join('');
     }).join('') +
   '</div>';
@@ -1489,22 +1585,21 @@ function renderMobileDialerModal() {
   var smsBg  = actionDisabled ? '#9ca3af' : '#3b82f6';
 
   return ''
-    + '<div class="modal-bg" onclick="if(event.target===this)cancelMobileDialer()" style="z-index:300;align-items:flex-end">'
+    + '<div class="modal-bg" data-action="twilio-modal-bg-click" style="z-index:300;align-items:flex-end">'
     +   '<div class="modal" style="max-width:480px;width:100%;border-radius:18px 18px 0 0;margin:0">'
     +     '<div class="modal-header" style="padding:14px 18px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
     +       '<h3 style="margin:0;font-size:15px;font-weight:700;font-family:Syne,sans-serif">Dial a number</h3>'
-    +       '<button onclick="cancelMobileDialer()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1;padding:0">×</button>'
+    +       '<button data-action="twilio-mobile-cancel" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1;padding:0">×</button>'
     +     '</div>'
     +     '<div class="modal-body" style="padding:14px 18px;display:flex;flex-direction:column;gap:14px">'
     +       '<div style="text-align:center;padding:10px;background:#f9fafb;border-radius:12px;font-size:24px;font-weight:700;color:' + displayCol + ';font-family:Syne,sans-serif;letter-spacing:.02em;min-height:36px;line-height:36px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + displayText + '</div>'
     +       pad
     +     '</div>'
     +     '<div class="modal-footer" style="padding:12px 18px;border-top:1px solid #f0f0f0;display:flex;gap:8px;flex-wrap:wrap">'
-    +       '<button onclick="cancelMobileDialer()" style="padding:14px 16px;border-radius:12px;border:1px solid #e5e7eb;background:#fff;font-size:14px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit">Cancel</button>'
-    +       '<button onclick="' + (actionDisabled ? '' : 'mobileDialerSms()')  + '" ' + (actionDisabled ? 'disabled' : '') + ' style="' + actionBase + ';background:' + smsBg  + '" aria-label="Send SMS"><span style="font-size:16px">✉</span><span>SMS</span></button>'
-    +       '<button onclick="' + (actionDisabled ? '' : 'mobileDialerCall()') + '" ' + (actionDisabled ? 'disabled' : '') + ' style="' + actionBase + ';background:' + callBg + '" aria-label="Call"><span style="font-size:16px">📞</span><span>CALL</span></button>'
+    +       '<button data-action="twilio-mobile-cancel" style="padding:14px 16px;border-radius:12px;border:1px solid #e5e7eb;background:#fff;font-size:14px;font-weight:600;color:#374151;cursor:pointer;font-family:inherit">Cancel</button>'
+    +       '<button data-action="twilio-mobile-sms" ' + (actionDisabled ? 'disabled' : '') + ' style="' + actionBase + ';background:' + smsBg  + '" aria-label="Send SMS"><span style="font-size:16px">✉</span><span>SMS</span></button>'
+    +       '<button data-action="twilio-mobile-call" ' + (actionDisabled ? 'disabled' : '') + ' style="' + actionBase + ';background:' + callBg + '" aria-label="Call"><span style="font-size:16px">📞</span><span>CALL</span></button>'
     +     '</div>'
     +   '</div>'
     + '</div>';
 }
-

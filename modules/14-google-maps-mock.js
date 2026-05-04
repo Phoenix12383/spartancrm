@@ -312,15 +312,21 @@ async function refreshMockMapData() {
 // EXPORTS (same API as real Google Maps)
 // ============================================
 
-// Create a mock Google namespace
-window.google = {
-    maps: {
+// Create a mock Google namespace.
+// CRITICAL: merge into window.google instead of overwriting it. The Google
+// Identity Services library (loaded earlier from accounts.google.com/gsi/client)
+// sets window.google.accounts, which would be wiped if we did the naive
+// `window.google = {maps: …}` assignment. Same for the real Google Maps SDK
+// when it eventually loads — only mock if real maps isn't already there.
+window.google = window.google || {};
+if (!window.google.maps || !window.google.maps.Map) {
+    window.google.maps = {
         Map: class { constructor() { console.log('Mock Map created'); } },
         Marker: class { setMap() {} },
         InfoWindow: class {},
         event: { addListener: () => {} }
-    }
-};
+    };
+}
 
 // Expose functions with same names as real implementation
 window.initGoogleMaps = (containerId) => initMockMap(containerId);

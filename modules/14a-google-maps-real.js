@@ -7,6 +7,13 @@
 // the mock stays in place as a graceful fallback.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-03) ────────
+defineAction('maps-open-lead', function(target, ev) {
+  var leadId = target.dataset.leadId;
+  setState({leadDetailId: leadId, page: 'leads'});
+  renderPage();
+});
+
 var _realLeadsMap = null;
 var _realLeadsMarkers = [];
 
@@ -376,7 +383,7 @@ function refreshRealScheduleMapData() {
           '<strong>' + leadName.trim() + '</strong><br>' +
           (lead.suburb || '') + ' (' + (lead.branch || '') + ')<br>' +
           '<span style="color:#f59e0b;font-weight:600">⏳ Unscheduled</span>' +
-          '<br><a href="#" style="color:#c41230;font-size:11px" onclick="event.preventDefault();setState({leadDetailId:\'' + lead.id + '\',page:\'leads\'})">Open lead →</a></div>'
+          '<br><a href="#" style="color:#c41230;font-size:11px" data-action="maps-open-lead" data-lead-id="' + lead.id + '">Open lead →</a></div>'
       });
       iw.open({ anchor: marker, map: _scheduleMap });
     });

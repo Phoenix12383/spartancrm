@@ -4,6 +4,79 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-03) ────────
+defineAction('invoicing-nav-to-deal', function(target, ev) {
+  setState({ dealDetailId: target.dataset.dealId, page: 'deals' });
+});
+
+defineAction('invoicing-nav-to-contact', function(target, ev) {
+  setState({ contactDetailId: target.dataset.contactId, page: 'contacts' });
+});
+
+defineAction('invoicing-nav-to-invoicing', function(target, ev) {
+  setState({ page: 'invoicing' });
+});
+
+defineAction('invoicing-generate-pdf', function(target, ev) {
+  generateInvoicePDF(target.dataset.invoiceId);
+});
+
+defineAction('invoicing-update-status', function(target, ev) {
+  updateInvoiceStatus(target.dataset.invoiceId, target.dataset.status);
+});
+
+defineAction('invoicing-send-reminder', function(target, ev) {
+  sendInvoiceReminder(target.dataset.invoiceId, 'email');
+});
+
+defineAction('invoicing-export-xero', function(target, ev) {
+  exportToXero(target.dataset.invoiceId);
+});
+
+defineAction('invoicing-void-invoice', function(target, ev) {
+  voidInvoice(target.dataset.invoiceId);
+});
+
+defineAction('invoicing-update-claim-percent', function(target, ev) {
+  updateClaimPercentInput(target.dataset.invoiceId);
+});
+
+defineAction('invoicing-add-line-item', function(target, ev) {
+  addLineItem(target.dataset.invoiceId);
+});
+
+defineAction('invoicing-remove-line-item', function(target, ev) {
+  removeLineItem(target.dataset.invoiceId, target.dataset.itemId);
+});
+
+defineAction('invoicing-save-line-item', function(target, ev) {
+  saveLineItem(target.dataset.invoiceId, target.dataset.itemId);
+});
+
+defineAction('invoicing-update-invoice-field', function(target, ev) {
+  var value = target.type === 'checkbox' ? target.checked : target.value;
+  updateInvoiceField(target.dataset.invoiceId, target.dataset.field, value);
+});
+
+defineAction('invoicing-set-tab', function(target, ev) {
+  invTab = target.dataset.tab;
+  renderPage();
+});
+
+defineAction('invoicing-select-invoice', function(target, ev) {
+  invSelectedId = target.dataset.invoiceId;
+  renderPage();
+});
+
+defineAction('invoicing-select-invoice-from-deal', function(target, ev) {
+  invSelectedId = target.dataset.invoiceId;
+  setState({ page: 'invoicing' });
+});
+
+defineAction('invoicing-create-invoice', function(target, ev) {
+  createInvoice(target.dataset.dealId, target.dataset.type);
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 // INVOICING PAGE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -48,16 +121,16 @@ function renderInvoicingPage() {
     detailHtml = '<div style="flex:1;overflow-y:auto;background:#fff">'
       +'<div style="padding:20px 24px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">'
       +'<div><div style="font-size:18px;font-weight:800;font-family:Syne,sans-serif">'+si.invoiceNumber+'</div>'
-      +'<div style="font-size:13px;color:#6b7280;cursor:pointer" onclick="setState({dealDetailId:\''+si.dealId+'\',page:\'deals\'})">'+si.dealTitle+' \u2197</div>'
+      +'<div style="font-size:13px;color:#6b7280;cursor:pointer" data-action="invoicing-nav-to-deal" data-deal-id="'+si.dealId+'">'+si.dealTitle+' \u2197</div>'
       +(si.type==='progress_claim'?'<span style="font-size:11px;padding:2px 8px;border-radius:20px;background:#e0e7ff;color:#4338ca;font-weight:600;margin-top:4px;display:inline-block">Progress Claim #'+si.claimNumber+'</span>':'')
       +'</div>'
       +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
-      +'<button onclick="generateInvoicePDF(\''+si.id+'\')" class="btn-r" style="font-size:12px;gap:4px">\ud83d\udcc4 Download PDF</button>'
-      +(si.status==='draft'?'<button onclick="updateInvoiceStatus(\''+si.id+'\',\'sent\')" class="btn-w" style="font-size:11px">Mark Sent</button>':'')
-      +(si.status==='sent'||si.status==='overdue'?'<button onclick="updateInvoiceStatus(\''+si.id+'\',\'paid\')" class="btn-w" style="font-size:11px;color:#15803d;border-color:#86efac">\u2713 Mark Paid</button>':'')
-      +(si.status!=='paid'&&si.status!=='void'?'<button onclick="sendInvoiceReminder(\''+si.id+'\',\'email\')" class="btn-w" style="font-size:11px">\u2709 Send Reminder</button>':'')
-      +'<button onclick="exportToXero(\''+si.id+'\')" class="btn-w" style="font-size:11px">Xero</button>'
-      +(si.status==='draft'?'<button onclick="voidInvoice(\''+si.id+'\')" class="btn-w" style="font-size:11px;color:#b91c1c">Void</button>':'')
+      +'<button data-action="invoicing-generate-pdf" data-invoice-id="'+si.id+'" class="btn-r" style="font-size:12px;gap:4px">\ud83d\udcc4 Download PDF</button>'
+      +(si.status==='draft'?'<button data-action="invoicing-update-status" data-invoice-id="'+si.id+'" data-status="sent" class="btn-w" style="font-size:11px">Mark Sent</button>':'')
+      +(si.status==='sent'||si.status==='overdue'?'<button data-action="invoicing-update-status" data-invoice-id="'+si.id+'" data-status="paid" class="btn-w" style="font-size:11px;color:#15803d;border-color:#86efac">\u2713 Mark Paid</button>':'')
+      +(si.status!=='paid'&&si.status!=='void'?'<button data-action="invoicing-send-reminder" data-invoice-id="'+si.id+'" class="btn-w" style="font-size:11px">\u2709 Send Reminder</button>':'')
+      +'<button data-action="invoicing-export-xero" data-invoice-id="'+si.id+'" class="btn-w" style="font-size:11px">Xero</button>'
+      +(si.status==='draft'?'<button data-action="invoicing-void-invoice" data-invoice-id="'+si.id+'" class="btn-w" style="font-size:11px;color:#b91c1c">Void</button>':'')
       +'</div></div>'
 
       // Status row
@@ -76,12 +149,12 @@ function renderInvoicingPage() {
         +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
         +existingClaims.map(function(ec){var col=ec.status==='paid'?'#15803d':ec.status==='void'?'#9ca3af':'#1d4ed8'; return '<span style="font-size:10px;font-weight:600;padding:2px 8px;border-radius:20px;background:'+col+'15;color:'+col+'">Claim #'+ec.claimNumber+': '+ec.claimPercent+'% ('+ec.status+')</span>';}).join('')
         +'</div>'
-        +(si.status==='draft'?'<div style="display:flex;align-items:center;gap:10px"><span style="font-size:12px;font-weight:600;color:#374151">Claim percentage:</span><input id="claim_pct_input" type="number" step="0.5" min="0.5" max="'+(100-totalClaimed+si.claimPercent)+'" value="'+si.claimPercent+'" class="inp" style="width:80px;text-align:center;font-size:14px;font-weight:700"><span style="font-size:13px;font-weight:700">%</span><button onclick="updateClaimPercentInput(\''+si.id+'\')" class="btn-r" style="font-size:11px;padding:4px 12px">Apply</button><span style="font-size:11px;color:#6b7280">Max: '+(100-totalClaimed+si.claimPercent)+'%</span></div>':'')
+        +(si.status==='draft'?'<div style="display:flex;align-items:center;gap:10px"><span style="font-size:12px;font-weight:600;color:#374151">Claim percentage:</span><input id="claim_pct_input" type="number" step="0.5" min="0.5" max="'+(100-totalClaimed+si.claimPercent)+'" value="'+si.claimPercent+'" class="inp" style="width:80px;text-align:center;font-size:14px;font-weight:700"><span style="font-size:13px;font-weight:700">%</span><button data-action="invoicing-update-claim-percent" data-invoice-id="'+si.id+'" class="btn-r" style="font-size:11px;padding:4px 12px">Apply</button><span style="font-size:11px;color:#6b7280">Max: '+(100-totalClaimed+si.claimPercent)+'%</span></div>':'')
         +'</div>':'')
 
       // Bill To + Job Ref
       +'<div style="padding:14px 24px;border-bottom:1px solid #f0f0f0;display:grid;grid-template-columns:1fr 1fr;gap:16px">'
-      +'<div><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Bill To</div><div style="font-size:13px;font-weight:600;cursor:pointer;color:#3b82f6" onclick="setState({contactDetailId:\''+si.contactId+'\',page:\'contacts\'})">'+si.contactName+'</div>'+(si.contactEmail?'<div style="font-size:12px;color:#6b7280">'+si.contactEmail+'</div>':'')+(si.contactAddress?'<div style="font-size:12px;color:#6b7280">'+si.contactAddress+'</div>':'')+'</div>'
+      +'<div><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Bill To</div><div style="font-size:13px;font-weight:600;cursor:pointer;color:#3b82f6" data-action="invoicing-nav-to-contact" data-contact-id="'+si.contactId+'">'+si.contactName+'</div>'+(si.contactEmail?'<div style="font-size:12px;color:#6b7280">'+si.contactEmail+'</div>':'')+(si.contactAddress?'<div style="font-size:12px;color:#6b7280">'+si.contactAddress+'</div>':'')+'</div>'
       +'<div><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px">From</div><div style="font-size:12px;font-weight:600">Spartan Double Glazing Pty Ltd</div><div style="font-size:11px;color:#6b7280">'+(si.spartanAddress||'')+'</div><div style="font-size:11px;color:#6b7280">ABN: '+(si.abn||'')+'</div></div>'
       +'</div>'
 
@@ -95,11 +168,11 @@ function renderInvoicingPage() {
       +(si.status==='draft'?'<th style="width:30px;border-bottom:2px solid #e5e7eb"></th>':'')
       +'</tr></thead><tbody>'
       +si.lineItems.map(function(li){
-        if(si.status==='draft') return '<tr><td style="padding:5px 4px"><input class="inp" id="li_desc_'+li.id+'" value="'+li.description+'" onchange="saveLineItem(\''+si.id+'\',\''+li.id+'\')" style="font-size:12px"></td><td style="padding:5px 4px"><input class="inp" id="li_qty_'+li.id+'" type="number" value="'+li.qty+'" onchange="saveLineItem(\''+si.id+'\',\''+li.id+'\')" style="font-size:12px;text-align:center;width:45px"></td><td style="padding:5px 4px"><input class="inp" id="li_price_'+li.id+'" type="number" step="0.01" value="'+li.unitPrice+'" onchange="saveLineItem(\''+si.id+'\',\''+li.id+'\')" style="font-size:12px;text-align:right;width:80px"></td><td style="padding:5px 4px;text-align:right;font-size:13px;font-weight:600">'+fmt$(li.amount)+'</td><td style="text-align:center"><button onclick="removeLineItem(\''+si.id+'\',\''+li.id+'\')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:16px">\u00d7</button></td></tr>';
+        if(si.status==='draft') return '<tr><td style="padding:5px 4px"><input class="inp" id="li_desc_'+li.id+'" value="'+li.description+'" data-on-change="invoicing-save-line-item" data-invoice-id="'+si.id+'" data-item-id="'+li.id+'" style="font-size:12px"></td><td style="padding:5px 4px"><input class="inp" id="li_qty_'+li.id+'" type="number" value="'+li.qty+'" data-on-change="invoicing-save-line-item" data-invoice-id="'+si.id+'" data-item-id="'+li.id+'" style="font-size:12px;text-align:center;width:45px"></td><td style="padding:5px 4px"><input class="inp" id="li_price_'+li.id+'" type="number" step="0.01" value="'+li.unitPrice+'" data-on-change="invoicing-save-line-item" data-invoice-id="'+si.id+'" data-item-id="'+li.id+'" style="font-size:12px;text-align:right;width:80px"></td><td style="padding:5px 4px;text-align:right;font-size:13px;font-weight:600">'+fmt$(li.amount)+'</td><td style="text-align:center"><button data-action="invoicing-remove-line-item" data-invoice-id="'+si.id+'" data-item-id="'+li.id+'" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:16px">\u00d7</button></td></tr>';
         return '<tr><td style="padding:8px 4px;font-size:12px;border-bottom:1px solid #f3f4f6">'+li.description+'</td><td style="padding:8px 4px;text-align:center;font-size:12px;border-bottom:1px solid #f3f4f6">'+li.qty+'</td><td style="padding:8px 4px;text-align:right;font-size:12px;border-bottom:1px solid #f3f4f6">'+fmt$(li.unitPrice)+'</td><td style="padding:8px 4px;text-align:right;font-size:13px;font-weight:600;border-bottom:1px solid #f3f4f6">'+fmt$(li.amount)+'</td></tr>';
       }).join('')
       +'</tbody></table>'
-      +(si.status==='draft'?'<button onclick="addLineItem(\''+si.id+'\')" class="btn-w" style="font-size:11px;margin-top:6px">+ Add Line Item</button>':'')
+      +(si.status==='draft'?'<button data-action="invoicing-add-line-item" data-invoice-id="'+si.id+'" class="btn-w" style="font-size:11px;margin-top:6px">+ Add Line Item</button>':'')
 
       // Totals
       +'<div style="display:flex;justify-content:flex-end;margin-top:14px"><div style="width:240px">'
@@ -110,12 +183,12 @@ function renderInvoicingPage() {
 
       // Notes/Terms
       +'<div style="margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:14px">'
-      +'<div><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Notes</div>'+(si.status==='draft'?'<textarea class="inp" rows="3" style="font-size:11px;resize:vertical;font-family:inherit" onchange="updateInvoiceField(\''+si.id+'\',\'notes\',this.value)">'+(si.notes||'')+'</textarea>':'<div style="font-size:11px;color:#374151;white-space:pre-wrap">'+(si.notes||'\u2014')+'</div>')+'</div>'
-      +'<div><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Payment Terms</div>'+(si.status==='draft'?'<textarea class="inp" rows="3" style="font-size:11px;resize:vertical;font-family:inherit" onchange="updateInvoiceField(\''+si.id+'\',\'terms\',this.value)">'+(si.terms||'')+'</textarea>':'<div style="font-size:11px;color:#374151;white-space:pre-wrap">'+(si.terms||'\u2014')+'</div>')+'</div></div>'
+      +'<div><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Notes</div>'+(si.status==='draft'?'<textarea class="inp" rows="3" style="font-size:11px;resize:vertical;font-family:inherit" data-on-change="invoicing-update-invoice-field" data-invoice-id="'+si.id+'" data-field="notes">'+(si.notes||'')+'</textarea>':'<div style="font-size:11px;color:#374151;white-space:pre-wrap">'+(si.notes||'\u2014')+'</div>')+'</div>'
+      +'<div><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Payment Terms</div>'+(si.status==='draft'?'<textarea class="inp" rows="3" style="font-size:11px;resize:vertical;font-family:inherit" data-on-change="invoicing-update-invoice-field" data-invoice-id="'+si.id+'" data-field="terms">'+(si.terms||'')+'</textarea>':'<div style="font-size:11px;color:#374151;white-space:pre-wrap">'+(si.terms||'\u2014')+'</div>')+'</div></div>'
 
       // Reminders
       +(si.reminders.length>0?'<div style="margin-top:14px"><div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;margin-bottom:4px">Reminders ('+si.reminders.length+')</div>'+si.reminders.slice(0,10).map(function(r){return '<div style="font-size:11px;color:#6b7280;padding:3px 0">\u2709 '+r.method+' \u2014 '+r.date+' '+r.time+' by '+r.by+'</div>';}).join('')+'</div>':'')
-      +'<div style="margin-top:14px;display:flex;align-items:center;gap:8px"><label style="font-size:11px;color:#6b7280;display:flex;align-items:center;gap:4px"><input type="checkbox" '+(si.autoRemindersEnabled?'checked':'')+' onchange="updateInvoiceField(\''+si.id+'\',\'autoRemindersEnabled\',this.checked)" style="accent-color:#c41230"> Auto-send email reminders (7, 3, 1, 0 days before due)</label></div>'
+      +'<div style="margin-top:14px;display:flex;align-items:center;gap:8px"><label style="font-size:11px;color:#6b7280;display:flex;align-items:center;gap:4px"><input type="checkbox" '+(si.autoRemindersEnabled?'checked':'')+' data-on-change="invoicing-update-invoice-field" data-invoice-id="'+si.id+'" data-field="autoRemindersEnabled" style="accent-color:#c41230"> Auto-send email reminders (7, 3, 1, 0 days before due)</label></div>'
       +'</div></div>';
   }
 
@@ -125,11 +198,11 @@ function renderInvoicingPage() {
     +'<div style="padding:14px 18px;border-bottom:1px solid #f0f0f0"><h2 style="font-size:16px;font-weight:800;margin:0;font-family:Syne,sans-serif">\ud83d\udcc4 Invoicing</h2>'
     +'<div style="font-size:12px;color:#6b7280;margin-top:2px">'+fmt$(totalPaid)+' paid \u00b7 '+fmt$(totalOutstanding)+' outstanding'+(overdueCount>0?' \u00b7 <span style="color:#dc2626;font-weight:600">'+overdueCount+' overdue</span>':'')+'</div></div>'
     +'<div style="padding:6px 12px;border-bottom:1px solid #f0f0f0;display:flex;gap:4px;flex-wrap:wrap">'
-    +['all','draft','sent','paid','overdue','void'].map(function(t){ var cnt=t==='all'?invoices.length:invoices.filter(function(i){return i.status===t;}).length; return '<button onclick="invTab=\''+t+'\';renderPage()" style="padding:3px 8px;border-radius:20px;border:1px solid '+(invTab===t?'#c41230':'#e5e7eb')+';background:'+(invTab===t?'#fff5f6':'#fff')+';color:'+(invTab===t?'#c41230':'#6b7280')+';font-size:10px;font-weight:600;cursor:pointer;font-family:inherit">'+t.charAt(0).toUpperCase()+t.slice(1)+' ('+cnt+')</button>'; }).join('')
+    +['all','draft','sent','paid','overdue','void'].map(function(t){ var cnt=t==='all'?invoices.length:invoices.filter(function(i){return i.status===t;}).length; return '<button data-action="invoicing-set-tab" data-tab="'+t+'" style="padding:3px 8px;border-radius:20px;border:1px solid '+(invTab===t?'#c41230':'#e5e7eb')+';background:'+(invTab===t?'#fff5f6':'#fff')+';color:'+(invTab===t?'#c41230':'#6b7280')+';font-size:10px;font-weight:600;cursor:pointer;font-family:inherit">'+t.charAt(0).toUpperCase()+t.slice(1)+' ('+cnt+')</button>'; }).join('')
     +'</div>'
     +'<div style="flex:1;overflow-y:auto">'
     +(filtered.length===0?'<div style="padding:40px 20px;text-align:center;color:#9ca3af"><div style="font-size:28px;margin-bottom:8px">\ud83d\udcc4</div><div style="font-size:13px">No invoices</div><div style="font-size:12px;color:#9ca3af;margin-top:4px">Create invoices from deal detail pages</div></div>':'')
-    +filtered.map(function(inv){ var isSel=invSelectedId===inv.id; return '<div onclick="invSelectedId=\''+inv.id+'\';renderPage()" style="padding:12px 18px;border-bottom:1px solid #f0f0f0;cursor:pointer;background:'+(isSel?'#fff5f6':'#fff')+';border-left:3px solid '+(isSel?'#c41230':'transparent')+'" onmouseover="this.style.background=\''+(isSel?'#fff5f6':'#f9fafb')+'\'" onmouseout="this.style.background=\''+(isSel?'#fff5f6':'#fff')+'\'">'
+    +filtered.map(function(inv){ var isSel=invSelectedId===inv.id; return '<div data-action="invoicing-select-invoice" data-invoice-id="'+inv.id+'" style="padding:12px 18px;border-bottom:1px solid #f0f0f0;cursor:pointer;background:'+(isSel?'#fff5f6':'#fff')+';border-left:3px solid '+(isSel?'#c41230':'transparent')+'" onmouseover="this.style.background=\''+(isSel?'#fff5f6':'#f9fafb')+'\'" onmouseout="this.style.background=\''+(isSel?'#fff5f6':'#fff')+'\'">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px"><span style="font-size:13px;font-weight:700">'+inv.invoiceNumber+'</span><span style="font-size:13px;font-weight:800;font-family:Syne,sans-serif">'+fmt$(inv.total)+'</span></div>'
       +'<div style="font-size:11px;color:#6b7280;margin-bottom:3px">'+inv.contactName+' \u2014 '+inv.dealTitle+'</div>'
       +'<div style="display:flex;gap:5px;align-items:center"><span style="font-size:10px;font-weight:600;padding:2px 7px;border-radius:20px;background:'+(statusCol[inv.status]||'#6b7280')+'15;color:'+(statusCol[inv.status]||'#6b7280')+'">'+inv.status+'</span>'+(inv.type==='progress_claim'?'<span style="font-size:9px;font-weight:600;padding:1px 6px;border-radius:20px;background:#e0e7ff;color:#4338ca">Claim #'+inv.claimNumber+'</span>':'')+'<span style="font-size:10px;color:#9ca3af;margin-left:auto">Due: '+inv.dueDate+'</span></div></div>'; }).join('')
@@ -152,14 +225,13 @@ function renderDealInvoiceSection(dealId) {
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
     +'<span style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#6b7280">Invoices ('+invoices.length+')</span>'
     +'<div style="display:flex;gap:4px">'
-    +'<button onclick="createInvoice(\''+dealId+'\',\'standard\')" class="btn-g" style="font-size:10px;padding:3px 7px">+ Invoice</button>'
-    +'<button onclick="createInvoice(\''+dealId+'\',\'progress_claim\')" class="btn-g" style="font-size:10px;padding:3px 7px">+ Progress Claim</button>'
+    +'<button data-action="invoicing-create-invoice" data-deal-id="'+dealId+'" data-type="standard" class="btn-g" style="font-size:10px;padding:3px 7px">+ Invoice</button>'
+    +'<button data-action="invoicing-create-invoice" data-deal-id="'+dealId+'" data-type="progress_claim" class="btn-g" style="font-size:10px;padding:3px 7px">+ Progress Claim</button>'
     +'</div></div>'
     +(invoices.length>0?'<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;font-size:11px;color:#6b7280;margin-bottom:3px"><span>'+pctInvoiced+'% invoiced</span><span>'+fmt$(totalPaid)+' paid of '+fmt$(deal.val)+'</span></div><div style="height:8px;background:#e5e7eb;border-radius:4px;overflow:hidden"><div style="height:100%;background:#15803d;border-radius:4px;width:'+Math.min(pctInvoiced,100)+'%"></div></div></div>':'')
-    +invoices.map(function(inv){ var col={draft:'#6b7280',sent:'#3b82f6',paid:'#15803d',overdue:'#dc2626',void:'#9ca3af'}[inv.status]||'#6b7280'; return '<div style="padding:8px 10px;background:#f9fafb;border-radius:8px;margin-bottom:5px;cursor:pointer;border-left:3px solid '+col+'" onclick="invSelectedId=\''+inv.id+'\';setState({page:\'invoicing\'})">'
+    +invoices.map(function(inv){ var col={draft:'#6b7280',sent:'#3b82f6',paid:'#15803d',overdue:'#dc2626',void:'#9ca3af'}[inv.status]||'#6b7280'; return '<div style="padding:8px 10px;background:#f9fafb;border-radius:8px;margin-bottom:5px;cursor:pointer;border-left:3px solid '+col+'" data-action="invoicing-select-invoice-from-deal" data-invoice-id="'+inv.id+'">'
       +'<div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:12px;font-weight:600">'+inv.invoiceNumber+(inv.type==='progress_claim'?' (Claim #'+inv.claimNumber+' \u2014 '+inv.claimPercent+'%)':'')+'</span><span style="font-size:12px;font-weight:700">'+fmt$(inv.total)+'</span></div>'
       +'<div style="display:flex;justify-content:space-between;font-size:10px;color:#9ca3af;margin-top:2px"><span style="color:'+col+';font-weight:600">'+inv.status+'</span><span>Due: '+inv.dueDate+'</span></div></div>'; }).join('')
     +(invoices.length===0?'<div style="font-size:12px;color:#9ca3af;text-align:center;padding:8px">No invoices yet</div>':'')
     +'</div>';
 }
-

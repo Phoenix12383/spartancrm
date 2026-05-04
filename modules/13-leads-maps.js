@@ -4,9 +4,145 @@
 // See CONTRACT.md for shared globals this module depends on / exposes.
 // ═════════════════════════════════════════════════════════════════════════════
 
-// ══════════════════════════════════════════════════════════════════════════════
-// FIX 2 — LEADS INBOX
-// ══════════════════════════════════════════════════════════════════════════════
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-02) ──────────
+// Leads module: 46 inline handlers migrated to data-action/data-on-* attributes.
+// All handlers routed through body-level listener in 07-shared-ui.js.
+// (IIFE wrapper removed 2026-05-02 — file uses bare top-level functions like
+//  the rest of the codebase, so 99-init's pageRenderers can resolve renderLeads.)
+
+defineAction('leads-card-click', function(target) {
+    var leadId = target.dataset.leadId;
+    setState({leadDetailId: leadId, page: 'leads'});
+  });
+
+  defineAction('leads-add-drawer', function() {
+    openAddLeadDrawer();
+  });
+
+  defineAction('leads-search-input', function(target) {
+    leadSearch = target.value;
+    renderPage();
+  });
+
+  defineAction('leads-filter-status', function(target) {
+    leadFilter = target.dataset.status;
+    renderPage();
+  });
+
+  defineAction('leads-unassigned-unclaimed', function() {
+    leadFilter = 'Unassigned';
+    renderPage();
+  });
+
+  defineAction('leads-claim', function(target) {
+    claimLead(target.dataset.leadId);
+  });
+
+  defineAction('leads-row-stopProp', function(target, ev) {
+    ev.stopPropagation();
+  });
+
+  defineAction('leads-email-send', function(target) {
+    emailFromLead(target.dataset.leadId);
+  });
+
+  defineAction('leads-schedule-open', function(target) {
+    mapSchedulingLead = target.dataset.leadId;
+    mapScheduleForm.rep = '';
+    renderPage();
+  });
+
+  defineAction('leads-schedule-cancel', function() {
+    mapSchedulingLead = null;
+    renderPage();
+  });
+
+  defineAction('leads-date-input', function(target) {
+    mapSelectedDate = target.value;
+    renderPage();
+  });
+
+  defineAction('leads-rep-select', function(target) {
+    mapSelectedRep = target.value;
+    renderPage();
+  });
+
+  defineAction('leads-rep-card-click', function(target) {
+    var repName = target.dataset.repName;
+    mapScheduleForm.rep = repName;
+    renderPage();
+  });
+
+  defineAction('leads-schedule-time-select', function(target) {
+    mapScheduleForm.time = target.value;
+  });
+
+  defineAction('leads-schedule-type-select', function(target) {
+    mapScheduleForm.type = target.value;
+  });
+
+  defineAction('leads-book-appointment', function(target) {
+    bookLeadAppointment(target.dataset.schedulingLeadId);
+  });
+
+  defineAction('leads-schedule-rep-back', function() {
+    mapScheduleForm.rep = '';
+    renderPage();
+  });
+
+  defineAction('leads-modal-overlay-click', function(target, ev) {
+    if (ev.target === target) setState({modal: null});
+  });
+
+  defineAction('leads-modal-close', function() {
+    setState({modal: null});
+  });
+
+  defineAction('leads-dealtype-residential', function() {
+    _clDealTypeSelect('residential');
+  });
+
+  defineAction('leads-dealtype-commercial', function() {
+    _clDealTypeSelect('commercial');
+  });
+
+  defineAction('leads-convert-lead', function(target) {
+    doConvertLead(target.dataset.leadId);
+  });
+
+  defineAction('leads-panel-overlay-click', function(target, ev) {
+    if (ev.target === target) setState({panel: null});
+  });
+
+  defineAction('leads-panel-close', function() {
+    setState({panel: null});
+  });
+
+  defineAction('leads-new-lead-save', function() {
+    saveNewLead();
+  });
+
+  defineAction('leads-edit-overlay-click', function(target, ev) {
+    if (ev.target === target) setState({editingLeadId: null});
+  });
+
+  defineAction('leads-edit-close', function() {
+    setState({editingLeadId: null});
+  });
+
+  defineAction('leads-edit-save', function() {
+    saveLeadEdit();
+  });
+
+  defineAction('leads-detail-nav-back', function() {
+    setState({page: 'leads'});
+  });
+
+  defineAction('leads-sidebar-rep-schedule', function(target, ev) {
+    ev.stopPropagation();
+    setState({page: 'leads', mapSchedulingLead: target.dataset.leadId});
+  });
+
 
 const LEAD_SRC_COLOR={'Web Enquiry':'blue',Phone:'purple',Referral:'green','Walk-in':'amber',Instagram:'indigo',Facebook:'indigo',Other:'gray'};
 const LEAD_STATUS_COLOR={New:'blue',Contacted:'amber',Qualified:'green',Unqualified:'gray',Archived:'gray'};
@@ -77,14 +213,9 @@ function renderLeadsMobile() {
   };
   leadsForBranch.forEach(function(l){ statusCounts[l.status] = (statusCounts[l.status] || 0) + 1; });
 
-  function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
-  function _attrEsc(s) { return String(s||'').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
-  function fmtK(n) {
-    var v = Number(n) || 0;
-    if (v >= 1000000) return '$' + (v/1000000).toFixed(1) + 'M';
-    if (v >= 1000) return '$' + Math.round(v/1000) + 'k';
-    return '$' + v.toFixed(0);
-  }
+  // _esc consolidated to 07-shared-ui.js (2026-05-02). Falls through to global.
+  // _attrEsc consolidated to 07-shared-ui.js (2026-05-02). Falls through to global.
+  // fmtK consolidated to 07-shared-ui.js (2026-05-02). Falls through to global.
   function _initials(name) {
     return (name || '').split(' ').map(function(w){ return (w[0] || '').toUpperCase(); }).join('').slice(0,2);
   }
@@ -143,10 +274,10 @@ function renderLeadsMobile() {
           '<h1 style="font-size:18px;font-weight:800;margin:0;color:#0a0a0a;font-family:Syne,sans-serif">Leads</h1>' +
           '<div style="font-size:11px;color:#6b7280;margin-top:2px">' + statusCounts.All + ' active</div>' +
         '</div>' +
-        '<button onclick="openAddLeadDrawer()" style="padding:6px 12px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">+ Add</button>' +
+        '<button data-action="leads-add-drawer" style="padding:6px 12px;border-radius:8px;border:none;background:#c41230;color:#fff;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">+ Add</button>' +
       '</div>' +
       // Search
-      '<input id="leadSearchInput" value="' + _attrEsc(leadSearch) + '" oninput="leadSearch=this.value;renderPage()" placeholder="Search name, email, suburb…" style="width:100%;padding:8px 12px;background:#f3f4f6;border:none;border-radius:8px;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box;margin-bottom:8px" />' +
+      '<input id="leadSearchInput" value="' + _attrEsc(leadSearch) + '" data-on-input="leads-search-input" placeholder="Search name, email, suburb…" style="width:100%;padding:8px 12px;background:#f3f4f6;border:none;border-radius:8px;font-size:13px;font-family:inherit;outline:none;box-sizing:border-box;margin-bottom:8px" />' +
       // Status filter pills — horizontal scroll so they all fit on narrow screens
       '<div style="display:flex;gap:4px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px">' +
         statuses.map(function(s){
@@ -236,7 +367,7 @@ function renderLeads(){
     <div style="background:#fff;border-bottom:1px solid #e5e7eb;padding:12px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <div>
         <h1 style="font-size:20px;font-weight:800;margin:0;font-family:Syne,sans-serif">Leads Inbox</h1>
-        <p style="color:#6b7280;font-size:12px;margin:0">${leadsForBranch.filter(l=>!l.converted&&l.status!=='Archived').length} active · ${leadsForBranch.filter(l=>l.status==='New').length} new · ${unscheduled.length} unscheduled${statusCounts.Unassigned?` · <span onclick="leadFilter='Unassigned';renderPage()" style="color:#92400e;font-weight:600;cursor:pointer;text-decoration:underline">${statusCounts.Unassigned} unclaimed in your state</span>`:''}</p>
+        <p style="color:#6b7280;font-size:12px;margin:0">${leadsForBranch.filter(l=>!l.converted&&l.status!=='Archived').length} active · ${leadsForBranch.filter(l=>l.status==='New').length} new · ${unscheduled.length} unscheduled${statusCounts.Unassigned?` · <span data-action="leads-unassigned-unclaimed" style="color:#92400e;font-weight:600;cursor:pointer;text-decoration:underline">${statusCounts.Unassigned} unclaimed in your state</span>`:''}</p>
       </div>
 
       <!-- Status filter pills -->
@@ -244,7 +375,7 @@ function renderLeads(){
         ${statuses.map(s=>{
           const col=statusColors[s]||(s==='Unassigned'?'#f59e0b':'#9ca3af');
           const act=leadFilter===s;
-          return `<button onclick="leadFilter='${s}';renderPage()" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border-radius:20px;border:1px solid ${act?col:'#e5e7eb'};background:${act?col+'18':'#fff'};color:${act?col:'#6b7280'};font-size:11px;font-weight:${act?700:500};cursor:pointer;font-family:inherit">
+          return `<button data-action="leads-filter-status" data-status="${s}" style="display:flex;align-items:center;gap:5px;padding:5px 12px;border-radius:20px;border:1px solid ${act?col:'#e5e7eb'};background:${act?col+'18':'#fff'};color:${act?col:'#6b7280'};font-size:11px;font-weight:${act?700:500};cursor:pointer;font-family:inherit">
             ${s} <span style="background:${act?col:'#e5e7eb'};color:${act?'#fff':'#6b7280'};border-radius:10px;font-size:9px;font-weight:700;padding:1px 6px">${statusCounts[s]||0}</span>
           </button>`;
         }).join('')}
@@ -253,9 +384,9 @@ function renderLeads(){
       <div style="display:flex;gap:8px;align-items:center">
         <div style="position:relative">
           <span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);color:#9ca3af;pointer-events:none">${Icon({n:'search',size:12})}</span>
-          <input id="leadSearchInput" class="inp" value="${leadSearch||''}" oninput="leadSearch=this.value;renderPage()" placeholder="Search…" style="padding-left:26px;font-size:12px;padding-top:6px;padding-bottom:6px;width:160px">
+          <input id="leadSearchInput" class="inp" value="${leadSearch||''}" data-on-input="leads-search-input" placeholder="Search…" style="padding-left:26px;font-size:12px;padding-top:6px;padding-bottom:6px;width:160px">
         </div>
-        <button onclick="openAddLeadDrawer()" class="btn-r" style="font-size:12px;gap:5px;white-space:nowrap">${Icon({n:'plus',size:13})} Add Lead</button>
+        <button data-action="leads-add-drawer" class="btn-r" style="font-size:12px;gap:5px;white-space:nowrap">${Icon({n:'plus',size:13})} Add Lead</button>
       </div>
     </div>
 
@@ -285,7 +416,7 @@ function renderLeads(){
                 const isScheduling=mapSchedulingLead===l.id;
                 const isBooked=scheduledLeadNames.has(l.fn+' '+l.ln);
                 return `<tr style="cursor:pointer;background:${isScheduling?'#fff5f6':''};transition:background .1s"
-                  onclick="setState({leadDetailId:'${l.id}',page:'leads'})"
+                  data-action="leads-card-click" data-lead-id="${l.id}"
                   onmouseover="if(!${isScheduling})this.style.background='#fafafa'" onmouseout="if(!${isScheduling})this.style.background='${isScheduling?'#fff5f6':''}'">
                   <td class="td">
                     <div style="display:flex;align-items:center;gap:8px">
@@ -295,9 +426,9 @@ function renderLeads(){
                         <div style="font-size:11px;color:#9ca3af">${l.suburb||''} ${l.state?'· '+l.state:''}</div>
                         ${l.owner
                           ? `<div style="font-size:10px;color:#6b7280;margin-top:2px">👤 ${l.owner}</div>`
-                          : `<div onclick="event.stopPropagation()" style="display:flex;align-items:center;gap:6px;margin-top:3px">
+                          : `<div data-action="leads-row-stopProp" style="display:flex;align-items:center;gap:6px;margin-top:3px">
                               <span class="bdg" style="background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-size:10px">Unassigned</span>
-                              ${canEditLead(l) ? `<button onclick="claimLead('${l.id}')" class="btn-r" style="font-size:10px;padding:2px 8px">Claim</button>` : ''}
+                              ${canEditLead(l) ? `<button data-action="leads-claim" data-lead-id="${l.id}" class="btn-r" style="font-size:10px;padding:2px 8px">Claim</button>` : ''}
                             </div>`}
                       </div>
                     </div>
@@ -311,16 +442,16 @@ function renderLeads(){
                     <span class="bdg" style="background:${col}20;color:${col};border:1px solid ${col}40;font-size:10px">${l.status}</span>
                     ${l.converted?`<div style="font-size:10px;color:#15803d;margin-top:2px">✓ Converted</div>`:''}
                   </td>
-                  <td class="td" onclick="event.stopPropagation()">
+                  <td class="td" data-action="leads-row-stopProp">
                     <div style="display:flex;align-items:center;gap:4px">
                       ${sent.length>0?`<span style="font-size:10px;${opened.length?'color:#15803d;background:#f0fdf4':'color:#9ca3af;background:#f3f4f6'};padding:1px 6px;border-radius:10px">👁${opened.length}/${sent.length}</span>`:''}
-                      <button onclick="emailFromLead('${l.id}')" style="width:20px;height:20px;border-radius:50%;background:#ede9fe;border:none;cursor:pointer;font-size:10px" title="Email">✉️</button>
+                      <button data-action="leads-email-send" data-lead-id="${l.id}" style="width:20px;height:20px;border-radius:50%;background:#ede9fe;border:none;cursor:pointer;font-size:10px" title="Email">✉️</button>
                     </div>
                   </td>
-                  <td class="td" onclick="event.stopPropagation()">
+                  <td class="td" data-action="leads-row-stopProp">
                     ${l.converted?`<span style="font-size:10px;color:#15803d">✓ Done</span>`:
                       isBooked?`<span style="font-size:10px;color:#0369a1;background:#dbeafe;padding:2px 7px;border-radius:10px">📅 Booked</span>`:
-                      `<button onclick="mapSchedulingLead='${l.id}';mapScheduleForm.rep='';renderPage()" class="btn-r" style="font-size:10px;padding:3px 10px;white-space:nowrap;${isScheduling?'background:#9e0e26':''}">
+                      `<button data-action="leads-schedule-open" data-lead-id="${l.id}" class="btn-r" style="font-size:10px;padding:3px 10px;white-space:nowrap;${isScheduling?'background:#9e0e26':''}">
                         ${isScheduling?'Scheduling…':'📅 Schedule'}
                       </button>`}
                   </td>
@@ -372,12 +503,12 @@ function renderLeadsMapPanel(filtered, unscheduled) {
       <div style="font-size:13px;font-weight:700;font-family:Syne,sans-serif;color:#1a1a1a">
         ${schedulingLead?`📅 Scheduling: ${schedulingLead.fn} ${schedulingLead.ln}`:'📍 Scheduling Map'}
       </div>
-      ${schedulingLead?`<button onclick="mapSchedulingLead=null;renderPage()" style="font-size:11px;color:#6b7280;background:none;border:none;cursor:pointer;font-family:inherit">✕ Cancel</button>`:''}
+      ${schedulingLead?`<button data-action="leads-schedule-cancel" style="font-size:11px;color:#6b7280;background:none;border:none;cursor:pointer;font-family:inherit">✕ Cancel</button>`:''}
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input type="date" value="${mapSelectedDate}" oninput="mapSelectedDate=this.value;renderPage()"
+      <input type="date" value="${mapSelectedDate}" data-on-input="leads-date-input"
         class="inp" style="font-size:12px;padding:5px 8px;flex:1;min-width:120px">
-      <select onchange="mapSelectedRep=this.value;renderPage()" class="sel" style="font-size:12px;padding:5px 8px;flex:1;min-width:100px">
+      <select data-on-change="leads-rep-select" class="sel" style="font-size:12px;padding:5px 8px;flex:1;min-width:100px">
         <option value="all">All Reps</option>
         ${REP_BASES.map(r=>`<option value="${r.name}" ${mapSelectedRep===r.name?'selected':''}>${r.name.split(' ')[0]}</option>`).join('')}
       </select>
@@ -419,7 +550,7 @@ function renderLeadsMapPanel(filtered, unscheduled) {
       const dist=haversine(r.lat,r.lng,coords.lat,coords.lng);
       const drive=estDriveTime(dist);
       const isSelected=mapScheduleForm.rep===r.name;
-      return `<div onclick="mapScheduleForm.rep='${r.name}';renderPage()"
+      return `<div data-action="leads-rep-card-click" data-rep-name="${r.name}"
         style="padding:10px 12px;border-radius:10px;border:2px solid ${isSelected?r.col:'#e5e7eb'};background:${isSelected?r.col+'10':'#fff'};margin-bottom:7px;cursor:pointer;transition:all .15s"
         onmouseover="this.style.borderColor='${r.col}'" onmouseout="if(!${isSelected})this.style.borderColor='#e5e7eb'">
         <div style="display:flex;align-items:center;gap:8px">
@@ -460,22 +591,22 @@ function renderLeadsMapPanel(filtered, unscheduled) {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
         <div>
           <label style="font-size:11px;color:#6b7280;font-weight:500;display:block;margin-bottom:4px">Time</label>
-          <select class="sel" style="font-size:12px" onchange="mapScheduleForm.time=this.value">
+          <select class="sel" style="font-size:12px" data-on-change="leads-schedule-time-select">
             ${['08:00','09:00','09:30','10:00','10:30','11:00','11:30','12:00','13:00','13:30','14:00','14:30','15:00','15:30','16:00'].map(t=>`<option value="${t}" ${mapScheduleForm.time===t?'selected':''}>${t}</option>`).join('')}
           </select>
         </div>
         <div>
           <label style="font-size:11px;color:#6b7280;font-weight:500;display:block;margin-bottom:4px">Type</label>
-          <select class="sel" style="font-size:12px" onchange="mapScheduleForm.type=this.value">
+          <select class="sel" style="font-size:12px" data-on-change="leads-schedule-type-select">
             ${['Measure','Quote','Consultation','Follow-up'].map(t=>`<option ${mapScheduleForm.type===t?'selected':''}>${t}</option>`).join('')}
           </select>
         </div>
       </div>
       <div style="display:flex;gap:8px">
-        <button onclick="bookLeadAppointment('${schedulingLead.id}')" class="btn-r" style="flex:1;font-size:12px;justify-content:center">
+        <button data-action="leads-book-appointment" data-scheduling-lead-id="${schedulingLead.id}" class="btn-r" style="flex:1;font-size:12px;justify-content:center">
           ✓ Book ${mapScheduleForm.type}
         </button>
-        <button onclick="mapScheduleForm.rep='';renderPage()" class="btn-w" style="font-size:12px">Back</button>
+        <button data-action="leads-schedule-rep-back" class="btn-w" style="font-size:12px">Back</button>
       </div>
     </div>`:''}
   </div>`:''}
@@ -490,7 +621,7 @@ function renderLeadsMapPanel(filtered, unscheduled) {
       const coords=getSuburbCoords(l.suburb,l.branch);
       const isActive=mapSchedulingLead===l.id;
       const statusCol=(l.status==='Qualified'?'#22c55e':l.status==='Contacted'?'#f59e0b':'#3b82f6');
-      return `<div onclick="mapSchedulingLead='${l.id}';mapScheduleForm.rep='';renderPage()"
+      return `<div data-action="leads-schedule-open" data-lead-id="${l.id}"
         style="display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;margin-bottom:5px;cursor:pointer;border:1.5px solid ${isActive?'#c41230':'#e5e7eb'};background:${isActive?'#fff5f6':'#fff'};transition:all .15s"
         onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='${isActive?'#fff5f6':'#fff'}'">
         <div style="width:26px;height:26px;background:${statusCol};border-radius:50%;color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${avatar(l.fn+' '+l.ln)}</div>
@@ -662,11 +793,11 @@ function renderConvertLeadModal(lead){
   var _suggested = (_matchedContact && _matchedContact.type === 'commercial') ? 'commercial' : null;
   var _resOn = _suggested === 'residential';
   var _comOn = _suggested === 'commercial';
-  return `<div class="modal-bg" onclick="if(event.target===this)setState({modal:null})">
+  return `<div class="modal-bg" data-action="leads-modal-overlay-click">
     <div class="modal">
       <div style="padding:20px 24px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">
         <h3 style="margin:0;font-size:16px;font-weight:700">Convert to Deal</h3>
-        <button onclick="setState({modal:null})" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({n:'x',size:16})}</button>
+        <button data-action="leads-modal-close" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({n:'x',size:16})}</button>
       </div>
       <div class="modal-body" style="padding:24px;display:flex;flex-direction:column;gap:14px">
         <div style="background:#f9fafb;border-radius:10px;padding:12px">
@@ -677,14 +808,14 @@ function renderConvertLeadModal(lead){
         <div>
           <label style="font-size:12px;font-weight:500;color:#6b7280;display:block;margin-bottom:6px">Deal Type *</label>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-            <label class="cl-dealtype-card" data-value="residential" onclick="_clDealTypeSelect('residential')" style="cursor:pointer;border:2px solid ${_resOn?'#c41230':'#e5e7eb'};border-radius:10px;padding:12px 14px;background:${_resOn?'#fff5f6':'#fff'};transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px">
+            <label class="cl-dealtype-card" data-value="residential" data-action="leads-dealtype-residential" style="cursor:pointer;border:2px solid ${_resOn?'#c41230':'#e5e7eb'};border-radius:10px;padding:12px 14px;background:${_resOn?'#fff5f6':'#fff'};transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px">
               <span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#1a1a1a">
                 <input type="radio" name="cl_dealType" value="residential" ${_resOn?'checked':''} style="margin:0">
                 Residential
               </span>
               <span style="font-size:11px;color:#6b7280;line-height:1.35">Single home, owner-occupied</span>
             </label>
-            <label class="cl-dealtype-card" data-value="commercial" onclick="_clDealTypeSelect('commercial')" style="cursor:pointer;border:2px solid ${_comOn?'#c41230':'#e5e7eb'};border-radius:10px;padding:12px 14px;background:${_comOn?'#fff5f6':'#fff'};transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px">
+            <label class="cl-dealtype-card" data-value="commercial" data-action="leads-dealtype-commercial" style="cursor:pointer;border:2px solid ${_comOn?'#c41230':'#e5e7eb'};border-radius:10px;padding:12px 14px;background:${_comOn?'#fff5f6':'#fff'};transition:border-color .12s,background .12s;display:flex;flex-direction:column;gap:4px">
               <span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#1a1a1a">
                 <input type="radio" name="cl_dealType" value="commercial" ${_comOn?'checked':''} style="margin:0">
                 Commercial
@@ -703,8 +834,8 @@ function renderConvertLeadModal(lead){
           <div id="cl_val_err" class="err-msg" style="color:#dc2626;font-size:11px;margin-top:4px;display:none"></div></div>
       </div>
       <div style="padding:16px 24px;border-top:1px solid #f0f0f0;background:#f9fafb;border-radius:0 0 16px 16px;display:flex;justify-content:flex-end;gap:10px">
-        <button class="btn-w" onclick="setState({modal:null})">Cancel</button>
-        <button class="btn-r" onclick="doConvertLead('${lead.id}')">Convert to Deal</button>
+        <button class="btn-w" data-action="leads-modal-close">Cancel</button>
+        <button class="btn-r" data-action="leads-convert-lead" data-lead-id="${lead.id}">Convert to Deal</button>
       </div>
     </div>
   </div>`;
@@ -909,11 +1040,11 @@ function doConvertLead(lid) {
 
 
 function renderAddLeadDrawer(){
-  return `<div class="ovl" onclick="if(event.target===this)setState({panel:null})">
+  return `<div class="ovl" data-action="leads-panel-overlay-click">
     <div class="panel" style="width:420px">
       <div style="padding:20px 24px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
         <h2 style="font-family:Syne,sans-serif;font-weight:700;font-size:16px;margin:0">Add Lead</h2>
-        <button onclick="setState({panel:null})" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({n:'x',size:16})}</button>
+        <button data-action="leads-panel-close" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({n:'x',size:16})}</button>
       </div>
       <div style="flex:1;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:13px">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -942,8 +1073,8 @@ function renderAddLeadDrawer(){
           <textarea class="inp" id="al_notes" rows="3" placeholder="Notes about this lead…" style="resize:vertical;font-family:inherit"></textarea></div>
       </div>
       <div style="padding:16px 24px;border-top:1px solid #f0f0f0;background:#f9fafb;display:flex;justify-content:flex-end;gap:10px;flex-shrink:0">
-        <button class="btn-w" onclick="setState({panel:null})">Cancel</button>
-        <button class="btn-r" onclick="saveNewLead()">Save Lead</button>
+        <button class="btn-w" data-action="leads-panel-close">Cancel</button>
+        <button class="btn-r" data-action="leads-new-lead-save">Save Lead</button>
       </div>
     </div>
   </div>`;
@@ -964,11 +1095,11 @@ function renderEditLeadDrawer() {
   var id = getState().editingLeadId;
   var lead = getState().leads.find(function(l){ return l.id === id; });
   if (!lead) return '';
-  return `<div class="ovl" onclick="if(event.target===this)setState({editingLeadId:null})">
+  return `<div class="ovl" data-action="leads-edit-overlay-click">
     <div class="panel" style="width:420px">
       <div style="padding:20px 24px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
         <h2 style="font-family:Syne,sans-serif;font-weight:700;font-size:16px;margin:0">Edit Lead</h2>
-        <button onclick="setState({editingLeadId:null})" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({n:'x',size:16})}</button>
+        <button data-action="leads-edit-close" style="background:none;border:none;cursor:pointer;color:#9ca3af">${Icon({n:'x',size:16})}</button>
       </div>
       <div style="flex:1;overflow-y:auto;padding:24px;display:flex;flex-direction:column;gap:13px">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -1007,8 +1138,8 @@ function renderEditLeadDrawer() {
           <textarea class="inp" id="le_notes" rows="3" placeholder="Notes about this lead…" style="resize:vertical;font-family:inherit">${(lead.notes||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea></div>
       </div>
       <div style="padding:16px 24px;border-top:1px solid #f0f0f0;background:#f9fafb;display:flex;justify-content:flex-end;gap:10px;flex-shrink:0">
-        <button class="btn-w" onclick="setState({editingLeadId:null})">Cancel</button>
-        <button class="btn-r" onclick="saveLeadEdit()">Save Changes</button>
+        <button class="btn-w" data-action="leads-edit-close">Cancel</button>
+        <button class="btn-r" data-action="leads-edit-save">Save Changes</button>
       </div>
     </div>
   </div>`;
@@ -1329,7 +1460,7 @@ function renderNearbyLeadsList(lead, maxResults) {
   if (nearby.length === 0) return '<div style="font-size:12px;color:#9ca3af;padding:8px 0">No nearby leads in ' + (lead.branch||'VIC') + '</div>';
   return nearby.slice(0, maxResults || 5).map(function(n) {
     var statusCol = n.lead.status==='Qualified'?'#22c55e':n.lead.status==='Contacted'?'#f59e0b':'#3b82f6';
-    return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f9fafb;cursor:pointer" onclick="setState({leadDetailId:\''+n.lead.id+'\'})">'
+    return '<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f9fafb;cursor:pointer" data-action="leads-card-click" data-lead-id="'+n.lead.id+'">'
       +'<div style="width:22px;height:22px;background:'+statusCol+';border-radius:50%;color:#fff;font-size:8px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">'+avatar(n.lead.fn+' '+n.lead.ln)+'</div>'
       +'<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+n.lead.fn+' '+n.lead.ln+'</div>'
       +'<div style="font-size:10px;color:#9ca3af">\ud83d\udccd '+n.lead.suburb+' \u00b7 '+fmt$(n.lead.val)+'</div></div>'
@@ -1426,13 +1557,13 @@ function renderMapPage(){
       <p style="color:#6b7280;font-size:13px;margin:0">Optimise appointments by location \u00b7 ${dayApts.length} booked \u00b7 ${unscheduled.length} unscheduled leads</p>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <input type="date" value="${mapSelectedDate}" oninput="mapSelectedDate=this.value;renderPage()"
+      <input type="date" value="${mapSelectedDate}" data-on-input="leads-date-input"
         class="inp" style="font-size:13px;padding:7px 10px">
-      <select onchange="mapSelectedRep=this.value;renderPage()" class="sel" style="font-size:13px;padding:7px 10px">
+      <select data-on-change="leads-rep-select" class="sel" style="font-size:13px;padding:7px 10px">
         <option value="all">All Reps</option>
         ${REP_BASES.map(r=>`<option value="${r.name}" ${mapSelectedRep===r.name?'selected':''}>${r.name.split(' ')[0]} (${r.branch})</option>`).join('')}
       </select>
-      <button onclick="setState({page:'leads'})" class="btn-w" style="font-size:13px;gap:6px">${Icon({n:'user',size:14})} Leads</button>
+      <button data-action="leads-detail-nav-back" class="btn-w" style="font-size:13px;gap:6px">${Icon({n:'user',size:14})} Leads</button>
     </div>
   </div>
   </div>
@@ -1519,14 +1650,14 @@ function renderMapPage(){
       <div class="card" style="overflow:hidden">
         <div style="padding:12px 16px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">
           <div style="font-size:13px;font-weight:700;font-family:Syne,sans-serif">⏳ Unscheduled (${unscheduled.length})</div>
-          <button onclick="setState({page:'leads'})" class="btn-g" style="font-size:11px">Go to Leads</button>
+          <button data-action="leads-detail-nav-back" class="btn-g" style="font-size:11px">Go to Leads</button>
         </div>
         ${unscheduled.length===0?`<div style="padding:16px;font-size:12px;color:#9ca3af;text-align:center">All leads scheduled ✓</div>`:''}
         <div style="max-height:280px;overflow-y:auto">
           ${unscheduled.slice(0,10).map(l=>{
             const sc={New:'#3b82f6',Contacted:'#f59e0b',Qualified:'#22c55e',Unqualified:'#9ca3af',Archived:'#6b7280'}[l.status]||'#9ca3af';
             return `<div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid #f9fafb;cursor:pointer"
-              onclick="setState({page:'leads',leadDetailId:'${l.id}'})"
+              data-action="leads-card-click" data-lead-id="${l.id}"
               onmouseover="this.style.background='#fafafa'" onmouseout="this.style.background=''">
               <div style="width:26px;height:26px;background:${sc};border-radius:50%;color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${avatar(l.fn+' '+l.ln)}</div>
               <div style="flex:1;min-width:0">
@@ -1534,7 +1665,7 @@ function renderMapPage(){
                 <div style="font-size:11px;color:#9ca3af">📍 ${l.suburb} · ${fmt$(l.val)}</div>
               </div>
               <div style="flex-shrink:0">
-                <button onclick="event.stopPropagation();setState({page:'leads',mapSchedulingLead:'${l.id}'})" class="btn-r" style="font-size:10px;padding:3px 9px;white-space:nowrap">📅 Schedule</button>
+                <button data-action="leads-sidebar-rep-schedule" data-lead-id="${l.id}" class="btn-r" style="font-size:10px;padding:3px 9px;white-space:nowrap">📅 Schedule</button>
               </div>
             </div>`;
           }).join('')}
@@ -1576,4 +1707,3 @@ function renderMapPage(){
 // renderPhonePage moved to modules/28-twilio.js as part of stage 5.
 // The route in 99-init.js's pageRenderers map still points at `renderPhonePage`,
 // which is now defined globally by 28-twilio.js (loaded later in the order).
-

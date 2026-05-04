@@ -15,6 +15,14 @@ function toggleProfileDrop() {
   if(el) el.style.display = profileDropOpen ? 'block' : 'none';
 }
 
+// ── Event-delegation actions (07-shared-ui.js framework, 2026-05-02) ─────────
+defineAction('profile-save-details',    function() { profileSaveDetails(); });
+defineAction('profile-change-password', function() { profileChangePassword(); });
+defineAction('profile-nav-users',       function() { settTab = 'users'; setState({ page: 'settings' }); });
+defineAction('gmail-connect',           function() { gmailConnect(); });
+defineAction('gmail-disconnect',        function() { gmailDisconnect(); });
+defineAction('profile-save-signature',  function(target) { profileSaveSignature(target.dataset.signatureKey); });
+
 function renderProfilePage() {
   var cu = getCurrentUser() || {id:'',name:'Admin',email:'',role:'admin',branch:'All',phone:'',initials:'AD'};
   var isAdmin = cu.role === 'admin';
@@ -35,7 +43,7 @@ function renderProfilePage() {
     <div class="card" style="padding:0;margin-bottom:18px;overflow:hidden">
       <div style="padding:16px 20px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">
         <h3 style="font-size:15px;font-weight:700;margin:0">Personal Details</h3>
-        <button onclick="profileSaveDetails()" class="btn-r" style="font-size:12px;padding:6px 16px">Save Changes</button>
+        <button data-action="profile-save-details" class="btn-r" style="font-size:12px;padding:6px 16px">Save Changes</button>
       </div>
       <div style="padding:20px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
         <div>
@@ -80,7 +88,7 @@ function renderProfilePage() {
         </div>
       </div>
       <div style="padding:0 20px 16px;display:flex;justify-content:flex-end">
-        <button onclick="profileChangePassword()" class="btn-w" style="font-size:12px">Update Password</button>
+        <button data-action="profile-change-password" class="btn-w" style="font-size:12px">Update Password</button>
       </div>
     </div>
 
@@ -104,7 +112,7 @@ function renderProfilePage() {
             <div style="font-size:14px;font-weight:600;color:#15803d">Active</div>
           </div>
         </div>
-        ${isAdmin?`<div style="padding-top:12px;border-top:1px solid #f0f0f0;display:flex;gap:10px"><button onclick="settTab='users';setState({page:'settings'})" class="btn-r" style="font-size:12px;gap:6px">${Icon({n:'settings',size:13})} Manage All Users</button><span style="font-size:12px;color:#9ca3af;padding-top:6px">Add, deactivate, or change access for team members</span></div>`:'<div style="font-size:12px;color:#9ca3af">Contact your admin to change your role or access level.</div>'}
+        ${isAdmin?`<div style="padding-top:12px;border-top:1px solid #f0f0f0;display:flex;gap:10px"><button data-action="profile-nav-users" class="btn-r" style="font-size:12px;gap:6px">${Icon({n:'settings',size:13})} Manage All Users</button><span style="font-size:12px;color:#9ca3af;padding-top:6px">Add, deactivate, or change access for team members</span></div>`:'<div style="font-size:12px;color:#9ca3af">Contact your admin to change your role or access level.</div>'}
       </div>
     </div>
 
@@ -115,8 +123,8 @@ function renderProfilePage() {
       </div>
       <div style="padding:20px">
         ${getState().gmailConnected?
-          '<div style="display:flex;align-items:center;gap:12px"><div style="width:36px;height:36px;background:#EA4335;border-radius:50%;color:#fff;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center">G</div><div style="flex:1"><div style="font-size:13px;font-weight:600;color:#15803d">Connected</div><div style="font-size:12px;color:#6b7280">'+(getState().gmailUser?getState().gmailUser.email:'')+'</div></div><button onclick="gmailDisconnect()" class="btn-w" style="font-size:12px;color:#b91c1c;border-color:#fca5a5">Disconnect</button></div>'
-          :'<div style="display:flex;align-items:center;gap:12px"><div style="width:36px;height:36px;background:#f3f4f6;border-radius:50%;color:#9ca3af;font-size:16px;display:flex;align-items:center;justify-content:center">G</div><div style="flex:1"><div style="font-size:13px;font-weight:600;color:#374151">Not connected</div><div style="font-size:12px;color:#9ca3af">Connect Gmail to send emails from within the CRM</div></div><button onclick="gmailConnect()" class="btn-r" style="font-size:12px">Connect Gmail</button></div>'}
+          '<div style="display:flex;align-items:center;gap:12px"><div style="width:36px;height:36px;background:#EA4335;border-radius:50%;color:#fff;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center">G</div><div style="flex:1"><div style="font-size:13px;font-weight:600;color:#15803d">Connected</div><div style="font-size:12px;color:#6b7280">'+(getState().gmailUser?getState().gmailUser.email:'')+'</div></div><button data-action="gmail-disconnect" class="btn-w" style="font-size:12px;color:#b91c1c;border-color:#fca5a5">Disconnect</button></div>'
+          :'<div style="display:flex;align-items:center;gap:12px"><div style="width:36px;height:36px;background:#f3f4f6;border-radius:50%;color:#9ca3af;font-size:16px;display:flex;align-items:center;justify-content:center">G</div><div style="flex:1"><div style="font-size:13px;font-weight:600;color:#374151">Not connected</div><div style="font-size:12px;color:#9ca3af">Connect Gmail to send emails from within the CRM</div></div><button data-action="gmail-connect" class="btn-r" style="font-size:12px">Connect Gmail</button></div>'}
       </div>
     </div>
 
@@ -154,7 +162,7 @@ function _renderProfileSignaturesSection(myUser) {
       +       '<div style="font-size:13px;font-weight:600;color:#374151">' + sc.label + '</div>'
       +       '<div style="font-size:11px;color:#9ca3af;margin-top:2px">' + sc.sub + '</div>'
       +     '</div>'
-      +     '<button onclick="profileSaveSignature(\'' + sc.key + '\')" class="btn-r" style="font-size:11px;padding:4px 12px">Save</button>'
+      +     '<button data-action="profile-save-signature" data-signature-key="' + sc.key + '" class="btn-r" style="font-size:11px;padding:4px 12px">Save</button>'
       +   '</div>'
       +   RteToolbar(elId)
       +   '<div id="' + elId + '" class="rte-editable" contenteditable="true" '
@@ -217,4 +225,3 @@ function profileChangePassword() {
   document.getElementById('prof_newpw').value = '';
   document.getElementById('prof_cfmpw').value = '';
 }
-

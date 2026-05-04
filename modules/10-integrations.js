@@ -5,6 +5,57 @@
 // ═════════════════════════════════════════════════════════════════════════════
 
 // ══════════════════════════════════════════════════════════════════════════════
+// EVENT DELEGATION HANDLERS
+// ══════════════════════════════════════════════════════════════════════════════
+
+defineAction('integrations-attach-download-raw', function(target, ev) {
+  attachDownloadRaw();
+});
+
+defineAction('integrations-attach-bubble-close', function(target, ev) {
+  var bubble = document.getElementById('attachBubble');
+  if (bubble) bubble.remove();
+});
+
+defineAction('integrations-cal-create-modal-close', function(target, ev) {
+  _calCreateOpen = false;
+  renderPage();
+});
+
+defineAction('integrations-cal-create-modal-bg-close', function(target, ev) {
+  if (ev.target === target) {
+    _calCreateOpen = false;
+    renderPage();
+  }
+});
+
+defineAction('integrations-cal-create-save', function(target, ev) {
+  _calCreateData.title = document.getElementById('cal_title').value;
+  _calCreateData.date = document.getElementById('cal_date').value;
+  _calCreateData.time = document.getElementById('cal_time').value;
+  _calCreateData.duration = document.getElementById('cal_dur').value;
+  _calCreateData.attendees = document.getElementById('cal_att').value;
+  _calCreateData.location = document.getElementById('cal_loc').value;
+  _calCreateData.description = document.getElementById('cal_desc').value;
+  gcalCreateEvent();
+});
+
+defineAction('integrations-gmail-connect', function(target, ev) {
+  gmailConnect();
+});
+
+defineAction('integrations-cal-fetch-events', function(target, ev) {
+  gcalFetchEvents(true);
+});
+
+defineAction('integrations-cal-create-open', function(target, ev) {
+  var entityId = target.dataset.entityId || '';
+  var entityType = target.dataset.entityType || '';
+  var contactEmail = target.dataset.contactEmail || '';
+  openCalendarCreate(entityId, entityType, '', contactEmail);
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 // GMAIL INTEGRATION MODULE
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -27,7 +78,68 @@ function googleSignInForLogin() {
     return googleSignInForLoginNative();
   }
   if (!GMAIL_CLIENT_ID) { alert('Admin must set Google Client ID first in Settings > Email & Gmail'); return; }
-  if (typeof google === 'undefined') { alert('Google Sign-In not loaded. Check internet connection.'); return; }
+  // Defensive: poll for GIS readiness, with two early-exit conditions so we
+  // give users a specific message instead of a generic "still loading":
+  //   - window._gisScriptFailed (set by onerror on the <script> tag)
+  //   - window._gisScriptLoaded === undefined after a few seconds (script
+  //     never fired onload OR onerror — usually means extension blocked it
+  //     before the request even left the browser)
+  var gReady = (typeof google !== 'undefined') && google.accounts && google.accounts.oauth2 && (typeof google.accounts.oauth2.initTokenClient === 'function');
+  if (!gReady) {
+    window._gsiRetryCount = (window._gsiRetryCount || 0) + 1;
+    var diag = {
+      retry: window._gsiRetryCount,
+      scriptLoaded: !!window._gisScriptLoaded,
+      scriptFailed: !!window._gisScriptFailed,
+      hasGoogle: typeof google !== 'undefined',
+      hasAccounts: typeof google !== 'undefined' && !!google.accounts,
+      hasOauth2: typeof google !== 'undefined' && google.accounts && !!google.accounts.oauth2,
+      hasInit: typeof google !== 'undefined' && google.accounts && google.accounts.oauth2 && typeof google.accounts.oauth2.initTokenClient
+    };
+    console.log('[GIS] not ready, retry', diag);
+    // Hard-fail early if the script tag's onerror fired — no point waiting 10s.
+    if (window._gisScriptFailed) {
+      window._gsiRetryCount = 0;
+      var envFail = {
+        userAgent: navigator.userAgent,
+        brave: !!(navigator.brave),
+        cookieEnabled: navigator.cookieEnabled,
+        doNotTrack: navigator.doNotTrack
+      };
+      console.error('[GIS] script load failed (onerror fired). Env:', envFail);
+      var msg = 'Google Sign-In is blocked by a browser extension, ad-blocker, or network policy. Disable shields/privacy extensions for this site and try again, or open /diag.html for a diagnostic.';
+      if (typeof addToast === 'function') addToast(msg, 'error');
+      else alert(msg);
+      return;
+    }
+    if (window._gsiRetryCount > 40) {  // 40 × 250ms = 10s total
+      window._gsiRetryCount = 0;
+      var env = {
+        userAgent: navigator.userAgent,
+        brave: !!(navigator.brave),
+        cookieEnabled: navigator.cookieEnabled,
+        doNotTrack: navigator.doNotTrack,
+        scriptLoaded: !!window._gisScriptLoaded,
+        scriptFailed: !!window._gisScriptFailed
+      };
+      console.error('[GIS] gave up after 10s. Final state:', diag, 'Env:', env);
+      // If the script never even fired onload/onerror, it was almost certainly
+      // blocked at the request level (uBlock, Brave Shields, Pi-hole DNS).
+      var blocked = !window._gisScriptLoaded && !window._gisScriptFailed;
+      var detailMsg = blocked
+        ? 'Google services blocked — likely a browser extension or DNS-level blocker. Disable shields/ad-blocker for this site, or open /diag.html for details.'
+        : 'Google Sign-In failed to load after 10 seconds. Check DevTools Console for [GIS] log lines, or open /diag.html for a full diagnostic.';
+      if (typeof addToast === 'function') addToast(detailMsg, 'error');
+      else alert(detailMsg);
+      return;
+    }
+    setTimeout(googleSignInForLogin, 250);
+    return;
+  }
+  if (window._gsiRetryCount && window._gsiRetryCount > 0) {
+    console.log('[GIS] became ready after', window._gsiRetryCount, 'retries');
+  }
+  window._gsiRetryCount = 0;
   try {
     var client = google.accounts.oauth2.initTokenClient({
       client_id: GMAIL_CLIENT_ID,
@@ -489,8 +601,8 @@ function downloadGmailAttachment(messageId, attachmentId, filename) {
       +'<div style="display:flex;align-items:center;gap:8px"><span style="font-size:18px">'+(isImage?'\ud83d\uddbc':isPdf?'\ud83d\udcc4':'\ud83d\udcc1')+'</span>'
       +'<div><div style="font-size:14px;font-weight:700;color:#111">'+filename+'</div>'
       +'<div style="font-size:11px;color:#6b7280">'+(data.size>1048576?(data.size/1048576).toFixed(1)+'MB':data.size>1024?Math.round(data.size/1024)+'KB':data.size+'B')+'</div></div></div>'
-      +'<div style="display:flex;gap:6px"><button onclick="attachDownloadRaw()" class="btn-w" style="font-size:11px">\u2b07 Download</button>'
-      +'<button onclick="document.getElementById(\'attachBubble\').remove()" style="background:none;border:none;cursor:pointer;font-size:20px;color:#9ca3af;padding:4px">\u00d7</button></div></div>'
+      +'<div style="display:flex;gap:6px"><button data-action="integrations-attach-download-raw" class="btn-w" style="font-size:11px">\u2b07 Download</button>'
+      +'<button data-action="integrations-attach-bubble-close" style="background:none;border:none;cursor:pointer;font-size:20px;color:#9ca3af;padding:4px">\u00d7</button></div></div>'
       +'<div style="flex:1;overflow:auto;display:flex;align-items:center;justify-content:center;padding:16px;background:#f9fafb;min-height:200px">';
 
     if (isImage) {
@@ -501,7 +613,7 @@ function downloadGmailAttachment(messageId, attachmentId, filename) {
       card += '<div style="text-align:center;padding:40px"><div style="font-size:48px;margin-bottom:12px">\ud83d\udcc1</div>'
         +'<div style="font-size:14px;font-weight:600;color:#374151;margin-bottom:4px">'+filename+'</div>'
         +'<div style="font-size:12px;color:#6b7280;margin-bottom:16px">Preview not available for this file type</div>'
-        +'<button onclick="attachDownloadRaw()" class="btn-r" style="font-size:13px">\u2b07 Download File</button></div>';
+        +'<button data-action="integrations-attach-download-raw" class="btn-r" style="font-size:13px">\u2b07 Download File</button></div>';
     }
 
     card += '</div></div>';
@@ -925,11 +1037,11 @@ function openCalendarCreate(entityId, entityType, defaultTitle, defaultAttendee)
 function renderCalendarCreateModal() {
   if (!_calCreateOpen) return '';
   var d = _calCreateData;
-  return '<div class="modal-bg" onclick="if(event.target===this){_calCreateOpen=false;renderPage();}">'
+  return '<div class="modal-bg" data-action="integrations-cal-create-modal-bg-close">'
     +'<div class="modal" style="max-width:480px">'
     +'<div style="padding:18px 22px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">'
     +'<h3 style="margin:0;font-size:16px;font-weight:700;font-family:Syne,sans-serif">Schedule Meeting</h3>'
-    +'<button onclick="_calCreateOpen=false;renderPage()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button>'
+    +'<button data-action="integrations-cal-create-modal-close" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:22px;line-height:1">\u00d7</button>'
     +'</div>'
     +'<div class="modal-body" style="display:flex;flex-direction:column;gap:14px">'
     +'<div><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">Title *</label>'
@@ -952,15 +1064,15 @@ function renderCalendarCreateModal() {
     +'\ud83d\udcc5 This creates a real Google Calendar event'+(d.attendees?' and sends email invites to all attendees':'')+'. It also logs to the deal/lead activity timeline.</div>'
     +'</div>'
     +'<div style="padding:16px 22px;border-top:1px solid #f0f0f0;background:#f9fafb;border-radius:0 0 16px 16px;display:flex;justify-content:flex-end;gap:8px">'
-    +'<button class="btn-w" onclick="_calCreateOpen=false;renderPage()">Cancel</button>'
-    +'<button class="btn-r" onclick="_calCreateData.title=document.getElementById(\'cal_title\').value;_calCreateData.date=document.getElementById(\'cal_date\').value;_calCreateData.time=document.getElementById(\'cal_time\').value;_calCreateData.duration=document.getElementById(\'cal_dur\').value;_calCreateData.attendees=document.getElementById(\'cal_att\').value;_calCreateData.location=document.getElementById(\'cal_loc\').value;_calCreateData.description=document.getElementById(\'cal_desc\').value;gcalCreateEvent()">Create Event & Send Invites</button>'
+    +'<button class="btn-w" data-action="integrations-cal-create-modal-close">Cancel</button>'
+    +'<button class="btn-r" data-action="integrations-cal-create-save">Create Event & Send Invites</button>'
     +'</div></div></div>';
 }
 
 function renderCalendarWidget(entityId, entityType, contactEmail) {
   var token = getState().gmailToken;
   if (!token) {
-    return '<div style="padding:14px;background:#f9fafb;border-radius:10px;margin-top:12px"><div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:6px">\ud83d\udcc5 Calendar</div><div style="font-size:12px;color:#9ca3af">Connect Gmail to sync your Google Calendar</div><button onclick="gmailConnect()" class="btn-r" style="font-size:11px;margin-top:8px">Connect Gmail</button></div>';
+    return '<div style="padding:14px;background:#f9fafb;border-radius:10px;margin-top:12px"><div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:6px">\ud83d\udcc5 Calendar</div><div style="font-size:12px;color:#9ca3af">Connect Gmail to sync your Google Calendar</div><button data-action="integrations-gmail-connect" class="btn-r" style="font-size:11px;margin-top:8px">Connect Gmail</button></div>';
   }
 
   if (!_calFetched && !_calLoading) gcalFetchEvents(false);
@@ -979,8 +1091,8 @@ function renderCalendarWidget(entityId, entityType, contactEmail) {
     +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
     +'<div style="font-size:12px;font-weight:700;color:#374151">\ud83d\udcc5 Calendar</div>'
     +'<div style="display:flex;gap:6px">'
-    +'<button onclick="gcalFetchEvents(true)" style="font-size:10px;padding:2px 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;color:#6b7280" title="Refresh">\u21bb</button>'
-    +'<button onclick="openCalendarCreate(\''+entityId+'\',\''+entityType+'\',\'\',\''+(contactEmail||'')+'\')" style="font-size:10px;padding:2px 8px;border:1px solid #c41230;border-radius:6px;background:#fff5f6;cursor:pointer;font-family:inherit;color:#c41230;font-weight:600">+ Meeting</button>'
+    +'<button data-action="integrations-cal-fetch-events" style="font-size:10px;padding:2px 8px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;color:#6b7280" title="Refresh">\u21bb</button>'
+    +'<button data-action="integrations-cal-create-open" data-entity-id="'+entityId+'" data-entity-type="'+entityType+'" data-contact-email="'+(contactEmail||'')+'" style="font-size:10px;padding:2px 8px;border:1px solid #c41230;border-radius:6px;background:#fff5f6;cursor:pointer;font-family:inherit;color:#c41230;font-weight:600">+ Meeting</button>'
     +'</div></div>'
     +(_calLoading ? '<div style="font-size:12px;color:#9ca3af;text-align:center;padding:12px">Loading calendar...</div>'
     : upcoming.length === 0 ? '<div style="font-size:12px;color:#9ca3af;text-align:center;padding:12px">No upcoming events'+(contactEmail?' with this contact':'')+'</div>'
@@ -1001,4 +1113,3 @@ function renderCalendarWidget(entityId, entityType, contactEmail) {
     }).join(''))
     +'</div>';
 }
-

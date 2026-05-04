@@ -50,6 +50,10 @@ function jobToDb(j) {
     install_crew:j.installCrew||[], install_completed_at:j.installCompletedAt||null,
     install_duration_hours:(typeof j.installDurationHours === 'number' && j.installDurationHours > 0) ? j.installDurationHours : null,
     production_status:j.productionStatus||null, factory_order_id:j.factoryOrderId||null,
+    // FACTORY-CRM-CONTRACT.md §6.1: dates written back from Factory CRM
+    // (Aluplast-confirmed material delivery + capacity-planner dispatch ready).
+    factory_material_delivery_date:j.factoryMaterialDeliveryDate||null,
+    factory_dispatch_ready_date:j.factoryDispatchReadyDate||null,
     claims:j.claims||null, held:!!j.held, hold_reason:j.holdReason||null,
     order_suffix:j.orderSuffix||'O', legal_entity:j.legalEntity||null, notes:j.notes||null,
     // DocuSign envelope tracking (set by docusign-send / updated by docusign-webhook)
@@ -92,6 +96,8 @@ function dbToJob(r) {
     installCrew:r.install_crew||[], installCompletedAt:r.install_completed_at,
     installDurationHours:(r.install_duration_hours != null) ? Number(r.install_duration_hours) : null,
     productionStatus:r.production_status, factoryOrderId:r.factory_order_id,
+    factoryMaterialDeliveryDate:r.factory_material_delivery_date||null,
+    factoryDispatchReadyDate:r.factory_dispatch_ready_date||null,
     claims:r.claims, held:!!r.held, holdReason:r.hold_reason,
     orderSuffix:r.order_suffix||'O', legalEntity:r.legal_entity, notes:r.notes,
     docusignEnvelopeId:r.docusign_envelope_id||null,
@@ -689,6 +695,39 @@ function _recordsEqual(a, b) {
   return true;
 }
 
+// Jobs row carries three large JSONB blobs (cad_data, cad_survey_data,
+// cad_final_data) that can each grow into the multi-MB range per row. The
+// initial dbLoadAll selects every column except those, so the boot payload
+// stays small (~50 KB instead of 50 MB+) and Postgres doesn't time out.
+// _loadJobCadBlobsBackground fills the blobs in afterwards in small batches.
+// If you add a new column to the jobs table, append it here too — anything
+// missing from this list won't surface in dbToJob's mapped record.
+var JOBS_LIGHT_COLUMNS = [
+  'id', 'job_number', 'deal_id', 'contact_id',
+  'title', 'status', 'branch',
+  'street', 'suburb', 'state', 'postcode',
+  'val', 'payment_method',
+  'estimated_install_minutes', 'estimated_production_minutes', 'station_times',
+  'source_quote_id',
+  'cm_booked_date', 'cm_booked_time', 'cm_assigned_to', 'cm_completed_at',
+  'cm_doc_url',
+  'final_signed_pdf_url', 'final_rendered_pdf_url', 'final_signed_at',
+  'install_date', 'install_time', 'install_crew',
+  'install_completed_at', 'install_duration_hours',
+  'production_status', 'factory_order_id',
+  'factory_material_delivery_date', 'factory_dispatch_ready_date',
+  'claims', 'held', 'hold_reason',
+  'order_suffix', 'legal_entity', 'notes',
+  'docusign_envelope_id', 'docusign_status',
+  'docusign_completed_at', 'docusign_declined_at',
+  'has_variation', 'variation_status', 'variation_amount',
+  'variation_notes', 'variation_envelope_id',
+  'variation_sent_at', 'variation_signed_at', 'variation_resolved_at',
+  'final_envelope_sent_at',
+  'tools_required',
+  'created_at'
+].join(',');
+
 async function dbLoadAll() {
   if (!_sb) { if (!initSupabase()) return false; }
   try {
@@ -696,7 +735,7 @@ async function dbLoadAll() {
       _sb.from('contacts').select('*'),
       _sb.from('leads').select('*'),
       _sb.from('deals').select('*'),
-      _sb.from('jobs').select('*'),
+      _sb.from('jobs').select(JOBS_LIGHT_COLUMNS),
       _sb.from('invoices').select('*'),
       _sb.from('factory_orders').select('*'),
       _sb.from('factory_items').select('*'),
@@ -738,6 +777,23 @@ async function dbLoadAll() {
     var leads = (results[1].data||[]).map(dbToLead);
     var deals = (results[2].data||[]).map(function(r){ return dbToDeal(r); });
     var jobs = (results[3].data||[]).map(dbToJob);
+    // The jobs query excludes cad_data / cad_survey_data / cad_final_data
+    // (see JOBS_LIGHT_COLUMNS), so loaded rows have those fields undefined.
+    // Carry the values across from local state so a realtime-triggered
+    // reload doesn't blank the CAD design we already have. The background
+    // fetch below populates anything still missing.
+    (function _carryLocalCadFields(){
+      var prevSt = getState();
+      var prevById = {};
+      (prevSt.jobs || []).forEach(function(j){ prevById[j.id] = j; });
+      jobs.forEach(function(j){
+        var prev = prevById[j.id];
+        if (!prev) return;
+        if (prev.cadData != null)       j.cadData       = prev.cadData;
+        if (prev.cadSurveyData != null) j.cadSurveyData = prev.cadSurveyData;
+        if (prev.cadFinalData != null)  j.cadFinalData  = prev.cadFinalData;
+      });
+    })();
     // Auto-migrate legacy status keys (e.g. e_ready_to_schedule → c2_order_schedule_standard)
     // so old jobs created before status rename render correctly and can advance through gates.
     if (typeof resolveStatusKey === 'function') {
@@ -871,6 +927,10 @@ async function dbLoadAll() {
       // DOM via renderPage, which is what kicks focus out of inputs.
       if (Object.keys(_patch).length > 0) setState(_patch, {skipSync: true});
     }
+
+    // Kick off lazy CAD-blob fill for any jobs still missing them. Fire and
+    // forget — the rest of dbLoadAll mustn't block on the multi-MB blobs.
+    _loadJobCadBlobsBackground();
 
     // Persist individual stores
     if (invoices.length > 0) localStorage.setItem('spartan_invoices', JSON.stringify(invoices));
@@ -1066,6 +1126,63 @@ async function dbLoadAll() {
   } catch(e) {
     console.error('[Spartan] DB load failed, using localStorage cache:', e);
     return false;
+  }
+}
+
+// ── Lazy CAD blob loader ────────────────────────────────────────────────────
+// Initial dbLoadAll skips cad_data/cad_survey_data/cad_final_data because the
+// blobs run multi-MB per row and the combined select('*') hit Postgres's
+// statement timeout. This fills them in afterwards in small batches so even
+// a single oversized row (e.g. VIC-4009 at ~24 MB) fits well under the
+// timeout. Each batch's setState patch only writes fields that are still
+// null locally — so an open CAD overlay's unsaved edits, or fresh data the
+// user just saved, never get clobbered by a late-arriving fetch.
+var _jobCadFetchInflight = false;
+async function _loadJobCadBlobsBackground() {
+  if (!_sb || _jobCadFetchInflight) return;
+  _jobCadFetchInflight = true;
+  try {
+    var st = getState();
+    var pending = (st.jobs || []).filter(function(j){
+      return j && j.id && (j.cadData == null || j.cadSurveyData == null || j.cadFinalData == null);
+    }).map(function(j){ return j.id; });
+    if (pending.length === 0) return;
+
+    var BATCH_SIZE = 5;
+    for (var i = 0; i < pending.length; i += BATCH_SIZE) {
+      var batch = pending.slice(i, i + BATCH_SIZE);
+      var res;
+      try {
+        res = await _sb.from('jobs')
+          .select('id, cad_data, cad_survey_data, cad_final_data')
+          .in('id', batch);
+      } catch(e) {
+        console.warn('[Spartan] CAD blob fetch threw for batch', batch, e);
+        continue;
+      }
+      if (res && res.error) {
+        console.warn('[Spartan] CAD blob fetch error for batch', batch, '-', res.error.message);
+        continue;
+      }
+      var rows = (res && res.data) || [];
+      if (rows.length === 0) continue;
+
+      var stNow = getState();
+      var rowsById = {};
+      rows.forEach(function(r){ rowsById[r.id] = r; });
+      var nextJobs = (stNow.jobs || []).map(function(j){
+        var r = rowsById[j.id];
+        if (!r) return j;
+        var changes = {};
+        if (j.cadData == null       && r.cad_data        != null) changes.cadData       = r.cad_data;
+        if (j.cadSurveyData == null && r.cad_survey_data != null) changes.cadSurveyData = r.cad_survey_data;
+        if (j.cadFinalData == null  && r.cad_final_data  != null) changes.cadFinalData  = r.cad_final_data;
+        return Object.keys(changes).length === 0 ? j : Object.assign({}, j, changes);
+      });
+      setState({ jobs: nextJobs }, { skipSync: true });
+    }
+  } finally {
+    _jobCadFetchInflight = false;
   }
 }
 
@@ -1273,6 +1390,8 @@ const PIPELINES=[
 ];
 
 const DEALS=[];
+
+const LEADS_DATA=[];
 
 const NOTIFS=[];
 

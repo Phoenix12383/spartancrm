@@ -6,6 +6,308 @@
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 const fmt$ = v => '$'+Number(v).toLocaleString();
+
+// Single-quote escape for inline JS attribute strings (onclick handlers, etc.).
+// Was duplicated in 08-sales-crm (4×), 13-leads-maps, 23-won-deals, 24-commission,
+// 27-calendar-page; consolidated here 2026-05-02. Identical implementation.
+function _esc(s) { return String(s||'').replace(/'/g, "\\'"); }
+window._esc = _esc;
+
+// Double-quote + < escape for HTML attribute values. Consolidated 2026-05-02
+// from identical local copies in 08a-sales-mobile, 11-email-page,
+// 13-leads-maps, 23-won-deals.
+function _attrEsc(s) { return String(s||'').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+window._attrEsc = _attrEsc;
+
+// "$25k" / "$1.2M" / "$847" — compact AUD formatter. Consolidated 2026-05-02
+// from identical local copies in 08a-sales-mobile (2×), 13-leads-maps,
+// 23-won-deals, 24-commission.
+function fmtK(n) {
+  var v = Number(n) || 0;
+  if (v >= 1000000) return '$' + (v/1000000).toFixed(1) + 'M';
+  if (v >= 1000)    return '$' + Math.round(v/1000) + 'k';
+  return '$' + v.toFixed(0);
+}
+window.fmtK = fmtK;
+
+// "9:30am" / "3pm" — 24h "HH:MM" → 12h time-of-day. Consolidated 2026-05-02
+// from identical local copies in 08a-sales-mobile, 27-calendar-page.
+// (17-install-schedule has its own version which we leave alone — Jobs dev
+//  territory.)
+function fmtTime12(t) {
+  if (!t) return '';
+  var p = t.split(':'); var hh = parseInt(p[0]); var mm = p[1] || '00';
+  var ap = hh >= 12 ? 'pm' : 'am'; var h12 = hh % 12 || 12;
+  return h12 + ':' + mm + ap;
+}
+window.fmtTime12 = fmtTime12;
+
+// ── EVENT DELEGATION FRAMEWORK (2026-05-02) ──────────────────────────────────
+//
+// Goal: replace inline `onclick="…"` strings (1,100+ across the codebase) with
+// data-attribute-driven actions handled by a single body-level listener. Less
+// fragile (no hidden parse errors in onclick strings), CSP-friendlier, easier
+// to debug, and free for free re-renders (no rewiring on every renderPage()).
+//
+// USAGE
+//
+//   // 1. Render templates emit data-action attrs (and any args as data-*):
+//   '<button data-action="fleet-week-prev" data-step="' + step + '">← Prev</button>'
+//   '<select data-on-change="fleet-set-weeks">…</select>'
+//   '<a href="#" data-action="nav-job-detail" data-job-id="' + j.id + '">…</a>'
+//
+//   // 2. Module registers handlers (idempotent — call as often as needed):
+//   defineAction('fleet-week-prev', function(target, ev) {
+//     var step = +(target.dataset.step || 0);
+//     setState({ fleetPlanOffset: (getState().fleetPlanOffset || 0) - step });
+//   });
+//   defineAction('nav-job-detail', function(target, ev) {
+//     ev.preventDefault();
+//     setState({ page:'jobs', jobDetailId: target.dataset.jobId });
+//   });
+//
+// SUPPORTED EVENT TYPES (use the matching attribute):
+//   click  → data-action          (most common; "action" is the bare name)
+//   change → data-on-change
+//   input  → data-on-input
+//   submit → data-on-submit
+//
+// Handler signature: function(targetElement, event) { … }
+// Both old `onclick="…"` and new data-action patterns coexist during migration —
+// the body listener only fires when a data-action / data-on-* attribute matches.
+
+window._actions = window._actions || {};
+
+function defineAction(name, handler) {
+  if (typeof name !== 'string' || typeof handler !== 'function') return;
+  window._actions[name] = handler;
+}
+window.defineAction = defineAction;
+
+// Drain any defineAction calls that ran before this module loaded — the
+// stub in index.html queues them. Modules earlier in the load order (e.g.
+// 05-state-auth-rbac.js at Layer 2) can safely call defineAction at top
+// level and have their handlers registered here.
+if (Array.isArray(window._earlyActionQueue)) {
+  window._earlyActionQueue.forEach(function(entry) {
+    defineAction(entry[0], entry[1]);
+  });
+  window._earlyActionQueue = null;
+}
+
+// Body-level delegation, attached idempotently. Picks up new buttons added by
+// any render() automatically because events bubble.
+(function _initEventDelegation(){
+  if (typeof document === 'undefined') return;
+  var EVENT_MAP = {
+    click:  'action',         // <button data-action="…">
+    change: 'onChange',       // <select data-on-change="…">
+    input:  'onInput',        // <input  data-on-input="…">
+    submit: 'onSubmit',       // <form   data-on-submit="…">
+  };
+  function attach() {
+    if (!document.body || document.body.__delegationAttached) return;
+    document.body.__delegationAttached = true;
+    Object.keys(EVENT_MAP).forEach(function(evType) {
+      var dsKey = EVENT_MAP[evType];
+      // CSS selector for elements with the matching data attr (kebab form).
+      var attr  = (evType === 'click') ? 'data-action' : 'data-on-' + evType;
+      document.body.addEventListener(evType, function(e) {
+        var target = e.target.closest('[' + attr + ']');
+        if (!target) return;
+        var name = target.dataset[dsKey];
+        if (!name) return;
+        var handler = window._actions[name];
+        if (typeof handler !== 'function') {
+          console.warn('[event-delegation] Unknown ' + evType + ' action:', name, target);
+          return;
+        }
+        handler(target, e);
+      }, evType === 'submit');   // capture-phase for submit so preventDefault works
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', attach);
+  } else {
+    attach();
+  }
+})();
+
+// ── UI element actions (uses the framework defined above) ───────────────────
+defineAction('ui-job-link-nav', function(target, ev) {
+  const jobId = target.dataset.jobId;
+  navigateTo('jobs', {jobDetailId: jobId});
+});
+
+defineAction('ui-nav-back', function(target, ev) {
+  navBack();
+});
+
+defineAction('ui-nav-forward', function(target, ev) {
+  navForward();
+});
+
+defineAction('ui-toggle-branch-drop', function(target, ev) {
+  toggleBranchDrop();
+});
+
+defineAction('ui-set-branch', function(target, ev) {
+  const branch = target.dataset.branch;
+  setState({branch: branch});
+  hideBranchDrop();
+});
+
+defineAction('ui-toggle-notif-drop', function(target, ev) {
+  toggleNotifDrop();
+});
+
+defineAction('ui-mark-all-read', function(target, ev) {
+  markAllRead();
+});
+
+defineAction('ui-notif-click', function(target, ev) {
+  const id = target.dataset.notifId;
+  const to = target.dataset.notifTo || 'dashboard';
+  const emailId = target.dataset.notifEmailId || '';
+  const ntype = target.dataset.notifType || '';
+  handleNotifClick(id, to, emailId, ntype);
+});
+
+defineAction('ui-toggle-profile-drop', function(target, ev) {
+  toggleProfileDrop();
+});
+
+defineAction('ui-profile-close-and-nav', function(target, ev) {
+  window.profileDropOpen = false;
+  const page = target.dataset.page;
+  const settTab = target.dataset.settTab;
+  if(settTab) window.settTab = settTab;
+  setState({page: page, dealDetailId: null, leadDetailId: null, contactDetailId: null});
+});
+
+defineAction('ui-logout', function(target, ev) {
+  logout();
+});
+
+defineAction('ui-toggle-sidebar', function(target, ev) {
+  const state = getState();
+  setState({sidebarOpen: !state.sidebarOpen});
+});
+
+defineAction('ui-sidebar-toggle-hover', function(target, ev) {
+  // onmouseover/onmouseout for sidebar toggle — handle with CSS or inline (leaving as-is per rules)
+});
+
+defineAction('ui-set-module', function(target, ev) {
+  const mode = target.dataset.crmMode;
+  const page = target.dataset.defaultPage || 'dashboard';
+  setState({crmMode: mode, page: page, dealDetailId: null, leadDetailId: null, contactDetailId: null, jobDetailId: null, serviceDetailId: null});
+});
+
+defineAction('ui-bottom-nav-click', function(target, ev) {
+  const page = target.dataset.page;
+  setState({page: page, dealDetailId: null, leadDetailId: null, contactDetailId: null, jobDetailId: null});
+});
+
+defineAction('ui-mobile-hangup', function(target, ev) {
+  hangUpActiveCallMobile();
+});
+
+defineAction('ui-mobile-contacts', function(target, ev) {
+  setState({page: 'contacts', dealDetailId: null, leadDetailId: null, contactDetailId: null, jobDetailId: null});
+});
+
+defineAction('ui-mobile-dialer', function(target, ev) {
+  openMobileDialer();
+});
+
+defineAction('ui-mobile-schedule', function(target, ev) {
+  const entityId = target.dataset.entityId;
+  const entityType = target.dataset.entityType;
+  openMobileSchedule(entityId, entityType);
+});
+
+defineAction('ui-twilio-call', function(target, ev) {
+  const phone = target.dataset.phone;
+  const entityId = target.dataset.entityId;
+  const entityType = target.dataset.entityType;
+  const name = target.dataset.name;
+  twilioCall(phone, entityId, entityType, name);
+});
+
+defineAction('ui-search-drop-click', function(target, ev) {
+  const page = target.dataset.page;
+  const detailId = target.dataset.detailId;
+  const detailType = target.dataset.detailType;
+  const stateUpdate = {};
+  stateUpdate[detailType] = detailId;
+  stateUpdate.page = page;
+  setState(stateUpdate);
+  // Close search dropdown and clear input
+  var drop = document.getElementById('searchDrop');
+  if(drop) drop.style.display = 'none';
+  var input = document.getElementById('topSearch');
+  if(input) input.value = '';
+});
+
+defineAction('ui-sidebar-nav-click', function(target, ev) {
+  const page = target.dataset.page;
+  const state = getState();
+  const native = (typeof isNativeWrapper === 'function' && isNativeWrapper());
+  setState({page: page, dealDetailId: null, leadDetailId: null, contactDetailId: null, jobDetailId: null, ...(native ? {sidebarOpen: false} : {})});
+});
+
+defineAction('ui-sidebar-profile-click', function(target, ev) {
+  const state = getState();
+  const native = (typeof isNativeWrapper === 'function' && isNativeWrapper());
+  setState({page: 'profile', dealDetailId: null, leadDetailId: null, contactDetailId: null, ...(native ? {sidebarOpen: false} : {})});
+});
+
+defineAction('ui-sidebar-logout', function(target, ev) {
+  logout();
+});
+
+defineAction('ui-sidebar-close-overlay', function(target, ev) {
+  setState({sidebarOpen: false});
+});
+
+defineAction('ui-search-input', function(target, ev) {
+  handleTopSearch(target.value);
+});
+
+defineAction('ui-search-focus', function(target, ev) {
+  document.getElementById('searchDrop').style.display = 'block';
+});
+
+defineAction('ui-search-blur', function(target, ev) {
+  setTimeout(function() {
+    const d = document.getElementById('searchDrop');
+    if(d) d.style.display = 'none';
+  }, 200);
+});
+
+defineAction('ui-profile-dropdown-click', function(target, ev) {
+  ev.stopPropagation();
+});
+
+defineAction('ui-voicemail-nav', function(target, ev) {
+  setState({page: 'phone'});
+});
+
+// Display-value helpers used in deal/lead detail sidebars
+function getDealDisplayValue(d) { return d ? (d.val || 0) : 0; }
+function getLeadDisplayValue(lead) { return lead ? (lead.val || 0) : 0; }
+
+// Returns a clickable span that navigates to the job detail page.
+// Usage: jobLink(j) — pass the full job object.
+function jobLink(j) {
+  if (!j) return '—';
+  var num = j.jobNumber || j.id || '?';
+  return '<span data-action="ui-job-link-nav" data-job-id="' + _esc(j.id) + '" style="cursor:pointer;color:#c41230;font-weight:700;text-decoration:underline;text-underline-offset:2px">' + num + '</span>';
+}
+window.getDealDisplayValue = getDealDisplayValue;
+window.getLeadDisplayValue = getLeadDisplayValue;
+window.jobLink = jobLink;
 const contactName = cid => { const c=_state.contacts.find(x=>x.id===cid); return c?c.fn+' '+c.ln:'—'; };
 const avatar = name => name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
 const clr = {
@@ -148,7 +450,7 @@ function renderModuleBar(){
       ${modules.filter(function(m){return canAccessModule(m.key);}).map(function(m){
         var on = mode === m.key;
         var defPage = m.key==='jobs'?'jobdashboard':m.key==='service'?'servicelist':m.key==='factory'?'factorydash':m.key==='accounts'?'accdash':'dashboard';
-        return '<button onclick="setState({crmMode:\'' + m.key + '\',page:\'' + defPage + '\',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null,serviceDetailId:null})" style="padding:6px 16px;border:none;border-radius:6px;font-size:12px;font-weight:700;font-family:Syne,sans-serif;cursor:pointer;letter-spacing:.3px;transition:all .15s;' + (on ? 'background:rgba(255,255,255,.22);color:#fff' : 'background:transparent;color:rgba(255,255,255,.55)') + '" onmouseover="if(!' + on + ')this.style.background=\'rgba(255,255,255,.1)\'" onmouseout="if(!' + on + ')this.style.background=\'transparent\'">' + m.label + '</button>';
+        return '<button data-action="ui-set-module" data-crm-mode="' + _esc(m.key) + '" data-default-page="' + _esc(defPage) + '" style="padding:6px 16px;border:none;border-radius:6px;font-size:12px;font-weight:700;font-family:Syne,sans-serif;cursor:pointer;letter-spacing:.3px;transition:all .15s;' + (on ? 'background:rgba(255,255,255,.22);color:#fff' : 'background:transparent;color:rgba(255,255,255,.55)') + '">' + m.label + '</button>';
       }).join('')}
     </div>
   </div>`;
@@ -184,7 +486,7 @@ function renderBottomNav(){
       var badge = (n.id === 'dashboard' && overdueCount > 0)
         ? `<span style="position:absolute;top:4px;right:50%;transform:translateX(18px);min-width:16px;height:16px;padding:0 4px;background:#dc2626;border-radius:8px;font-size:9px;font-weight:800;color:#fff;display:flex;align-items:center;justify-content:center;letter-spacing:0">${overdueCount > 99 ? '99+' : overdueCount}</span>`
         : '';
-      return `<button onclick="setState({page:'${n.id}',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null})" style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:none;background:none;cursor:pointer;padding:6px 2px;color:${active ? '#c41230' : '#6b7280'};font-family:inherit;position:relative">
+      return `<button data-action="ui-bottom-nav-click" data-page="${_esc(n.id)}" style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border:none;background:none;cursor:pointer;padding:6px 2px;color:${active ? '#c41230' : '#6b7280'};font-family:inherit;position:relative">
         ${active ? '<span style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:32px;height:2px;background:#c41230;border-radius:0 0 4px 4px"></span>' : ''}
         ${badge}
         ${Icon({n: n.icon, size: 18})}
@@ -254,7 +556,7 @@ function renderMobileFAB() {
         '<span style="font-size:10px;font-weight:700;opacity:.85">On call · ' + safeContactForActive + '</span>' +
         '<span id="mobFABCallTimer" style="font-size:13px;font-weight:800;font-family:Syne,sans-serif">' + (typeof _renderActiveCallElapsed === 'function' ? _renderActiveCallElapsed() : '00:00') + '</span>' +
       '</div>' +
-      '<button onclick="hangUpActiveCallMobile()" title="End call" style="' + btn + ';background:#dc2626" aria-label="End call">📵</button>' +
+      '<button data-action="ui-mobile-hangup" title="End call" style="' + btn + ';background:#dc2626" aria-label="End call">📵</button>' +
     '</div>';
   }
 
@@ -264,25 +566,25 @@ function renderMobileFAB() {
   //   • Envelope (blue) → same dialer modal (its bottom row has both Call and
   //     SMS actions; the rep types a number and picks which one to fire)
   if (!entity) {
-    var contactsBtn = '<button onclick="setState({page:\'contacts\',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null})" title="Contacts" aria-label="Open contacts" style="' + btn + ';background:#c41230">+</button>';
-    var dialBtn     = '<button onclick="openMobileDialer()" title="Dial" aria-label="Dial a number" style="' + btn + ';background:#22c55e">📞</button>';
-    var smsBtnOff   = '<button onclick="openMobileDialer()" title="SMS" aria-label="Send SMS" style="' + btn + ';background:#3b82f6">✉</button>';
+    var contactsBtn = '<button data-action="ui-mobile-contacts" title="Contacts" aria-label="Open contacts" style="' + btn + ';background:#c41230">+</button>';
+    var dialBtn     = '<button data-action="ui-mobile-dialer" title="Dial" aria-label="Dial a number" style="' + btn + ';background:#22c55e">📞</button>';
+    var smsBtnOff   = '<button data-action="ui-mobile-dialer" title="SMS" aria-label="Send SMS" style="' + btn + ';background:#3b82f6">✉</button>';
     return '<div style="' + pillBase + '">' + contactsBtn + dialBtn + smsBtnOff + '</div>';
   }
 
   // Full pill — Schedule / Call·Hangup / SMS.
-  var scheduleBtn = '<button onclick="openMobileSchedule(\'' + idEsc + '\',\'' + entityType + '\')" title="Schedule" style="' + btn + ';background:#c41230" aria-label="Schedule next activity">+</button>';
+  var scheduleBtn = '<button data-action="ui-mobile-schedule" data-entity-id="' + _esc(idEsc) + '" data-entity-type="' + _esc(entityType) + '" title="Schedule" style="' + btn + ';background:#c41230" aria-label="Schedule next activity">+</button>';
 
   var callBtn;
   if (hasActiveCall) {
     // Red hangup with timer rendered to the right of the pill so it doesn't
     // crush the icon. Updates via _tickActiveCallTimer textContent.
-    callBtn = '<button onclick="hangUpActiveCallMobile()" title="End call" style="' + btn + ';background:#dc2626;position:relative" aria-label="End call">' +
+    callBtn = '<button data-action="ui-mobile-hangup" title="End call" style="' + btn + ';background:#dc2626;position:relative" aria-label="End call">' +
       '<span style="font-size:20px;line-height:1">📵</span>' +
       '<span id="mobFABCallTimer" style="position:absolute;top:-6px;right:-30px;background:#0a0a0a;color:#fff;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:800;font-family:Syne,sans-serif;border:1px solid rgba(255,255,255,.2);white-space:nowrap">' + (typeof _renderActiveCallElapsed === 'function' ? _renderActiveCallElapsed() : '00:00') + '</span>' +
     '</button>';
   } else if (phone) {
-    callBtn = '<button onclick="twilioCall(\'' + phoneEsc + '\',\'' + idEsc + '\',\'' + entityType + '\',\'' + nameEsc + '\')" title="Call" style="' + btn + ';background:#22c55e" aria-label="Call">📞</button>';
+    callBtn = '<button data-action="ui-twilio-call" data-phone="' + _esc(phoneEsc) + '" data-entity-id="' + _esc(idEsc) + '" data-entity-type="' + _esc(entityType) + '" data-name="' + _esc(nameEsc) + '" title="Call" style="' + btn + ';background:#22c55e" aria-label="Call">📞</button>';
   } else {
     // No phone on the contact — render a disabled-look button rather than
     // hide the cell, so the pill width stays consistent across screens.
@@ -299,6 +601,43 @@ function renderMobileFAB() {
 
   return '<div style="' + pillBase + '">' + scheduleBtn + callBtn + smsBtn + '</div>';
 }
+
+// ── Navigation history stack ──────────────────────────────────────────────────
+var _navHistory = [];
+var _navFuture  = [];
+
+function _navSnapshot() {
+  var s = getState();
+  return { page: s.page, jobDetailId: s.jobDetailId || null, dealDetailId: s.dealDetailId || null,
+           leadDetailId: s.leadDetailId || null, contactDetailId: s.contactDetailId || null };
+}
+
+function navigateTo(page, extra) {
+  _navHistory.push(_navSnapshot());
+  _navFuture = [];
+  var patch = Object.assign({ page: page, jobDetailId: null, dealDetailId: null,
+                               leadDetailId: null, contactDetailId: null }, extra || {});
+  setState(patch);
+  renderPage();
+}
+
+function navBack() {
+  if (!_navHistory.length) return;
+  _navFuture.push(_navSnapshot());
+  setState(_navHistory.pop());
+  renderPage();
+}
+
+function navForward() {
+  if (!_navFuture.length) return;
+  _navHistory.push(_navSnapshot());
+  setState(_navFuture.pop());
+  renderPage();
+}
+
+window.navigateTo = navigateTo;
+window.navBack    = navBack;
+window.navForward = navForward;
 
 function renderTopBar(){
   const {sidebarOpen,branch,notifs}=getState();
@@ -318,23 +657,31 @@ function renderTopBar(){
   // Native theme tokens — black header surface, white text/icons.
   const tbBg = native ? '#0a0a0a' : '#fff';
   const tbBorder = native ? '0' : '1px solid #f0f0f0';
+  const canBack    = _navHistory.length > 0;
+  const canForward = _navFuture.length  > 0;
+  const navBtnStyle = (on) => `display:flex;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid #e5e7eb;border-radius:7px;background:#fff;cursor:${on?'pointer':'default'};color:${on?'#374151':'#d1d5db'};transition:background .15s`;
+  const navBtns = native ? '' : `<div style="display:flex;gap:4px;flex-shrink:0">
+    <button data-action="ui-nav-back" ${canBack?'':'disabled'} style="${navBtnStyle(canBack)}" title="Back">${Icon({n:'left',size:14})}</button>
+    <button data-action="ui-nav-forward" ${canForward?'':'disabled'} style="${navBtnStyle(canForward)}" title="Forward">${Icon({n:'right',size:14})}</button>
+  </div>`;
   return `<header id="topbar" style="position:fixed;top:${MODULE_BAR_HEIGHT}px;left:${offset}px;right:0;height:${TOPBAR_HEIGHT}px;background:${tbBg};border-bottom:${tbBorder};display:flex;align-items:center;padding:0 ${native ? '12' : '24'}px;gap:${native ? '8' : '16'}px;z-index:20;transition:left .2s">
     ${brandLeft}
+    ${navBtns}
     ${devBadge}
     ${native ? '' : `<div style="position:relative;flex:1;max-width:400px">
       <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:#9ca3af">${Icon({n:'search',size:14})}</span>
-      <input id="topSearch" placeholder="Search contacts, deals, leads... (/)" style="width:100%;padding:7px 10px 7px 32px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;outline:none;font-family:inherit" oninput="handleTopSearch(this.value)" onfocus="document.getElementById('searchDrop').style.display='block'" onblur="setTimeout(()=>{const d=document.getElementById('searchDrop');if(d)d.style.display='none'},200)">
+      <input id="topSearch" placeholder="Search contacts, deals, leads... (/)" style="width:100%;padding:7px 10px 7px 32px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;font-size:13px;outline:none;font-family:inherit" data-on-input="ui-search-input" data-on-focus="ui-search-focus" data-on-blur="ui-search-blur">
       <div id="searchDrop" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.1);z-index:100;max-height:320px;overflow-y:auto"></div>
     </div>`}
     <div style="display:flex;align-items:center;gap:${native ? '4' : '8'}px">
       ${native ? '' : `<div style="position:relative">
-        <button onclick="toggleBranchDrop()" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">
+        <button data-action="ui-toggle-branch-drop" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">
           <span style="width:8px;height:8px;background:#c41230;border-radius:50%;display:inline-block"></span>
           ${branch==='all'?'All Branches':branch}
           ${Icon({n:'down',size:11})}
         </button>
         <div id="branchDrop" style="display:none;position:absolute;right:0;top:calc(100%+4px);background:#fff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.1);z-index:100;min-width:140px;padding:4px">
-          ${['all','VIC','ACT','SA'].map(b=>`<div onclick="setState({branch:'${b}'});hideBranchDrop()" style="padding:8px 14px;font-size:13px;cursor:pointer;border-radius:6px;font-weight:${branch===b?'700':'400'};color:${branch===b?'#c41230':'#333'}" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background=''">${b==='all'?'All Branches':b}</div>`).join('')}
+          ${['all','VIC','ACT','SA'].map(b=>`<div data-action="ui-set-branch" data-branch="${_esc(b)}" style="padding:8px 14px;font-size:13px;cursor:pointer;border-radius:6px;font-weight:${branch===b?'700':'400'};color:${branch===b?'#c41230':'#333'}">${b==='all'?'All Branches':b}</div>`).join('')}
         </div>
       </div>`}
       ${native ? '' : (function(){
@@ -343,20 +690,20 @@ function renderTopBar(){
         if (typeof unreadVoicemailCount !== 'function') return '';
         var vmCount = unreadVoicemailCount();
         if (vmCount <= 0) return '';
-        return `<button title="${vmCount} unread voicemail${vmCount===1?'':'s'}" onclick="setState({page:'phone'})" style="position:relative;padding:7px;border:none;background:none;cursor:pointer;color:#6b7280;border-radius:8px;font-size:18px" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background=''">📨<span style="position:absolute;top:-2px;right:-2px;min-width:16px;height:16px;padding:0 4px;background:#c41230;border-radius:50%;font-size:10px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center">${vmCount}</span></button>`;
+        return `<button title="${vmCount} unread voicemail${vmCount===1?'':'s'}" data-action="ui-voicemail-nav" style="position:relative;padding:7px;border:none;background:none;cursor:pointer;color:#6b7280;border-radius:8px;font-size:18px">📨<span style="position:absolute;top:-2px;right:-2px;min-width:16px;height:16px;padding:0 4px;background:#c41230;border-radius:50%;font-size:10px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center">${vmCount}</span></button>`;
       })()}
       <div style="position:relative">
-        <button id="notifBell" onclick="toggleNotifDrop()" style="position:relative;padding:7px;border:none;background:none;cursor:pointer;transition:transform .2s,color .2s;color:${native ? 'rgba(255,255,255,.85)' : '#6b7280'};border-radius:8px" onmouseover="this.style.background='${native ? 'rgba(255,255,255,.1)' : '#f3f4f6'}'" onmouseout="this.style.background=''">
+        <button id="notifBell" data-action="ui-toggle-notif-drop" style="position:relative;padding:7px;border:none;background:none;cursor:pointer;transition:transform .2s,color .2s;color:${native ? 'rgba(255,255,255,.85)' : '#6b7280'};border-radius:8px">
           ${Icon({n:'bell',size:18})}
           ${unread>0?`<span style="position:absolute;top:-2px;right:-2px;width:16px;height:16px;background:#c41230;border-radius:50%;font-size:10px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center">${unread}</span>`:''}
         </button>
         <div id="notifDrop" style="display:none;position:absolute;right:0;top:calc(100%+4px);width:300px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.1);z-index:100;overflow:hidden">
           <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #f0f0f0">
             <span style="font-family:Syne,sans-serif;font-weight:700;font-size:14px">Notifications</span>
-            ${unread>0?`<button onclick="markAllRead()" style="font-size:12px;color:#c41230;background:none;border:none;cursor:pointer;font-family:inherit">Mark all read</button>`:''}
+            ${unread>0?`<button data-action="ui-mark-all-read" style="font-size:12px;color:#c41230;background:none;border:none;cursor:pointer;font-family:inherit">Mark all read</button>`:''}
           </div>
           <div style="max-height:280px;overflow-y:auto">
-            ${notifs.map(n=>`<div style="padding:12px 16px;border-bottom:1px solid #f9fafb;cursor:pointer;${!n.read?'background:#fff5f6':''}" onclick="handleNotifClick('${n.id}','${n.to||'dashboard'}','${n.emailId||''}','${n.type||''}')" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='${!n.read?'#fff5f6':''}'">
+            ${notifs.map(n=>`<div style="padding:12px 16px;border-bottom:1px solid #f9fafb;cursor:pointer;${!n.read?'background:#fff5f6':''}" data-action="ui-notif-click" data-notif-id="${_esc(n.id)}" data-notif-to="${_esc(n.to||'dashboard')}" data-notif-email-id="${_esc(n.emailId||'')}" data-notif-type="${_esc(n.type||'')}">
               <div style="display:flex;gap:8px;align-items:flex-start">
                 ${!n.read?`<div style="width:6px;height:6px;background:#c41230;border-radius:50%;margin-top:5px;flex-shrink:0"></div>`:'<div style="width:6px;flex-shrink:0"></div>'}
                 <div style="flex:1"><div style="font-size:12px;font-weight:600;color:#111">${n.title}</div><div style="font-size:11px;color:#6b7280;margin-top:2px;line-height:1.5">${n.body}</div>
@@ -367,23 +714,23 @@ function renderTopBar(){
           </div>
         </div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;${native ? '' : 'padding-left:8px;border-left:1px solid #f0f0f0;'}position:relative;cursor:pointer" onclick="toggleProfileDrop()">
+      <div style="display:flex;align-items:center;gap:8px;${native ? '' : 'padding-left:8px;border-left:1px solid #f0f0f0;'}position:relative;cursor:pointer" data-action="ui-toggle-profile-drop">
         <div style="width:30px;height:30px;background:#c41230;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">${(getCurrentUser()||{initials:"AD"}).initials}</div>
         ${native ? '' : `<div><div style="font-size:12px;font-weight:600;color:#111;line-height:1.2">${(getCurrentUser()||{name:"Admin"}).name}</div><div style="font-size:10px;color:#9ca3af">${(getCurrentUser()||{role:"admin"}).role}</div></div>
         <span style="font-size:10px;color:#9ca3af;margin-left:2px">▾</span>`}
         <!-- Profile dropdown -->
-        <div id="profileDrop" style="display:none;position:absolute;top:${native ? '44' : '44'}px;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.12);z-index:200;width:220px;overflow:hidden" onclick="event.stopPropagation()">
+        <div id="profileDrop" style="display:none;position:absolute;top:${native ? '44' : '44'}px;right:0;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.12);z-index:200;width:220px;overflow:hidden" data-action="ui-profile-dropdown-click">
           <div style="padding:14px 16px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;gap:10px">
             <div style="width:32px;height:32px;background:#c41230;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700">${(getCurrentUser()||{initials:'AD'}).initials}</div>
             <div><div style="font-size:13px;font-weight:600">${(getCurrentUser()||{name:'Admin'}).name}</div><div style="font-size:11px;color:#6b7280">${(getCurrentUser()||{email:''}).email}</div></div>
           </div>
           <div style="padding:6px">
-            <button onclick="profileDropOpen=false;setState({page:'profile',dealDetailId:null,leadDetailId:null,contactDetailId:null})" style="width:100%;text-align:left;padding:9px 12px;border:none;background:none;cursor:pointer;font-family:inherit;font-size:13px;color:#374151;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='none'">${Icon({n:'contacts',size:15})} My Profile</button>
-            ${(getCurrentUser()||{role:''}).role==='admin'?`<button onclick="profileDropOpen=false;settTab='users';setState({page:'settings'})" style="width:100%;text-align:left;padding:9px 12px;border:none;background:none;cursor:pointer;font-family:inherit;font-size:13px;color:#374151;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='none'">${Icon({n:'settings',size:15})} Manage Users</button>`:''}
-            <button onclick="profileDropOpen=false;setState({page:'settings',dealDetailId:null,leadDetailId:null,contactDetailId:null})" style="width:100%;text-align:left;padding:9px 12px;border:none;background:none;cursor:pointer;font-family:inherit;font-size:13px;color:#374151;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='none'">${Icon({n:'settings',size:15})} Settings</button>
+            <button data-action="ui-profile-close-and-nav" data-page="profile" style="width:100%;text-align:left;padding:9px 12px;border:none;background:none;cursor:pointer;font-family:inherit;font-size:13px;color:#374151;border-radius:8px;display:flex;align-items:center;gap:8px">${Icon({n:'contacts',size:15})} My Profile</button>
+            ${(getCurrentUser()||{role:''}).role==='admin'?`<button data-action="ui-profile-close-and-nav" data-page="settings" data-sett-tab="users" style="width:100%;text-align:left;padding:9px 12px;border:none;background:none;cursor:pointer;font-family:inherit;font-size:13px;color:#374151;border-radius:8px;display:flex;align-items:center;gap:8px">${Icon({n:'settings',size:15})} Manage Users</button>`:''}
+            <button data-action="ui-profile-close-and-nav" data-page="settings" style="width:100%;text-align:left;padding:9px 12px;border:none;background:none;cursor:pointer;font-family:inherit;font-size:13px;color:#374151;border-radius:8px;display:flex;align-items:center;gap:8px">${Icon({n:'settings',size:15})} Settings</button>
           </div>
           <div style="padding:6px;border-top:1px solid #f0f0f0">
-            <button onclick="logout()" style="width:100%;text-align:left;padding:9px 12px;border:none;background:none;cursor:pointer;font-family:inherit;font-size:13px;color:#b91c1c;border-radius:8px;display:flex;align-items:center;gap:8px" onmouseover="this.style.background='#fef2f2'" onmouseout="this.style.background='none'">↪ Sign Out</button>
+            <button data-action="ui-logout" style="width:100%;text-align:left;padding:9px 12px;border:none;background:none;cursor:pointer;font-family:inherit;font-size:13px;color:#b91c1c;border-radius:8px;display:flex;align-items:center;gap:8px">↪ Sign Out</button>
           </div>
         </div>
       </div>
@@ -552,11 +899,10 @@ function handleTopSearch(q){
   const lq=q.toLowerCase();
   const {deals,contacts,leads}=getState();
   let html='<div style="max-height:380px;overflow-y:auto">';
-  const hide="document.getElementById('searchDrop').style.display='none';document.getElementById('topSearch').value=''";
   const cs=contacts.filter(c=>(c.fn+' '+c.ln).toLowerCase().includes(lq)||c.email.toLowerCase().includes(lq)||c.phone.includes(lq)).slice(0,4);
   if(cs.length){
     html+='<div style="padding:5px 12px;font-size:10px;font-weight:700;text-transform:uppercase;color:#9ca3af;background:#f9fafb">Contacts</div>';
-    html+=cs.map(c=>`<div onclick="setState({contactDetailId:'${c.id}',page:'contacts'});${hide}" style="display:flex;align-items:center;gap:10px;padding:9px 14px;cursor:pointer;border-bottom:1px solid #f9fafb" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background=''">
+    html+=cs.map(c=>`<div data-action="ui-search-drop-click" data-page="contacts" data-detail-type="contactDetailId" data-detail-id="${_esc(c.id)}" style="display:flex;align-items:center;gap:10px;padding:9px 14px;cursor:pointer;border-bottom:1px solid #f9fafb">
       <div style="width:28px;height:28px;background:#c41230;border-radius:50%;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${avatar(c.fn+' '+c.ln)}</div>
       <div><div style="font-size:13px;font-weight:500">${c.fn} ${c.ln}</div><div style="font-size:11px;color:#9ca3af">${c.email}</div></div>
     </div>`).join('');
@@ -567,7 +913,7 @@ function handleTopSearch(q){
     html+=ds.map(d=>{
       const pl=PIPELINES.find(p=>p.id===d.pid);
       const st=pl?pl.stages.find(s=>s.id===d.sid):null;
-      return `<div onclick="setState({dealDetailId:'${d.id}',page:'deals'});${hide}" style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;cursor:pointer;border-bottom:1px solid #f9fafb" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background=''">
+      return `<div data-action="ui-search-drop-click" data-page="deals" data-detail-type="dealDetailId" data-detail-id="${_esc(d.id)}" style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;cursor:pointer;border-bottom:1px solid #f9fafb">
         <div><div style="font-size:13px;font-weight:500">${d.title}</div><div style="font-size:11px;color:#9ca3af">${d.suburb||d.branch}</div></div>
         <div style="text-align:right"><div style="font-size:13px;font-weight:700">${fmt$(d.val)}</div>${st?`<span class="bdg" style="background:${st.col}22;color:${st.col};font-size:10px">${st.name}</span>`:''}</div>
       </div>`;
@@ -576,7 +922,7 @@ function handleTopSearch(q){
   const ls=leads.filter(l=>(l.fn+' '+l.ln).toLowerCase().includes(lq)||l.email.toLowerCase().includes(lq)||(l.suburb||'').toLowerCase().includes(lq)).slice(0,3);
   if(ls.length){
     html+='<div style="padding:5px 12px;font-size:10px;font-weight:700;text-transform:uppercase;color:#9ca3af;background:#f9fafb">Leads</div>';
-    html+=ls.map(l=>`<div onclick="setState({leadDetailId:'${l.id}',page:'leads'});${hide}" style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;cursor:pointer" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background=''">
+    html+=ls.map(l=>`<div data-action="ui-search-drop-click" data-page="leads" data-detail-type="leadDetailId" data-detail-id="${_esc(l.id)}" style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;cursor:pointer">
       <div><div style="font-size:13px;font-weight:500">${l.fn} ${l.ln}</div><div style="font-size:11px;color:#9ca3af">${l.source} · ${l.suburb||''}</div></div>
       <div style="text-align:right"><div style="font-size:13px;font-weight:700">${fmt$(l.val)}</div><span class="bdg" style="font-size:10px">${l.status}</span></div>
     </div>`).join('');
@@ -589,7 +935,7 @@ function handleTopSearch(q){
     html+='<div style="padding:5px 12px;font-size:10px;font-weight:700;text-transform:uppercase;color:#9ca3af;background:#f9fafb">Jobs</div>';
     html+=js.map(j=>{
       const stObj=getJobStatusObj(j.status);
-      return `<div onclick="setState({jobDetailId:'${j.id}',page:'jobs'});${hide}" style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;cursor:pointer;border-bottom:1px solid #f9fafb" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background=''">
+      return `<div data-action="ui-search-drop-click" data-page="jobs" data-detail-type="jobDetailId" data-detail-id="${_esc(j.id)}" style="display:flex;align-items:center;justify-content:space-between;padding:9px 14px;cursor:pointer;border-bottom:1px solid #f9fafb">
         <div><div style="font-size:13px;font-weight:600;color:#c41230">${j.jobNumber||''}</div><div style="font-size:11px;color:#9ca3af">${j.title||''} · ${j.suburb||''}</div></div>
         <div style="text-align:right"><div style="font-size:13px;font-weight:700">${fmt$(j.val)}</div><span class="bdg" style="background:${stObj.col}22;color:${stObj.col};font-size:10px">${stObj.label}</span></div>
       </div>`;
@@ -615,7 +961,7 @@ function renderSidebar(){
     ['jobdashboard','Dashboard'],['jobs','Jobs'],['finalsignoff','Final Sign Off'],['schedule','Installation Schedule'],['capplan','Capacity Planner'],['fleet','Fleet & Delivery'],['capacity','Smart Planner'],['cmmap','CM Schedule Map'],['weeklyrev','Weekly Revenue'],['invoicing','Invoicing'],['audit','Audit'],['jobsettings','Settings'],
   ];
   const factoryNav=[
-    ['factorydash','Dashboard'],['prodqueue','Job Queue'],['prodboard','Production Board'],['factorybom','BOM & Cut Sheets'],['factorycap','Capacity Planner'],['factorydispatch','Dispatch'],['factoryaudit','Red Tag Audit'],['audit','Audit'],
+    ['factorycap','Capacity Planner'],['factorydash','Dashboard'],['prodqueue','Job Queue'],['prodboard','Production Board'],['factorybom','BOM & Cut Sheets'],['factoryqc','QC Checklist'],['factorydispatch','Dispatch'],['audit','Audit'],
   ];
   const accountsNav=[
     ['accdash','Dashboard'],['accoutstanding','Outstanding'],['accbills','Supplier Bills'],['accweekly','Weekly In vs Out'],['acccashflow','Cash Flow'],['accrecon','Reconciliation'],['accbranch','Branch P&L'],['accxero','Xero Integration'],['audit','Audit'],
@@ -635,7 +981,7 @@ function renderSidebar(){
     <div style="display:flex;align-items:center;padding:0 12px;height:56px;border-bottom:1px solid rgba(255,255,255,.08);gap:12px">
       <img src="data:image/png;base64,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" style="width:32px;height:32px;border-radius:8px;flex-shrink:0;object-fit:contain" alt="Spartan DG">
       ${sidebarOpen?`<div style="min-width:0"><div style="font-family:Syne,sans-serif;font-weight:800;color:#fff;font-size:14px;white-space:nowrap">SPARTAN</div><div style="font-size:10px;color:#666;white-space:nowrap">DOUBLE GLAZING CRM</div></div>`:''}
-      ${native ? '' : `<button onclick="setState({sidebarOpen:!getState().sidebarOpen})" style="margin-left:auto;background:none;border:none;cursor:pointer;color:#555;padding:4px;border-radius:6px;display:flex" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#555'">${Icon({n:sidebarOpen?'left':'right',size:14})}</button>`}
+      ${native ? '' : `<button data-action="ui-toggle-sidebar" style="margin-left:auto;background:none;border:none;cursor:pointer;color:#555;padding:4px;border-radius:6px;display:flex">${Icon({n:sidebarOpen?'left':'right',size:14})}</button>`}
     </div>
     <nav style="flex:1;overflow-y:auto;padding:8px">
       ${filteredNav.map(([id,label])=>{
@@ -656,7 +1002,7 @@ function renderSidebar(){
         // CM Schedule Map badge — unbooked check-measure jobs (mirrors
         // renderCMMapPage filter in 21-cm-schedule.js:82).
         const cmmapCount=id==='cmmap'?(getState().jobs||[]).filter(j=>j.status==='a_check_measure'&&!j.cmCompletedAt&&!j.cmBookedDate).length:0;
-        return `<div class="nav-item${on?' on':''}" onclick="setState({page:'${id}',dealDetailId:null,leadDetailId:null,contactDetailId:null,jobDetailId:null${native ? ',sidebarOpen:false' : ''}})" title="${!sidebarOpen?label:''}">
+        return `<div class="nav-item${on?' on':''}" data-action="ui-sidebar-nav-click" data-page="${_esc(id)}" title="${!sidebarOpen?label:''}">
           ${Icon({n:id,size:17})}
           ${sidebarOpen?`<span style="flex:1">${label}</span>`:''}
           ${sidebarOpen&&newLeads>0?`<span style="background:#c41230;color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px">${newLeads}</span>`:''}
@@ -669,14 +1015,12 @@ function renderSidebar(){
       }).join('')}
     </nav>
     <div style="padding:8px;border-top:1px solid rgba(255,255,255,.08)">
-      <div class="nav-item" style="cursor:pointer" onclick="setState({page:'profile',dealDetailId:null,leadDetailId:null,contactDetailId:null${native ? ',sidebarOpen:false' : ''}})">
+      <div class="nav-item" style="cursor:pointer" data-action="ui-sidebar-profile-click">
         <div style="width:28px;height:28px;background:#c41230;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:700;flex-shrink:0">${(getCurrentUser()||{initials:'AD'}).initials}</div>
         ${sidebarOpen?`<div><div style="font-size:12px;font-weight:600;color:#fff">${(getCurrentUser()||{name:'Admin'}).name}</div><div style="font-size:10px;color:#555">${(getCurrentUser()||{role:'admin'}).role} · ${(getCurrentUser()||{branch:'All'}).branch}</div></div>`:''}
       </div>
-      ${sidebarOpen?`<button onclick="logout()" style="width:100%;margin-top:4px;padding:6px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:#9ca3af;font-size:11px;cursor:pointer;font-family:inherit">Sign Out</button>`:''}
+      ${sidebarOpen?`<button data-action="ui-sidebar-logout" style="width:100%;margin-top:4px;padding:6px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:6px;color:#9ca3af;font-size:11px;cursor:pointer;font-family:inherit">Sign Out</button>`:''}
     </div>
   </div>
-  ${native && sidebarOpen ? `<div onclick="setState({sidebarOpen:false})" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25"></div>` : ''}`;
+  ${native && sidebarOpen ? `<div data-action="ui-sidebar-close-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:25"></div>` : ''}`;
 }
-
-
