@@ -262,6 +262,45 @@ function moveFactoryItem(itemId, toStation) {
   renderPage();
 }
 
+// Move every frame of order `jid` currently at `fromStation` forward by one
+// FACTORY_STATIONS column. Used by the job-sized chip on the production
+// board (renderProdBoard in 16d): the chip's advance button moves the
+// whole group at once. Frames of the same order that are already past
+// `fromStation` are left alone — covers the legacy mixed-station case
+// as the kanban realigns. At the final column, "advance" writes the
+// 'complete' sentinel station so the frame leaves the board.
+function moveFactoryOrderToNextStation(jid, fromStation) {
+  if (!jid || !fromStation) return;
+  var stations = (typeof FACTORY_STATIONS_FROM_MANUAL !== 'undefined') ? FACTORY_STATIONS_FROM_MANUAL : FACTORY_STATIONS;
+  var idx = -1;
+  for (var i = 0; i < stations.length; i++) {
+    if (stations[i].id === fromStation) { idx = i; break; }
+  }
+  if (idx < 0) return;
+  var toStation = (idx >= stations.length - 1) ? 'complete' : stations[idx + 1].id;
+
+  var nowIso = new Date().toISOString();
+  var items = getFactoryItems();
+  var moved = 0;
+  items = items.map(function(it){
+    if (it.orderId !== jid || it.station !== fromStation) return it;
+    var hist = (it.stationHistory || []).concat([{station: toStation, at: nowIso}]);
+    moved++;
+    return Object.assign({}, it, { station: toStation, stationHistory: hist });
+  });
+  if (moved === 0) return;
+  saveFactoryItems(items);
+
+  // §6 auto-advance: any frame entering QC bumps the order
+  // in_production → qc_check. Bulk move means many frames hit QC at
+  // once, but the helper is idempotent so a single call covers it.
+  if (toStation === 'qc' && typeof _checkOrderAutoAdvance === 'function') {
+    _checkOrderAutoAdvance(jid, 'frame_at_qc');
+  }
+  renderPage();
+}
+window.moveFactoryOrderToNextStation = moveFactoryOrderToNextStation;
+
 // FACTORY-CRM-CONTRACT.md §6 (implicit, derived from §6.3 mapping):
 // frame-level kanban movement should auto-advance the order-level status
 // when the appropriate threshold is reached, so the §6.3 writeback fires

@@ -63,10 +63,12 @@ defineAction('factory-pages-advance-order', function(target, ev) {
   advanceFactoryOrder(orderId);
 });
 
-defineAction('factory-pages-move-item', function(target, ev) {
-  var itemId = target.dataset.itemId;
-  var nextStation = target.dataset.nextStation;
-  moveFactoryItem(itemId, nextStation);
+defineAction('factory-pages-move-order', function(target, ev) {
+  var jid = target.dataset.jid;
+  var fromStation = target.dataset.fromStation;
+  if (typeof moveFactoryOrderToNextStation === 'function') {
+    moveFactoryOrderToNextStation(jid, fromStation);
+  }
 });
 
 defineAction('factory-pages-station-header', function(target, ev) {
@@ -187,81 +189,150 @@ function renderProdQueue() {
 
 function renderProdBoard() {
   var stations = (typeof FACTORY_STATIONS_FROM_MANUAL !== 'undefined') ? FACTORY_STATIONS_FROM_MANUAL : FACTORY_STATIONS;
-  var stnPageMap = {cutting:'stncutting',milling:'stnmilling',welding:'stnwelding',hardware:'stnhardware',reveals:'stnreveals',dispatch:'stndispatch'};
-  var PL = {awning_window:'AWN',casement_window:'CAS',sliding_window:'SLD',fixed_window:'FIX',tilt_turn_window:'T&T',double_hung_window:'DH',bifold_door:'BFD',sliding_door:'SLD-D',french_door:'FRN',lift_slide_door:'L&S',smart_slide_door:'SMS'};
 
-  var items = getFactoryItems();
+  var items  = getFactoryItems();
+  var orders = getFactoryOrders();
   var branch = getState().branch || 'all';
   if (branch !== 'all') {
-    var brIds = getFactoryOrders().filter(function(o){return o.branch===branch;}).map(function(o){return o.jid;});
-    items = items.filter(function(i){return brIds.indexOf(i.orderId) >= 0;});
+    var brIds = orders.filter(function(o){return o.branch === branch;}).map(function(o){return o.jid;});
+    items  = items.filter(function(i){return brIds.indexOf(i.orderId) >= 0;});
+    orders = orders.filter(function(o){return o.branch === branch;});
   }
 
-  var h = '<div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">'
-    + '<div><h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:24px;margin:0">\ud83d\udcca Production Board</h2>'
-    + '<p style="color:#6b7280;font-size:13px;margin:4px 0 0">Kanban \u2014 click a station header to drill into its queue</p></div>'
+  // Build station-id → index lookup once. Frames at unrecognised station
+  // ids ('complete' sentinel, anything legacy that escaped the migration)
+  // are excluded from the board.
+  var stationIdx = {};
+  stations.forEach(function(s, i){ stationIdx[s.id] = i; });
+
+  // Group frames by jid (the human job number — frames carry it as
+  // .orderId, factory_orders carry it as .jid).
+  var byOrder = {};
+  items.forEach(function(it){
+    if (!it.orderId) return;
+    if (typeof stationIdx[it.station] !== 'number') return;
+    if (!byOrder[it.orderId]) byOrder[it.orderId] = [];
+    byOrder[it.orderId].push(it);
+  });
+
+  // For each order, the chip lives in the column matching its EARLIEST
+  // (lowest-index) station — the bottleneck. Frames already past that
+  // station show as "N ahead" on the chip but don't put it in two
+  // columns. When the user clicks the advance button on a chip, the
+  // bulk-move helper (moveFactoryOrderToNextStation in 16) only touches
+  // frames currently at that bottleneck station, so any frames already
+  // ahead stay where they are.
+  var ordersByStation = {};
+  stations.forEach(function(s){ ordersByStation[s.id] = []; });
+
+  Object.keys(byOrder).forEach(function(jid){
+    var frames = byOrder[jid];
+    var minIdx = Infinity;
+    frames.forEach(function(f){
+      var fi = stationIdx[f.station];
+      if (typeof fi === 'number' && fi < minIdx) minIdx = fi;
+    });
+    if (minIdx === Infinity) return;
+    var stnId = stations[minIdx].id;
+    var here  = frames.filter(function(f){ return f.station === stnId; });
+    var ahead = frames.filter(function(f){ return stationIdx[f.station] > minIdx; });
+    var orderRec = orders.find(function(o){ return o.jid === jid; }) || null;
+    ordersByStation[stnId].push({
+      jid: jid,
+      orderRec: orderRec,
+      framesHere: here,
+      framesAhead: ahead.length,
+      totalFrames: frames.length,
+      hasRework: here.some(function(f){ return !!f.rework; }),
+    });
+  });
+
+  // ── Header ──────────────────────────────────────────────────────────────
+  var h = '<div style="margin-bottom:16px">'
+    + '<h2 style="font-family:Syne,sans-serif;font-weight:800;font-size:24px;margin:0">📊 Production Board</h2>'
+    + '<p style="color:#6b7280;font-size:13px;margin:4px 0 0">One chip per job. Advance moves every frame currently at this station to the next.</p>'
     + '</div>';
 
+  // ── Columns ─────────────────────────────────────────────────────────────
   h += '<div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:10px">';
 
   stations.forEach(function(stn, sIdx) {
-    var stnItems = items.filter(function(i){return i.station === stn.id;});
-    var nextStn  = sIdx < stations.length - 1 ? stations[sIdx + 1] : null;
-    var loadPct  = stn.cap > 0 ? Math.round(stnItems.length / stn.cap * 100) : 0;
-    var loadCol  = loadPct > 80 ? '#ef4444' : loadPct > 50 ? '#f59e0b' : '#22c55e';
-    var stnPage  = stnPageMap[stn.id];
+    var chips = ordersByStation[stn.id] || [];
+    var nextStn = sIdx < stations.length - 1 ? stations[sIdx + 1] : null;
+    var totalFramesHere = chips.reduce(function(t, c){ return t + c.framesHere.length; }, 0);
+    var loadPct = stn.cap > 0 ? Math.round(totalFramesHere / stn.cap * 100) : 0;
+    var loadCol = loadPct > 80 ? '#ef4444' : loadPct > 50 ? '#f59e0b' : totalFramesHere > 0 ? '#22c55e' : '#9ca3af';
 
-    // Column header \u2014 clicking anywhere on it navigates to the station page
-    var headerClick = stnPage ? 'data-action="factory-pages-station-header" data-page="' + stnPage + '" style="cursor:pointer"' : '';
-    h += '<div style="min-width:200px;flex:1;background:#f9fafb;border-radius:12px;border:1px solid #e5e7eb;display:flex;flex-direction:column">';
-    h += '<div ' + headerClick + ' style="padding:10px 12px;border-bottom:1px solid #e5e7eb;border-radius:12px 12px 0 0;text-align:center;'
-      + (stnPage ? 'background:#fff;transition:background .15s" onmouseover="this.style.background=\'#f0f9ff\'" onmouseout="this.style.background=\'#fff\'"' : '"')
-      + '>';
-    h += '<span style="font-size:18px">' + stn.icon + '</span>';
-    h += '<div style="font-size:12px;font-weight:700;margin-top:2px;color:#111">' + stn.name + '</div>';
-    h += '<div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-top:3px">';
-    h += '<span style="font-size:10px;color:' + loadCol + ';font-weight:700">' + stnItems.length + '/' + stn.cap + '</span>';
-    if (stnPage) {
-      h += '<span style="font-size:9px;color:#3b82f6;font-weight:600">View \u2192</span>';
+    h += '<div style="min-width:220px;flex:1;background:#f9fafb;border-radius:12px;border:1px solid #e5e7eb;display:flex;flex-direction:column">';
+    h += '<div style="padding:10px 12px;border-bottom:1px solid #e5e7eb;border-radius:12px 12px 0 0;text-align:center;background:#fff">';
+    h +=   '<span style="font-size:18px">' + stn.icon + '</span>';
+    h +=   '<div style="font-size:12px;font-weight:700;margin-top:2px;color:#111">' + stn.name + '</div>';
+    h +=   '<div style="font-size:10px;color:' + loadCol + ';font-weight:700;margin-top:3px">'
+      +      chips.length + ' job' + (chips.length === 1 ? '' : 's')
+      +      ' · ' + totalFramesHere + ' / ' + stn.cap + ' frames'
+      +    '</div>';
+    h += '</div>';
+
+    h += '<div style="flex:1;padding:6px;display:flex;flex-direction:column;gap:6px;max-height:520px;overflow-y:auto">';
+    if (chips.length === 0) {
+      h += '<div style="color:#d1d5db;font-size:10px;text-align:center;padding:16px">—</div>';
     }
-    h += '</div></div>';
+    chips.forEach(function(chip) {
+      var rec = chip.orderRec || {};
+      var sample = chip.framesHere[0] || {};
+      var customer = rec.customer || sample.customer || '';
+      var suburb   = rec.suburb   || sample.suburb   || '';
 
-    // Cards
-    h += '<div style="flex:1;padding:6px;display:flex;flex-direction:column;gap:4px;max-height:420px;overflow-y:auto">';
-    if (stnItems.length === 0) {
-      h += '<div style="color:#d1d5db;font-size:10px;text-align:center;padding:16px">\u2014</div>';
-    }
-    stnItems.forEach(function(it) {
-      var mins = 0;
-      if (it.stationTimes && stn.cadKeys) {
-        mins = stn.cadKeys.reduce(function(s,k){return s + (Number(it.stationTimes[k])||0);}, 0);
+      // Total minutes for the frames currently at this station — sum
+      // across station's cadKeys for each frame.
+      var stnMins = 0;
+      if (stn.cadKeys) {
+        chip.framesHere.forEach(function(f){
+          if (f.stationTimes) {
+            stnMins += stn.cadKeys.reduce(function(s,k){ return s + (Number(f.stationTimes[k]) || 0); }, 0);
+          }
+        });
       }
-      // Format consolidated to contract helper (modules/17b-cad-timing-contract.js
-      // §5.2). Display gains a space between h and m: "1h30m" → "1h 30m".
-      var timeTag = mins > 0 ? '<span style="font-size:9px;color:' + (mins>60?'#f59e0b':'#6b7280') + ';margin-left:4px">'
-        + (typeof formatMinutesAsHours === 'function'
-            ? formatMinutesAsHours(mins)
-            : (mins >= 60 ? Math.floor(mins/60) + 'h' + (mins%60?Math.round(mins%60)+'m':'') : Math.round(mins) + 'm'))
-        + '</span>' : '';
+      var timeTag = stnMins > 0
+        ? '<span style="font-size:10px;color:' + (stnMins > 120 ? '#f59e0b' : '#6b7280') + '">'
+          + (typeof formatMinutesAsHours === 'function'
+              ? formatMinutesAsHours(stnMins)
+              : (stnMins >= 60 ? Math.floor(stnMins/60) + 'h' + (stnMins%60 ? Math.round(stnMins%60) + 'm' : '') : Math.round(stnMins) + 'm'))
+          + '</span>'
+        : '';
 
-      h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px;font-size:10px'
-        + (it.rework ? ';border-left:3px solid #ef4444' : '') + '">';
-      h += '<div style="display:flex;justify-content:space-between;align-items:center">'
-        + '<span style="font-weight:700;color:#c41230">' + (it.name||'') + '</span>'
-        + '<span style="font-size:9px;padding:1px 5px;border-radius:4px;background:#f3f4f6;color:#6b7280">' + (PL[it.productType]||'') + timeTag + '</span>'
-        + '</div>';
-      h += '<div style="color:#6b7280;margin-top:2px">' + (it.widthMm||0) + '\u00d7' + (it.heightMm||0) + 'mm</div>';
-      h += '<div style="color:#9ca3af;font-size:9px">' + (it.customer||'') + (it.suburb ? ' \u00b7 ' + it.suburb : '') + '</div>';
-      if (it.rework) h += '<div style="color:#ef4444;font-weight:700;font-size:9px;margin-top:2px">\u26a0 REWORK</div>';
-      if (nextStn) {
-        h += '<button data-action="factory-pages-move-item" data-item-id="' + it.id + '" data-next-station="' + nextStn.id + '" '
-          + 'style="margin-top:4px;width:100%;padding:3px;border:1px solid #e5e7eb;border-radius:4px;background:#fff;font-size:9px;cursor:pointer;color:#3b82f6;font-weight:600">'
-          + '\u2192 ' + nextStn.name + '</button>';
-      } else {
-        h += '<button data-action="factory-pages-move-item" data-item-id="' + it.id + '" data-next-station="complete" '
-          + 'style="margin-top:4px;width:100%;padding:3px;border:none;border-radius:4px;background:#22c55e;font-size:9px;cursor:pointer;color:#fff;font-weight:600">'
-          + '\u2705 Complete</button>';
+      h += '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px'
+        + (chip.hasRework ? ';border-left:3px solid #ef4444' : '') + '">';
+
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:6px">'
+        +    '<span style="font-weight:700;color:#c41230;font-size:13px">' + chip.jid + '</span>'
+        +    timeTag
+        +  '</div>';
+
+      if (customer) {
+        h += '<div style="color:#374151;font-size:11px;margin-top:3px">'
+          +    customer + (suburb ? ' · ' + suburb : '')
+          +  '</div>';
       }
+
+      h += '<div style="color:#6b7280;font-size:10px;margin-top:4px">'
+        +    '<strong>' + chip.framesHere.length + '</strong> of ' + chip.totalFrames + ' frame' + (chip.totalFrames === 1 ? '' : 's') + ' here';
+      if (chip.framesAhead > 0) {
+        h += ' · <span style="color:#22c55e">' + chip.framesAhead + ' ahead</span>';
+      }
+      h += '</div>';
+
+      if (chip.hasRework) {
+        h += '<div style="color:#ef4444;font-weight:700;font-size:9px;margin-top:3px">⚠ REWORK</div>';
+      }
+
+      var btnLabel = nextStn ? '→ ' + nextStn.name : '✅ Complete';
+      var btnStyle = nextStn
+        ? 'margin-top:6px;width:100%;padding:5px;border:1px solid #e5e7eb;border-radius:4px;background:#fff;font-size:10px;cursor:pointer;color:#3b82f6;font-weight:600'
+        : 'margin-top:6px;width:100%;padding:5px;border:none;border-radius:4px;background:#22c55e;font-size:10px;cursor:pointer;color:#fff;font-weight:600';
+      h += '<button data-action="factory-pages-move-order" data-jid="' + chip.jid + '" data-from-station="' + stn.id + '" '
+        +    'style="' + btnStyle + '">' + btnLabel + '</button>';
+
       h += '</div>';
     });
     h += '</div></div>';
@@ -270,7 +341,6 @@ function renderProdBoard() {
   h += '</div>';
   return '<div>' + h + '</div>';
 }
-
 // ── BOM & Cut Sheets ────────────────────────────────────────────────────────
 function renderFactoryBOM() {
   var orders = getFactoryOrders();
