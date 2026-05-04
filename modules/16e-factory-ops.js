@@ -199,12 +199,19 @@ function qcFail(frameId, idx) {
 
 function qcPass(frameId) {
   var items = getFactoryItems();
+  var passedItem = items.find(function(i){ return i.id === frameId; });
   var updated = items.map(function(i) {
     return i.id === frameId ? Object.assign({}, i, { qcPassedAt: new Date().toISOString(), station: 'packing' }) : i;
   });
   saveFactoryItems(updated);
   _qcActiveFrameId = null;
   addToast('QC passed — frame moved to Dispatch bay queue', 'success');
+  // §6 auto-advance: when every frame on the order is QC-passed, the
+  // order auto-flips qc_check → ready_dispatch (which then mirrors to
+  // job.status = e_dispatch_standard via _mirrorFactoryOrderToJob).
+  if (passedItem && passedItem.orderId && typeof _checkOrderAutoAdvance === 'function') {
+    _checkOrderAutoAdvance(passedItem.orderId, 'qc_pass');
+  }
   renderPage();
 }
 

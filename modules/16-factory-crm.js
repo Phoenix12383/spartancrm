@@ -246,6 +246,58 @@ function advanceFactoryOrder(orderId) {
 
 function moveFactoryItem(itemId, toStation) {
   var items=getFactoryItems();
-  items=items.map(function(it){if(it.id!==itemId)return it;var hist=it.stationHistory||[];hist.push({station:toStation,at:new Date().toISOString()});return Object.assign({},it,{station:toStation,stationHistory:hist});});
-  saveFactoryItems(items);renderPage();
+  var movedItem = null;
+  items=items.map(function(it){
+    if(it.id!==itemId)return it;
+    var hist=it.stationHistory||[];
+    hist.push({station:toStation,at:new Date().toISOString()});
+    movedItem = Object.assign({},it,{station:toStation,stationHistory:hist});
+    return movedItem;
+  });
+  saveFactoryItems(items);
+  // §6 auto-advance: first frame at QC bumps order in_production → qc_check.
+  if (toStation === 'qc' && movedItem && movedItem.orderId) {
+    _checkOrderAutoAdvance(movedItem.orderId, 'frame_at_qc');
+  }
+  renderPage();
 }
+
+// FACTORY-CRM-CONTRACT.md §6 (implicit, derived from §6.3 mapping):
+// frame-level kanban movement should auto-advance the order-level status
+// when the appropriate threshold is reached, so the §6.3 writeback fires
+// without requiring a manual "→ QC Check" / "→ Ready for Dispatch" click.
+//
+// Two auto-cases (everything else stays manual):
+//   trigger='frame_at_qc' — any frame just arrived at QC station →
+//                            advance in_production → qc_check
+//   trigger='qc_pass'      — every frame on the order is QC-passed →
+//                            advance qc_check → ready_dispatch
+//
+// Both no-op when the order is already past the relevant gate, so the
+// manual advance buttons remain the source of truth — this just catches
+// the cases where the order should follow the floor.
+//
+// Note: orderId on a factory_item is the order's `jid` string (the job
+// number, e.g. 'VIC-4017'), not the factory_order id. Both forms are
+// matched here so callers can pass whichever they have.
+function _checkOrderAutoAdvance(orderRef, trigger) {
+  if (!orderRef) return;
+  var orders = getFactoryOrders();
+  var order = orders.find(function(o){ return o.id === orderRef || o.jid === orderRef; });
+  if (!order) return;
+
+  if (trigger === 'frame_at_qc' && order.status === 'in_production') {
+    advanceFactoryOrder(order.id);
+    return;
+  }
+
+  if (trigger === 'qc_pass' && order.status === 'qc_check') {
+    var orderFrames = getFactoryItems().filter(function(it){
+      return it.orderId === order.jid;
+    });
+    if (orderFrames.length === 0) return;
+    var allPassed = orderFrames.every(function(it){ return !!it.qcPassedAt; });
+    if (allPassed) advanceFactoryOrder(order.id);
+  }
+}
+window._checkOrderAutoAdvance = _checkOrderAutoAdvance;
