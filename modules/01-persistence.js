@@ -50,6 +50,10 @@ function jobToDb(j) {
     install_crew:j.installCrew||[], install_completed_at:j.installCompletedAt||null,
     install_duration_hours:(typeof j.installDurationHours === 'number' && j.installDurationHours > 0) ? j.installDurationHours : null,
     production_status:j.productionStatus||null, factory_order_id:j.factoryOrderId||null,
+    // FACTORY-CRM-CONTRACT.md §6.1: dates written back from Factory CRM
+    // (Aluplast-confirmed material delivery + capacity-planner dispatch ready).
+    factory_material_delivery_date:j.factoryMaterialDeliveryDate||null,
+    factory_dispatch_ready_date:j.factoryDispatchReadyDate||null,
     claims:j.claims||null, held:!!j.held, hold_reason:j.holdReason||null,
     order_suffix:j.orderSuffix||'O', legal_entity:j.legalEntity||null, notes:j.notes||null,
     // DocuSign envelope tracking (set by docusign-send / updated by docusign-webhook)
@@ -92,6 +96,8 @@ function dbToJob(r) {
     installCrew:r.install_crew||[], installCompletedAt:r.install_completed_at,
     installDurationHours:(r.install_duration_hours != null) ? Number(r.install_duration_hours) : null,
     productionStatus:r.production_status, factoryOrderId:r.factory_order_id,
+    factoryMaterialDeliveryDate:r.factory_material_delivery_date||null,
+    factoryDispatchReadyDate:r.factory_dispatch_ready_date||null,
     claims:r.claims, held:!!r.held, holdReason:r.hold_reason,
     orderSuffix:r.order_suffix||'O', legalEntity:r.legal_entity, notes:r.notes,
     docusignEnvelopeId:r.docusign_envelope_id||null,
@@ -709,6 +715,7 @@ var JOBS_LIGHT_COLUMNS = [
   'install_date', 'install_time', 'install_crew',
   'install_completed_at', 'install_duration_hours',
   'production_status', 'factory_order_id',
+  'factory_material_delivery_date', 'factory_dispatch_ready_date',
   'claims', 'held', 'hold_reason',
   'order_suffix', 'legal_entity', 'notes',
   'docusign_envelope_id', 'docusign_status',

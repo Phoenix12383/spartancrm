@@ -37,6 +37,63 @@ function saveFactoryOrders(o){localStorage.setItem('spartan_factory_orders',JSON
 function getFactoryItems(){try{return JSON.parse(localStorage.getItem('spartan_factory_items')||'[]');}catch(e){return [];}}
 function saveFactoryItems(i){localStorage.setItem('spartan_factory_items',JSON.stringify(i));if(_sb)i.forEach(function(it){dbUpsert('factory_items',it);});}
 
+// FACTORY-CRM-CONTRACT.md §6.3: factory_order.status → job.status mapping.
+// 'received' is null on purpose: per the contract that status is the entry
+// point and "no change" to job.status (the job stays at
+// c2_order_schedule_standard, which Job CRM owns).
+var FACTORY_TO_JOB_STATUS_MAP = {
+  received:          null,
+  bom_generated:     'c2_order_schedule_standard',
+  materials_ordered: 'd1_awaiting_material',
+  in_production:     'd3_cutting',
+  qc_check:          'd5_hardware_revealing',
+  ready_dispatch:    'e_dispatch_standard',
+  dispatched:        'f_installing',
+};
+
+// FACTORY-CRM-CONTRACT.md §6.1: Factory CRM writes back to the linked job
+// whenever factory_order state changes. Three field categories propagate:
+//   • productionStatus           ← order.status (raw, for UI)
+//   • factoryMaterialDeliveryDate← order.materialDeliveryDate (Aluplast-confirmed)
+//   • factoryDispatchReadyDate   ← order.dispatchReadyDate (capacity-planner output)
+//   • status (workflow)          ← FACTORY_TO_JOB_STATUS_MAP[order.status]
+//
+// Diff-and-skip pattern: only fields that actually change get written, so
+// we don't churn dbUpdate or trigger spurious renderPage cycles. The
+// dispatchReadyDate writeback is a no-op until the capacity planner is
+// extended to persist that field on the order — until then this helper
+// just propagates whatever's already there (typically null).
+function _mirrorFactoryOrderToJob(order) {
+  if (!order) return;
+  if (typeof getState !== 'function' || typeof setState !== 'function') return;
+  var jobs = getState().jobs || [];
+  var job = jobs.find(function(j){ return j.factoryOrderId === order.id || j.id === order.crmJobId; });
+  if (!job) return;
+
+  var changes = {
+    productionStatus:            order.status || null,
+    factoryMaterialDeliveryDate: order.materialDeliveryDate || null,
+    factoryDispatchReadyDate:    order.dispatchReadyDate || null,
+  };
+  var mappedStatus = FACTORY_TO_JOB_STATUS_MAP[order.status];
+  if (mappedStatus && job.status !== mappedStatus) {
+    changes.status = mappedStatus;
+  }
+
+  var actual = {};
+  Object.keys(changes).forEach(function(k){
+    if ((job[k] || null) !== (changes[k] || null)) actual[k] = changes[k];
+  });
+  if (Object.keys(actual).length === 0) return;
+
+  setState({
+    jobs: jobs.map(function(j){ return j.id === job.id ? Object.assign({}, j, actual) : j; })
+  });
+  if (typeof dbUpdate === 'function') {
+    dbUpdate('jobs', job.id, actual);
+  }
+}
+
 // One-time migration: Glazing was removed from the factory flow (Spartan site-glazes).
 // Move any frame still sitting at the glazing station to QC so it isn't orphaned.
 (function migrateGlazingStation(){
@@ -87,15 +144,14 @@ function pushJobToFactory(jobId) {
   existing.push(order); saveFactoryOrders(existing);
   var prodItems=cadData.projectItems.map(function(f,i){return cadFrameToFactoryItem(f,i,order.jid,cName,job.suburb,job.installDate);});
   saveFactoryItems(getFactoryItems().concat(prodItems));
-  // Persist productionStatus + factoryOrderId both in-memory AND to Supabase
-  // so they survive a reload. setState-only meant a reload via dbLoadAll
-  // wiped these from the job, leaving the factory order orphaned and the
-  // job appearing as awaiting-production again \u2014 a re-send risk. The fields
-  // are already in dbToJob/jobToDb so dbUpdate round-trips them cleanly.
-  setState({jobs:getState().jobs.map(function(j){return j.id===jobId?Object.assign({},j,{productionStatus:'received',factoryOrderId:order.id}):j;})});
+  // First-time factoryOrderId link: must be set before _mirrorFactoryOrderToJob
+  // can find the job by factoryOrderId. The contract \u00a76.1 productionStatus +
+  // dates writeback then runs through the centralized helper.
+  setState({jobs:getState().jobs.map(function(j){return j.id===jobId?Object.assign({},j,{factoryOrderId:order.id}):j;})});
   if (typeof dbUpdate === 'function') {
-    dbUpdate('jobs', jobId, { productionStatus: 'received', factoryOrderId: order.id });
+    dbUpdate('jobs', jobId, { factoryOrderId: order.id });
   }
+  _mirrorFactoryOrderToJob(order);
   logJobAudit(jobId,'Sent to Factory',cadData.projectItems.length+' frames');
   addToast('\ud83c\udfed '+cadData.projectItems.length+' frames sent to factory','success');renderPage();
 }
@@ -104,6 +160,13 @@ function updateFactoryOrderField(orderId, field, value) {
   var orders = getFactoryOrders();
   orders = orders.map(function(o) { if (o.id !== orderId) return o; var u = {}; u[field] = value; return Object.assign({}, o, u); });
   saveFactoryOrders(orders);
+  // §6.1: when materialDeliveryDate or dispatchReadyDate is mutated, propagate
+  // to the linked job. Other fields don't trigger a job-side change but the
+  // helper diffs internally and no-ops if nothing changed, so the call is safe.
+  if (field === 'materialDeliveryDate' || field === 'dispatchReadyDate') {
+    var updated = orders.find(function(o){ return o.id === orderId; });
+    _mirrorFactoryOrderToJob(updated);
+  }
   renderPage();
 }
 
@@ -141,17 +204,12 @@ function advanceFactoryOrder(orderId) {
     return;
   }
   order.status=nextStatus; saveFactoryOrders(orders);
-  var crmJob=(getState().jobs||[]).find(function(j){return j.factoryOrderId===orderId||j.id===order.crmJobId;});
-  if(crmJob){
-    // Same in-memory + Supabase persist pattern as sendJobToFactory above —
-    // without dbUpdate the productionStatus advance vanished on reload and
-    // the job's factory progress fell back to 'received' (or null), even
-    // though the factory order itself had moved on.
-    setState({jobs:getState().jobs.map(function(j){return j.id===crmJob.id?Object.assign({},j,{productionStatus:order.status}):j;})});
-    if (typeof dbUpdate === 'function') {
-      dbUpdate('jobs', crmJob.id, { productionStatus: order.status });
-    }
-    if(order.status==='dispatched')logJobAudit(crmJob.id,'Dispatched','All frames dispatched');
+  // §6.1 + §6.3: centralized writeback handles productionStatus, the
+  // workflow status mapping, and the date fields in one shot.
+  _mirrorFactoryOrderToJob(order);
+  if (order.status === 'dispatched') {
+    var crmJob = (getState().jobs||[]).find(function(j){ return j.factoryOrderId === orderId || j.id === order.crmJobId; });
+    if (crmJob) logJobAudit(crmJob.id, 'Dispatched', 'All frames dispatched');
   }
   renderPage();
 }
